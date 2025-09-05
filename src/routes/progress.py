@@ -1,0 +1,1064 @@
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import func, desc, and_
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
+
+from src.config import get_db
+from src.schemas.models import (
+    StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
+    UserInDB, AssignmentSubmission, ProgressSchema, StepProgress,
+    StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent
+)
+from src.routes.auth import get_current_user_dependency
+from src.utils.permissions import check_course_access, check_student_access
+from src.schemas.models import GroupStudent
+
+router = APIRouter()
+
+# =============================================================================
+# PROGRESS TRACKING
+# =============================================================================
+
+@router.get("/my", response_model=List[ProgressSchema])
+def get_my_progress(
+    course_id: Optional[int] = None,
+    lesson_id: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, le=1000),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить прогресс текущего пользователя"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can access this endpoint")
+    
+    query = db.query(StudentProgress).filter(StudentProgress.user_id == current_user.id)
+    
+    if course_id:
+        query = query.filter(StudentProgress.course_id == course_id)
+    if lesson_id:
+        query = query.filter(StudentProgress.lesson_id == lesson_id)
+    
+    progress_records = query.order_by(desc(StudentProgress.last_accessed)).offset(skip).limit(limit).all()
+    return [ProgressSchema.from_orm(record) for record in progress_records]
+
+@router.get("/course/{course_id}")
+def get_course_progress(
+    course_id: int,
+    student_id: Optional[int] = None,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить детальный прогресс по курсу"""
+    
+    # Определяем, чей прогресс смотрим
+    target_student_id = student_id if student_id else current_user.id
+    
+    # Проверяем права доступа
+    if current_user.role == "student" and target_student_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    elif current_user.role in ["teacher", "curator"] and not check_student_access(target_student_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this student")
+    elif not check_course_access(course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    # Получаем информацию о курсе
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Получаем модули курса
+    modules = db.query(Module).filter(Module.course_id == course_id).order_by(Module.order_index).all()
+    
+    course_progress = {
+        "course_id": course_id,
+        "course_title": course.title,
+        "student_id": target_student_id,
+        "overall_progress": 0,
+        "total_time_spent": 0,
+        "modules": []
+    }
+    
+    total_lessons = 0
+    completed_lessons = 0
+    total_time = 0
+    
+    for module in modules:
+        # Получаем уроки модуля
+        lessons = db.query(Lesson).filter(Lesson.module_id == module.id).order_by(Lesson.order_index).all()
+        
+        module_data = {
+            "module_id": module.id,
+            "module_title": module.title,
+            "lessons": [],
+            "module_progress": 0,
+            "time_spent": 0
+        }
+        
+        module_completed = 0
+        module_time = 0
+        
+        for lesson in lessons:
+            total_lessons += 1
+            
+            # Получаем прогресс по уроку
+            lesson_progress = db.query(StudentProgress).filter(
+                StudentProgress.user_id == target_student_id,
+                StudentProgress.lesson_id == lesson.id
+            ).first()
+            
+            # Получаем задания урока
+            assignments = db.query(Assignment).filter(Assignment.lesson_id == lesson.id).all()
+            assignment_scores = []
+            
+            for assignment in assignments:
+                submission = db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == assignment.id,
+                    AssignmentSubmission.user_id == target_student_id
+                ).first()
+                
+                if submission:
+                    assignment_scores.append({
+                        "assignment_id": assignment.id,
+                        "assignment_title": assignment.title,
+                        "score": submission.score,
+                        "max_score": submission.max_score,
+                        "submitted_at": submission.submitted_at
+                    })
+            
+            lesson_data = {
+                "lesson_id": lesson.id,
+                "lesson_title": lesson.title,
+                "status": lesson_progress.status if lesson_progress else "not_started",
+                "completion_percentage": lesson_progress.completion_percentage if lesson_progress else 0,
+                "time_spent": lesson_progress.time_spent_minutes if lesson_progress else 0,
+                "last_accessed": lesson_progress.last_accessed if lesson_progress else None,
+                "assignments": assignment_scores
+            }
+            
+            if lesson_progress and lesson_progress.status == "completed":
+                completed_lessons += 1
+                module_completed += 1
+            
+            if lesson_progress:
+                module_time += lesson_progress.time_spent_minutes
+                total_time += lesson_progress.time_spent_minutes
+            
+            module_data["lessons"].append(lesson_data)
+        
+        # Вычисляем прогресс модуля
+        if lessons:
+            module_data["module_progress"] = (module_completed / len(lessons)) * 100
+        module_data["time_spent"] = module_time
+        
+        course_progress["modules"].append(module_data)
+    
+    # Вычисляем общий прогресс курса
+    if total_lessons > 0:
+        course_progress["overall_progress"] = (completed_lessons / total_lessons) * 100
+    course_progress["total_time_spent"] = total_time
+    
+    return course_progress
+
+@router.post("/lesson/{lesson_id}/complete")
+def mark_lesson_complete(
+    lesson_id: int,
+    time_spent: int = 0,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Отметить урок как завершенный"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can mark lessons as complete")
+    
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    # Проверяем доступ к курсу
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not check_course_access(module.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this lesson")
+    
+    # Находим или создаем запись прогресса
+    progress = db.query(StudentProgress).filter(
+        StudentProgress.user_id == current_user.id,
+        StudentProgress.lesson_id == lesson_id
+    ).first()
+    
+    if not progress:
+        progress = StudentProgress(
+            user_id=current_user.id,
+            course_id=module.course_id,
+            lesson_id=lesson_id,
+            status="completed",
+            completion_percentage=100,
+            time_spent_minutes=time_spent,
+            last_accessed=datetime.utcnow(),
+            completed_at=datetime.utcnow()
+        )
+        db.add(progress)
+    else:
+        progress.status = "completed"
+        progress.completion_percentage = 100
+        progress.time_spent_minutes += time_spent
+        progress.last_accessed = datetime.utcnow()
+        progress.completed_at = datetime.utcnow()
+    
+    # Обновляем общее время изучения пользователя
+    current_user.total_study_time_minutes += time_spent
+    
+    db.commit()
+    
+    return {"detail": "Lesson marked as complete", "time_spent": time_spent}
+
+@router.post("/lesson/{lesson_id}/start")
+def start_lesson(
+    lesson_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Начать изучение урока"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can start lessons")
+    
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    # Проверяем доступ к курсу
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not check_course_access(module.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this lesson")
+    
+    # Создаем или обновляем запись прогресса
+    progress = db.query(StudentProgress).filter(
+        StudentProgress.user_id == current_user.id,
+        StudentProgress.lesson_id == lesson_id
+    ).first()
+    
+    if not progress:
+        progress = StudentProgress(
+            user_id=current_user.id,
+            course_id=module.course_id,
+            lesson_id=lesson_id,
+            status="in_progress",
+            completion_percentage=0,
+            last_accessed=datetime.utcnow()
+        )
+        db.add(progress)
+    else:
+        if progress.status == "not_started":
+            progress.status = "in_progress"
+        progress.last_accessed = datetime.utcnow()
+    
+    db.commit()
+    
+    return {"detail": "Lesson started"}
+
+@router.get("/students", response_model=List[Dict[str, Any]])
+def get_students_progress(
+    course_id: Optional[int] = None,
+    group_id: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, le=1000),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить прогресс всех студентов (для учителей/кураторов/админов)"""
+    
+    if current_user.role not in ["teacher", "curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Формируем запрос студентов в зависимости от роли
+    students_query = db.query(UserInDB).filter(UserInDB.role == "student", UserInDB.is_active == True)
+    
+    if current_user.role == "teacher":
+        # Учителя видят только учеников своих курсов
+        if course_id:
+            # Проверяем, что курс принадлежит учителю
+            course = db.query(Course).filter(
+                Course.id == course_id,
+                Course.teacher_id == current_user.id
+            ).first()
+            if not course:
+                raise HTTPException(status_code=403, detail="Access denied to this course")
+            
+            enrolled_student_ids = db.query(Enrollment.user_id).filter(
+                Enrollment.course_id == course_id,
+                Enrollment.is_active == True
+            ).subquery()
+            students_query = students_query.filter(UserInDB.id.in_(enrolled_student_ids))
+        else:
+            # Все ученики всех курсов учителя
+            teacher_course_ids = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
+            enrolled_student_ids = db.query(Enrollment.user_id).filter(
+                Enrollment.course_id.in_(teacher_course_ids),
+                Enrollment.is_active == True
+            ).subquery()
+            students_query = students_query.filter(UserInDB.id.in_(enrolled_student_ids))
+    
+    elif current_user.role == "curator":
+        # Кураторы видят учеников из своей группы
+        if current_user.group_id:
+            # Get students in curator's group using GroupStudent association table
+            group_student_ids = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id == current_user.group_id
+            ).subquery()
+            students_query = students_query.filter(UserInDB.id.in_(group_student_ids))
+        else:
+            students_query = students_query.filter(UserInDB.id == -1)  # Пустой результат
+    
+    # Дополнительные фильтры
+    if group_id and current_user.role == "admin":
+        # Filter students by group using GroupStudent association table
+        group_student_ids = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id == group_id
+        ).subquery()
+        students_query = students_query.filter(UserInDB.id.in_(group_student_ids))
+    
+    students = students_query.offset(skip).limit(limit).all()
+    
+    # Собираем статистику по каждому студенту
+    students_progress = []
+    
+    for student in students:
+        # Получаем все записи прогресса студента
+        progress_records = db.query(StudentProgress).filter(
+            StudentProgress.user_id == student.id
+        ).all()
+        
+        if course_id:
+            progress_records = [p for p in progress_records if p.course_id == course_id]
+        
+        # Подсчитываем статистику
+        total_lessons = len([p for p in progress_records if p.lesson_id])
+        completed_lessons = len([p for p in progress_records if p.status == "completed" and p.lesson_id])
+        total_time = sum(p.time_spent_minutes for p in progress_records)
+        
+        # Средний прогресс по курсам
+        if progress_records:
+            avg_progress = sum(p.completion_percentage for p in progress_records) / len(progress_records)
+        else:
+            avg_progress = 0
+        
+        # Последняя активность
+        last_activity = None
+        if progress_records:
+            last_activity = max(p.last_accessed for p in progress_records if p.last_accessed)
+        
+        # Получаем количество выполненных заданий
+        assignment_count = db.query(AssignmentSubmission).filter(
+            AssignmentSubmission.user_id == student.id
+        ).count()
+        
+        # Получаем group_id студента через GroupStudent association table
+        group_student = db.query(GroupStudent).filter(GroupStudent.student_id == student.id).first()
+        student_group_id = group_student.group_id if group_student else None
+        
+        students_progress.append({
+            "student_id": student.id,
+            "student_name": student.name,
+            "student_identifier": student.student_id,
+            "email": student.email,
+            "group_id": student_group_id,
+            "total_lessons": total_lessons,
+            "completed_lessons": completed_lessons,
+            "completion_rate": (completed_lessons / total_lessons * 100) if total_lessons > 0 else 0,
+            "average_progress": round(avg_progress, 1),
+            "total_study_time_minutes": total_time,
+            "assignment_submissions": assignment_count,
+            "last_activity": last_activity
+        })
+    
+    return students_progress
+
+@router.get("/analytics")
+def get_progress_analytics(
+    course_id: Optional[int] = None,
+    time_range: int = Query(30, description="Days to analyze"),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить аналитику прогресса (для учителей/админов)"""
+    
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Определяем временной диапазон
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=time_range)
+    
+    # Базовый запрос прогресса
+    progress_query = db.query(StudentProgress).filter(
+        StudentProgress.last_accessed >= start_date
+    )
+    
+    # Фильтр по курсу
+    if course_id:
+        if current_user.role == "teacher":
+            # Проверяем права на курс
+            course = db.query(Course).filter(
+                Course.id == course_id,
+                Course.teacher_id == current_user.id
+            ).first()
+            if not course:
+                raise HTTPException(status_code=403, detail="Access denied to this course")
+        
+        progress_query = progress_query.filter(StudentProgress.course_id == course_id)
+    elif current_user.role == "teacher":
+        # Ограничиваем курсами учителя
+        teacher_course_ids = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
+        progress_query = progress_query.filter(StudentProgress.course_id.in_(teacher_course_ids))
+    
+    progress_records = progress_query.all()
+    
+    # Аналитика
+    analytics = {
+        "time_range_days": time_range,
+        "total_students": len(set(p.user_id for p in progress_records)),
+        "total_lessons_accessed": len([p for p in progress_records if p.lesson_id]),
+        "total_assignments_completed": len([p for p in progress_records if p.assignment_id and p.status == "completed"]),
+        "total_study_time_hours": sum(p.time_spent_minutes for p in progress_records) // 60,
+        "average_completion_rate": 0,
+        "daily_activity": {},
+        "progress_distribution": {
+            "not_started": 0,
+            "in_progress": 0,
+            "completed": 0
+        },
+        "top_performing_students": [],
+        "struggling_students": []
+    }
+    
+    # Распределение статусов
+    for status in ["not_started", "in_progress", "completed"]:
+        analytics["progress_distribution"][status] = len([
+            p for p in progress_records if p.status == status
+        ])
+    
+    # Средний процент завершения
+    if progress_records:
+        analytics["average_completion_rate"] = sum(
+            p.completion_percentage for p in progress_records
+        ) / len(progress_records)
+    
+    # Активность по дням
+    daily_activity = {}
+    for i in range(time_range):
+        day = (start_date + timedelta(days=i)).date()
+        daily_activity[day.isoformat()] = 0
+    
+    for record in progress_records:
+        if record.last_accessed:
+            day = record.last_accessed.date()
+            if day.isoformat() in daily_activity:
+                daily_activity[day.isoformat()] += 1
+    
+    analytics["daily_activity"] = daily_activity
+    
+    # Топ студенты и отстающие (упрощенная версия)
+    student_stats = {}
+    for record in progress_records:
+        if record.user_id not in student_stats:
+            student_stats[record.user_id] = {
+                "completion_sum": 0,
+                "record_count": 0,
+                "time_spent": 0
+            }
+        
+        student_stats[record.user_id]["completion_sum"] += record.completion_percentage
+        student_stats[record.user_id]["record_count"] += 1
+        student_stats[record.user_id]["time_spent"] += record.time_spent_minutes
+    
+    # Вычисляем средний прогресс для каждого студента
+    student_averages = []
+    for user_id, stats in student_stats.items():
+        avg_completion = stats["completion_sum"] / stats["record_count"] if stats["record_count"] > 0 else 0
+        student = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+        
+        if student:
+            student_averages.append({
+                "student_id": user_id,
+                "student_name": student.name,
+                "average_progress": round(avg_completion, 1),
+                "total_time_hours": stats["time_spent"] // 60
+            })
+    
+    # Сортируем для топа и отстающих
+    student_averages.sort(key=lambda x: x["average_progress"], reverse=True)
+    
+    analytics["top_performing_students"] = student_averages[:5]
+    analytics["struggling_students"] = student_averages[-5:]
+    
+    return analytics
+
+@router.get("/student/overview")
+def get_student_progress_overview(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить общий обзор прогресса текущего студента по всем курсам"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can access this endpoint")
+    
+    # Получаем все курсы студента (через enrollments и group access)
+    from src.schemas.models import GroupStudent, CourseGroupAccess
+    
+    # Get enrolled course IDs
+    enrolled_course_ids = db.query(Enrollment.course_id).filter(
+        Enrollment.user_id == current_user.id,
+        Enrollment.is_active == True
+    ).subquery()
+    
+    # Get group access course IDs
+    group_student = db.query(GroupStudent).filter(
+        GroupStudent.student_id == current_user.id
+    ).first()
+    
+    group_course_ids = None
+    if group_student:
+        group_course_ids = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id == group_student.group_id,
+            CourseGroupAccess.is_active == True
+        ).subquery()
+    
+    # Combine both sets of course IDs
+    if group_student and group_course_ids is not None:
+        from sqlalchemy import union
+        combined_course_ids = db.query(union(
+            enrolled_course_ids.select(),
+            group_course_ids.select()
+        ).alias('course_id')).subquery()
+        courses = db.query(Course).filter(
+            Course.id.in_(combined_course_ids), 
+            Course.is_active == True
+        ).all()
+    else:
+        courses = db.query(Course).filter(
+            Course.id.in_(enrolled_course_ids), 
+            Course.is_active == True
+        ).all()
+    
+    # Calculate overall statistics
+    total_courses = len(courses)
+    total_lessons = 0
+    total_steps = 0
+    completed_lessons = 0
+    completed_steps = 0
+    total_time_spent = 0
+    
+    course_progress = []
+    
+    for course in courses:
+        # Get modules for this course
+        modules = db.query(Module).filter(Module.course_id == course.id).order_by(Module.order_index).all()
+        
+        course_lessons = 0
+        course_steps = 0
+        course_completed_lessons = 0
+        course_completed_steps = 0
+        course_time_spent = 0
+        
+        for module in modules:
+            # Get lessons for this module
+            lessons = db.query(Lesson).filter(Lesson.module_id == module.id).order_by(Lesson.order_index).all()
+            
+            for lesson in lessons:
+                course_lessons += 1
+                total_lessons += 1
+                
+                # Get steps for this lesson
+                steps = db.query(Step).filter(Step.lesson_id == lesson.id).order_by(Step.order_index).all()
+                course_steps += len(steps)
+                total_steps += len(steps)
+                
+                # Get step progress for this lesson
+                step_progress = db.query(StepProgress).filter(
+                    StepProgress.user_id == current_user.id,
+                    StepProgress.lesson_id == lesson.id
+                ).all()
+                
+                lesson_completed_steps = len([sp for sp in step_progress if sp.status == "completed"])
+                course_completed_steps += lesson_completed_steps
+                completed_steps += lesson_completed_steps
+                
+                # Calculate lesson completion (if all steps are completed, lesson is completed)
+                if len(steps) > 0 and lesson_completed_steps == len(steps):
+                    course_completed_lessons += 1
+                    completed_lessons += 1
+                
+                # Add time spent
+                lesson_time = sum(sp.time_spent_minutes for sp in step_progress)
+                course_time_spent += lesson_time
+                total_time_spent += lesson_time
+        
+        # Calculate course completion percentage
+        course_completion_percentage = 0
+        if course_steps > 0:
+            course_completion_percentage = (course_completed_steps / course_steps) * 100
+        
+        # Get teacher info
+        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
+        
+        course_progress.append({
+            "course_id": course.id,
+            "course_title": course.title,
+            "teacher_name": teacher.name if teacher else "Unknown",
+            "cover_image_url": course.cover_image_url,
+            "total_lessons": course_lessons,
+            "total_steps": course_steps,
+            "completed_lessons": course_completed_lessons,
+            "completed_steps": course_completed_steps,
+            "completion_percentage": round(course_completion_percentage, 1),
+            "time_spent_minutes": course_time_spent,
+            "last_accessed": None  # TODO: Add last accessed tracking
+        })
+    
+    # Calculate overall completion percentage
+    overall_completion_percentage = 0
+    if total_steps > 0:
+        overall_completion_percentage = (completed_steps / total_steps) * 100
+    
+    return {
+        "student_id": current_user.id,
+        "student_name": current_user.name,
+        "total_courses": total_courses,
+        "total_lessons": total_lessons,
+        "total_steps": total_steps,
+        "completed_lessons": completed_lessons,
+        "completed_steps": completed_steps,
+        "overall_completion_percentage": round(overall_completion_percentage, 1),
+        "total_time_spent_minutes": total_time_spent,
+        "courses": course_progress
+    }
+
+@router.get("/student/{student_id}/overview")
+def get_student_progress_overview_by_id(
+    student_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить общий обзор прогресса конкретного студента (для учителей/админов)"""
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Only teachers and admins can access this endpoint")
+    
+    # Проверяем существование студента
+    student = db.query(UserInDB).filter(UserInDB.id == student_id, UserInDB.role == "student").first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Проверяем права доступа
+    if current_user.role == "teacher":
+        # Учителя могут видеть только студентов своих групп
+        from src.schemas.models import Group, GroupStudent
+        group_student = db.query(GroupStudent).filter(
+            GroupStudent.student_id == student_id,
+            GroupStudent.group_id.in_(
+                db.query(Group.id).filter(Group.teacher_id == current_user.id)
+            )
+        ).first()
+        if not group_student:
+            raise HTTPException(status_code=403, detail="Access denied to this student")
+    
+    # Получаем все курсы студента (через enrollments и group access)
+    from src.schemas.models import GroupStudent, CourseGroupAccess
+    
+    # Get enrolled course IDs
+    enrolled_course_ids = db.query(Enrollment.course_id).filter(
+        Enrollment.user_id == student_id,
+        Enrollment.is_active == True
+    ).subquery()
+    
+    # Get group access course IDs
+    group_student = db.query(GroupStudent).filter(
+        GroupStudent.student_id == student_id
+    ).first()
+    
+    group_course_ids = None
+    if group_student:
+        group_course_ids = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id == group_student.group_id,
+            CourseGroupAccess.is_active == True
+        ).subquery()
+    
+    # Combine both sets of course IDs
+    if group_student and group_course_ids is not None:
+        from sqlalchemy import union
+        combined_course_ids = db.query(union(
+            enrolled_course_ids.select(),
+            group_course_ids.select()
+        ).alias('course_id')).subquery()
+        courses = db.query(Course).filter(
+            Course.id.in_(combined_course_ids), 
+            Course.is_active == True
+        ).all()
+    else:
+        courses = db.query(Course).filter(
+            Course.id.in_(enrolled_course_ids), 
+            Course.is_active == True
+        ).all()
+    
+    # Calculate overall statistics
+    total_courses = len(courses)
+    total_lessons = 0
+    total_steps = 0
+    completed_lessons = 0
+    completed_steps = 0
+    total_time_spent = 0
+    
+    course_progress = []
+    
+    for course in courses:
+        # Get modules for this course
+        modules = db.query(Module).filter(Module.course_id == course.id).order_by(Module.order_index).all()
+        
+        course_lessons = 0
+        course_steps = 0
+        course_completed_lessons = 0
+        course_completed_steps = 0
+        course_time_spent = 0
+        
+        for module in modules:
+            # Get lessons for this module
+            lessons = db.query(Lesson).filter(Lesson.module_id == module.id).order_by(Lesson.order_index).all()
+            
+            for lesson in lessons:
+                course_lessons += 1
+                total_lessons += 1
+                
+                # Get steps for this lesson
+                steps = db.query(Step).filter(Step.lesson_id == lesson.id).order_by(Step.order_index).all()
+                course_steps += len(steps)
+                total_steps += len(steps)
+                
+                # Get step progress for this lesson
+                step_progress = db.query(StepProgress).filter(
+                    StepProgress.user_id == student_id,
+                    StepProgress.lesson_id == lesson.id
+                ).all()
+                
+                lesson_completed_steps = len([sp for sp in step_progress if sp.status == "completed"])
+                course_completed_steps += lesson_completed_steps
+                completed_steps += lesson_completed_steps
+                
+                # Calculate lesson completion (if all steps are completed, lesson is completed)
+                if len(steps) > 0 and lesson_completed_steps == len(steps):
+                    course_completed_lessons += 1
+                    completed_lessons += 1
+                
+                # Add time spent
+                lesson_time = sum(sp.time_spent_minutes for sp in step_progress)
+                course_time_spent += lesson_time
+                total_time_spent += lesson_time
+        
+        # Calculate course completion percentage
+        course_completion_percentage = 0
+        if course_steps > 0:
+            course_completion_percentage = (course_completed_steps / course_steps) * 100
+        
+        # Get teacher info
+        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
+        
+        course_progress.append({
+            "course_id": course.id,
+            "course_title": course.title,
+            "teacher_name": teacher.name if teacher else "Unknown",
+            "cover_image_url": course.cover_image_url,
+            "total_lessons": course_lessons,
+            "total_steps": course_steps,
+            "completed_lessons": course_completed_lessons,
+            "completed_steps": course_completed_steps,
+            "completion_percentage": round(course_completion_percentage, 1),
+            "time_spent_minutes": course_time_spent,
+            "last_accessed": None  # TODO: Add last accessed tracking
+        })
+    
+    # Calculate overall completion percentage
+    overall_completion_percentage = 0
+    if total_steps > 0:
+        overall_completion_percentage = (completed_steps / total_steps) * 100
+    
+    return {
+        "student_id": student_id,
+        "student_name": student.name,
+        "total_courses": total_courses,
+        "total_lessons": total_lessons,
+        "total_steps": total_steps,
+        "completed_lessons": completed_lessons,
+        "completed_steps": completed_steps,
+        "overall_completion_percentage": round(overall_completion_percentage, 1),
+        "total_time_spent_minutes": total_time_spent,
+        "courses": course_progress
+    }
+
+# =============================================================================
+# STEP PROGRESS TRACKING
+# =============================================================================
+
+@router.post("/step/{step_id}/visit", response_model=StepProgressSchema)
+def mark_step_visited(
+    step_id: int,
+    step_data: StepProgressCreateSchema,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Отметить шаг как посещенный"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can mark steps as visited")
+    
+    # Получаем информацию о шаге
+    step = db.query(Step).filter(Step.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    
+    # Получаем информацию об уроке и курсе
+    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    # Проверяем доступ к курсу
+    if not check_course_access(module.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this step")
+    
+    # Находим или создаем запись прогресса шага
+    step_progress = db.query(StepProgress).filter(
+        StepProgress.user_id == current_user.id,
+        StepProgress.step_id == step_id
+    ).first()
+    
+    if not step_progress:
+        # Создаем новую запись прогресса
+        step_progress = StepProgress(
+            user_id=current_user.id,
+            course_id=module.course_id,
+            lesson_id=lesson.id,
+            step_id=step_id,
+            status="completed",
+            visited_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+            time_spent_minutes=step_data.time_spent_minutes
+        )
+        db.add(step_progress)
+    else:
+        # Обновляем существующую запись
+        if step_progress.status == "not_started":
+            step_progress.status = "completed"
+            step_progress.visited_at = datetime.utcnow()
+            step_progress.completed_at = datetime.utcnow()
+        step_progress.time_spent_minutes += step_data.time_spent_minutes
+    
+    # Обновляем общее время изучения пользователя
+    current_user.total_study_time_minutes += step_data.time_spent_minutes
+    
+    db.commit()
+    db.refresh(step_progress)
+    
+    return StepProgressSchema.from_orm(step_progress)
+
+@router.get("/step/{step_id}", response_model=StepProgressSchema)
+def get_step_progress(
+    step_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить прогресс по конкретному шагу"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can access step progress")
+    
+    # Получаем информацию о шаге
+    step = db.query(Step).filter(Step.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    
+    # Получаем информацию об уроке и курсе
+    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    # Проверяем доступ к курсу
+    if not check_course_access(module.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this step")
+    
+    # Получаем прогресс по шагу
+    step_progress = db.query(StepProgress).filter(
+        StepProgress.user_id == current_user.id,
+        StepProgress.step_id == step_id
+    ).first()
+    
+    if not step_progress:
+        # Создаем запись с дефолтными значениями
+        step_progress = StepProgress(
+            user_id=current_user.id,
+            course_id=module.course_id,
+            lesson_id=lesson.id,
+            step_id=step_id,
+            status="not_started",
+            time_spent_minutes=0
+        )
+        db.add(step_progress)
+        db.commit()
+        db.refresh(step_progress)
+    
+    return StepProgressSchema.from_orm(step_progress)
+
+@router.get("/lesson/{lesson_id}/steps", response_model=List[StepProgressSchema])
+def get_lesson_steps_progress(
+    lesson_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить прогресс по всем шагам урока"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can access lesson steps progress")
+    
+    # Получаем информацию об уроке
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    # Проверяем доступ к курсу
+    if not check_course_access(module.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this lesson")
+    
+    # Получаем все шаги урока
+    steps = db.query(Step).filter(Step.lesson_id == lesson_id).order_by(Step.order_index).all()
+    
+    # Получаем прогресс по всем шагам
+    steps_progress = []
+    for step in steps:
+        step_progress = db.query(StepProgress).filter(
+            StepProgress.user_id == current_user.id,
+            StepProgress.step_id == step.id
+        ).first()
+        
+        if not step_progress:
+            # Создаем запись с дефолтными значениями
+            step_progress = StepProgress(
+                user_id=current_user.id,
+                course_id=module.course_id,
+                lesson_id=lesson.id,
+                step_id=step.id,
+                status="not_started",
+                time_spent_minutes=0
+            )
+            db.add(step_progress)
+            db.commit()
+            db.refresh(step_progress)
+        
+        steps_progress.append(StepProgressSchema.from_orm(step_progress))
+    
+    return steps_progress
+
+@router.get("/course/{course_id}/students/steps")
+def get_course_students_steps_progress(
+    course_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить прогресс всех студентов по шагам курса (для учителей/кураторов/админов)"""
+    
+    if current_user.role not in ["teacher", "curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Проверяем существование курса
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Проверяем права доступа к курсу
+    if current_user.role == "teacher" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    # Получаем всех студентов курса
+    students_query = db.query(UserInDB).filter(UserInDB.role == "student", UserInDB.is_active == True)
+    
+    if current_user.role == "teacher":
+        # Учителя видят только учеников своих курсов
+        enrolled_student_ids = db.query(Enrollment.user_id).filter(
+            Enrollment.course_id == course_id,
+            Enrollment.is_active == True
+        ).subquery()
+        students_query = students_query.filter(UserInDB.id.in_(enrolled_student_ids))
+    
+    elif current_user.role == "curator":
+        # Кураторы видят учеников из своей группы
+        if current_user.group_id:
+            group_student_ids = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id == current_user.group_id
+            ).subquery()
+            students_query = students_query.filter(UserInDB.id.in_(group_student_ids))
+        else:
+            students_query = students_query.filter(UserInDB.id == -1)  # Пустой результат
+    
+    students = students_query.all()
+    
+    # Получаем все модули и уроки курса
+    modules = db.query(Module).filter(Module.course_id == course_id).order_by(Module.order_index).all()
+    
+    course_progress = {
+        "course_id": course_id,
+        "course_title": course.title,
+        "total_students": len(students),
+        "modules": []
+    }
+    
+    for module in modules:
+        lessons = db.query(Lesson).filter(Lesson.module_id == module.id).order_by(Lesson.order_index).all()
+        
+        module_data = {
+            "module_id": module.id,
+            "module_title": module.title,
+            "lessons": []
+        }
+        
+        for lesson in lessons:
+            steps = db.query(Step).filter(Step.lesson_id == lesson.id).order_by(Step.order_index).all()
+            
+            lesson_data = {
+                "lesson_id": lesson.id,
+                "lesson_title": lesson.title,
+                "total_steps": len(steps),
+                "students_progress": []
+            }
+            
+            for student in students:
+                # Получаем прогресс студента по всем шагам урока
+                completed_steps = db.query(StepProgress).filter(
+                    StepProgress.user_id == student.id,
+                    StepProgress.lesson_id == lesson.id,
+                    StepProgress.status == "completed"
+                ).count()
+                
+                total_time = db.query(func.sum(StepProgress.time_spent_minutes)).filter(
+                    StepProgress.user_id == student.id,
+                    StepProgress.lesson_id == lesson.id
+                ).scalar() or 0
+                
+                lesson_data["students_progress"].append({
+                    "student_id": student.id,
+                    "student_name": student.name,
+                    "completed_steps": completed_steps,
+                    "total_steps": len(steps),
+                    "completion_percentage": (completed_steps / len(steps) * 100) if steps else 0,
+                    "time_spent_minutes": total_time
+                })
+            
+            module_data["lessons"].append(lesson_data)
+        
+        course_progress["modules"].append(module_data)
+    
+    return course_progress

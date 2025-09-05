@@ -1,0 +1,55 @@
+name: Deploy Backend to Azure VM
+
+on:
+  push:
+    branches: [ main ]
+    # если репо чисто backend, можно убрать paths или поставить '**'
+    paths:
+      - '**'
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deploy to Azure VM
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.AZURE_HOST }}
+        username: ${{ secrets.AZURE_USERNAME }}
+        key: ${{ secrets.AZURE_SSH_KEY }}
+        script: |
+          set -e
+          echo "🚀 Starting backend deployment..."
+          cd ~/lms-master
+          git fetch origin main
+          git reset --hard origin/main
+          docker compose pull || true
+          docker compose build
+          docker compose up -d
+          echo "✅ Backend deployment completed!"
+
+    - name: Health Check
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.AZURE_HOST }}
+        username: ${{ secrets.AZURE_USERNAME }}
+        key: ${{ secrets.AZURE_SSH_KEY }}
+        script: |
+          set -e
+          echo "🏥 Performing health check..."
+          cd ~/lms-master
+          for i in {1..10}; do
+            if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
+              echo "✅ Health check passed"
+              exit 0
+            fi
+            echo "⏳ Waiting for backend to be healthy ($i/10)..."
+            sleep 5
+          done
+          echo "❌ Health check failed, dumping logs:"
+          docker compose logs --tail=200 backend || true
+          exit 1

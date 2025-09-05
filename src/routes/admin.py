@@ -1,0 +1,1218 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import func, desc
+from typing import List, Optional
+from pydantic import BaseModel, EmailStr
+from datetime import datetime, timedelta
+
+from src.config import get_db
+from src.schemas.models import (
+    UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
+    StudentProgress, Assignment, AssignmentSubmission
+)
+from src.utils.auth_utils import hash_password
+from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups
+import secrets
+import string
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+router = APIRouter()
+
+# Pydantic models for admin operations
+class CreateUserRequest(BaseModel):
+    email: EmailStr
+    name: str
+    password: Optional[str] = None  # If not provided, will be auto-generated
+    role: str = "student"  # student, teacher, curator, admin
+    student_id: Optional[str] = None
+    is_active: bool = True
+
+class BulkCreateUsersRequest(BaseModel):
+    users: List[CreateUserRequest]
+    notify_users: bool = False  # For future email notifications
+
+class UpdateUserRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+    student_id: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+class CreateUserResponse(BaseModel):
+    user: UserSchema
+    generated_password: Optional[str] = None
+
+class BulkCreateResponse(BaseModel):
+    created_users: List[CreateUserResponse]
+    failed_users: List[dict]  # {email, error}
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    total_students: int
+    total_teachers: int
+    total_curators: int
+    total_courses: int
+    total_active_enrollments: int
+    recent_registrations: int  # Last 7 days
+    
+class StudentProgressSummary(BaseModel):
+    user_id: int
+    name: str
+    email: str
+    student_id: Optional[str]
+    group_name: Optional[str]
+    total_courses: int
+    completed_courses: int
+    average_progress: float
+    total_study_time: int
+    last_activity: Optional[datetime]
+
+class CreateGroupRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    teacher_id: int
+    curator_id: Optional[int] = None
+    is_active: bool = True
+
+class UpdateGroupRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    teacher_id: Optional[int] = None
+    curator_id: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class AssignTeacherRequest(BaseModel):
+    teacher_id: int
+
+class AssignUserToGroupRequest(BaseModel):
+    group_id: int
+
+class BulkAssignUsersRequest(BaseModel):
+    user_ids: List[int]
+    group_id: int
+
+class AddStudentToGroupRequest(BaseModel):
+    student_id: int
+
+class RemoveStudentFromGroupRequest(BaseModel):
+    student_id: int
+
+class GroupStudentsResponse(BaseModel):
+    group_id: int
+    group_name: str
+    students: List[UserSchema]
+    total_students: int
+
+class UserListResponse(BaseModel):
+    users: List[UserSchema]
+    total: int
+    skip: int
+    limit: int
+
+class GroupListResponse(BaseModel):
+    groups: List[GroupSchema]
+    total: int
+    skip: int
+    limit: int
+
+class AdminDashboardResponse(BaseModel):
+    stats: AdminStatsResponse
+    recent_users: List[UserSchema]
+    recent_groups: List[GroupSchema]
+    recent_courses: List[dict]
+
+def generate_password(length: int = 8) -> str:
+    """Generate a random password"""
+    characters = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(characters) for _ in range(length))
+
+def generate_student_id() -> str:
+    """Generate a unique student ID"""
+    return f"STU{secrets.randbelow(100000):05d}"
+
+@router.post("/users/single", response_model=CreateUserResponse)
+def create_single_user(
+    user_data: CreateUserRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Create a single user (admin only)"""
+    try:
+        # Check if email already exists
+        existing_user = db.query(UserInDB).filter(UserInDB.email == user_data.email).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Generate password if not provided
+        password = user_data.password
+        generated_password = None
+        if not password:
+            password = generate_password()
+            generated_password = password
+        
+        # Generate student ID for students if not provided
+        student_id = user_data.student_id
+        if user_data.role == "student" and not student_id:
+            student_id = generate_student_id()
+            # Ensure student_id is unique
+            while db.query(UserInDB).filter(UserInDB.student_id == student_id).first():
+                student_id = generate_student_id()
+        
+        # Create user
+        new_user = UserInDB(
+            email=user_data.email,
+            name=user_data.name,
+            hashed_password=hash_password(password),
+            role=user_data.role,
+            student_id=student_id,
+            is_active=user_data.is_active
+        )
+        
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+        
+        return CreateUserResponse(
+            user=UserSchema.from_orm(new_user),
+            generated_password=generated_password
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
+
+@router.post("/users/bulk", response_model=BulkCreateResponse)
+def create_bulk_users(
+    request: BulkCreateUsersRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Create multiple users at once (admin only)"""
+    created_users = []
+    failed_users = []
+    
+    for user_data in request.users:
+        try:
+            # Check if email already exists
+            existing_user = db.query(UserInDB).filter(UserInDB.email == user_data.email).first()
+            if existing_user:
+                failed_users.append({
+                    "email": user_data.email,
+                    "error": "Email already registered"
+                })
+                continue
+            
+            # Generate password if not provided
+            password = user_data.password
+            generated_password = None
+            if not password:
+                password = generate_password()
+                generated_password = password
+            
+            # Generate student ID for students if not provided
+            student_id = user_data.student_id
+            if user_data.role == "student" and not student_id:
+                student_id = generate_student_id()
+                # Ensure student_id is unique
+                while db.query(UserInDB).filter(UserInDB.student_id == student_id).first():
+                    student_id = generate_student_id()
+            
+            # Create user
+            new_user = UserInDB(
+                email=user_data.email,
+                name=user_data.name,
+                hashed_password=hash_password(password),
+                role=user_data.role,
+                student_id=student_id,
+                is_active=user_data.is_active
+            )
+            
+            db.add(new_user)
+            db.flush()  # Get ID without committing
+            
+            created_users.append(CreateUserResponse(
+                user=UserSchema.from_orm(new_user),
+                generated_password=generated_password
+            ))
+            
+        except Exception as e:
+            failed_users.append({
+                "email": user_data.email,
+                "error": str(e)
+            })
+    
+    # Commit all successful creations
+    if created_users:
+        db.commit()
+    else:
+        db.rollback()
+    
+    return BulkCreateResponse(
+        created_users=created_users,
+        failed_users=failed_users
+    )
+
+@router.put("/users/{user_id}", response_model=UserSchema)
+def update_user(
+    user_id: int,
+    update_data: UpdateUserRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Update user information (admin only)"""
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Update fields if provided
+    if update_data.name is not None:
+        user.name = update_data.name
+    if update_data.email is not None:
+        # Check if new email is unique
+        existing = db.query(UserInDB).filter(
+            UserInDB.email == update_data.email,
+            UserInDB.id != user_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already in use")
+        user.email = update_data.email
+    if update_data.role is not None:
+        user.role = update_data.role
+    if update_data.student_id is not None:
+        user.student_id = update_data.student_id
+
+    if update_data.is_active is not None:
+        user.is_active = update_data.is_active
+    if update_data.password is not None:
+        user.hashed_password = hash_password(update_data.password)
+    
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
+    
+    return UserSchema.from_orm(user)
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Delete user (admin only)"""
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Prevent deleting the last admin
+    if user.role == "admin":
+        admin_count = db.query(UserInDB).filter(UserInDB.role == "admin").count()
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+    
+    db.delete(user)
+    db.commit()
+    
+    return {"detail": "User deleted successfully"}
+
+@router.get("/stats", response_model=AdminStatsResponse)
+def get_admin_stats(
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Get platform statistics (admin only)"""
+    # Basic counts
+    total_users = db.query(UserInDB).count()
+    total_students = db.query(UserInDB).filter(UserInDB.role == "student").count()
+    total_teachers = db.query(UserInDB).filter(UserInDB.role == "teacher").count()
+    total_curators = db.query(UserInDB).filter(UserInDB.role == "curator").count()
+    total_courses = db.query(Course).count()
+    total_active_enrollments = db.query(Enrollment).filter(Enrollment.is_active == True).count()
+    
+    # Recent registrations (last 7 days)
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    recent_registrations = db.query(UserInDB).filter(UserInDB.created_at >= week_ago).count()
+    
+    return AdminStatsResponse(
+        total_users=total_users,
+        total_students=total_students,
+        total_teachers=total_teachers,
+        total_curators=total_curators,
+        total_courses=total_courses,
+        total_active_enrollments=total_active_enrollments,
+        recent_registrations=recent_registrations
+    )
+
+@router.get("/students/progress", response_model=List[StudentProgressSummary])
+def get_students_progress_summary(
+    skip: int = 0,
+    limit: int = 50,
+    group_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Get progress summary for all students (admin only)"""
+    query = db.query(UserInDB).filter(UserInDB.role == "student")
+    
+    if group_id:
+        # Filter students by group using GroupStudent association table
+        group_student_ids = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id == group_id
+        ).subquery()
+        query = query.filter(UserInDB.id.in_(group_student_ids))
+    
+    students = query.offset(skip).limit(limit).all()
+    summaries = []
+    
+    for student in students:
+        # Get student's enrollments
+        enrollments = db.query(Enrollment).filter(
+            Enrollment.user_id == student.id,
+            Enrollment.is_active == True
+        ).all()
+        
+        total_courses = len(enrollments)
+        completed_courses = 0
+        total_progress = 0
+        
+        for enrollment in enrollments:
+            # Check if course is completed
+            course_progress = db.query(StudentProgress).filter(
+                StudentProgress.user_id == student.id,
+                StudentProgress.course_id == enrollment.course_id
+            ).all()
+            
+            if course_progress:
+                avg_progress = sum(p.completion_percentage for p in course_progress) / len(course_progress)
+                total_progress += avg_progress
+                if avg_progress >= 100:
+                    completed_courses += 1
+        
+        average_progress = total_progress / total_courses if total_courses > 0 else 0
+        
+        # Get last activity
+        last_activity = db.query(StudentProgress.last_accessed).filter(
+            StudentProgress.user_id == student.id
+        ).order_by(desc(StudentProgress.last_accessed)).first()
+        
+        # Get group name using GroupStudent association table
+        group_name = None
+        group_student = db.query(GroupStudent).filter(GroupStudent.student_id == student.id).first()
+        if group_student:
+            group = db.query(Group).filter(Group.id == group_student.group_id).first()
+            group_name = group.name if group else None
+        
+        summaries.append(StudentProgressSummary(
+            user_id=student.id,
+            name=student.name,
+            email=student.email,
+            student_id=student.student_id,
+            group_name=group_name,
+            total_courses=total_courses,
+            completed_courses=completed_courses,
+            average_progress=round(average_progress, 2),
+            total_study_time=student.total_study_time_minutes,
+            last_activity=last_activity[0] if last_activity else None
+        ))
+    
+    return summaries
+
+@router.post("/reset-password/{user_id}")
+def reset_user_password(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Reset user password and return new password (admin only)"""
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    new_password = generate_password()
+    user.hashed_password = hash_password(new_password)
+    user.refresh_token = None  # Invalidate all sessions
+    user.updated_at = datetime.utcnow()
+    
+    db.commit()
+    
+    return {
+        "detail": "Password reset successfully",
+        "new_password": new_password,
+        "user_email": user.email
+    }
+
+@router.get("/groups", response_model=List[GroupSchema])
+def get_all_groups(
+    skip: int = 0,
+    limit: int = 100,
+    teacher_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
+):
+    """Get all groups (teachers and admins only)"""
+    query = db.query(Group)
+    
+    # Teachers can only see their own groups, admins can see all
+    if current_user.role == "teacher":
+        query = query.filter(Group.teacher_id == current_user.id)
+    elif teacher_id is not None:
+        query = query.filter(Group.teacher_id == teacher_id)
+    
+    if is_active is not None:
+        query = query.filter(Group.is_active == is_active)
+    
+    groups = query.offset(skip).limit(limit).all()
+    # Enrich with teacher names, curator names and student counts
+    result = []
+    for group in groups:
+        teacher = db.query(UserInDB).filter(UserInDB.id == group.teacher_id).first()
+        curator = db.query(UserInDB).filter(UserInDB.id == group.curator_id).first() if group.curator_id else None
+        # Get students for this group
+        group_students = db.query(GroupStudent).filter(GroupStudent.group_id == group.id).all()
+        student_count = len(group_students)
+        
+        # Get student details
+        students = []
+        for group_student in group_students:
+            student = db.query(UserInDB).filter(
+                UserInDB.id == group_student.student_id,
+                UserInDB.role == "student",
+                UserInDB.is_active == True
+            ).first()
+            if student:
+                # Create UserSchema with group information
+                student_data = UserSchema(
+                    id=student.id,
+                    email=student.email,
+                    name=student.name,
+                    role=student.role,
+                    avatar_url=student.avatar_url,
+                    is_active=student.is_active,
+                    student_id=student.student_id,
+                    teacher_name=teacher.name if teacher else "Unknown",
+                    curator_name=curator.name if curator else None,
+                    total_study_time_minutes=student.total_study_time_minutes,
+                    created_at=student.created_at
+                )
+                students.append(student_data)
+        
+        group_data = GroupSchema(
+            id=group.id,
+            name=group.name,
+            description=group.description,
+            teacher_id=group.teacher_id,
+            teacher_name=teacher.name if teacher else "Unknown",
+            curator_id=group.curator_id,
+            curator_name=curator.name if curator else None,
+            student_count=student_count,
+            students=students,
+            created_at=group.created_at,
+            is_active=group.is_active
+        )
+        
+        result.append(group_data)
+    
+    return result
+
+# =============================================================================
+# GROUP MANAGEMENT ENDPOINTS (ADMIN ONLY)
+# =============================================================================
+
+@router.post("/groups", response_model=GroupSchema)
+def create_group(
+    group_data: CreateGroupRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Create a new group (admin only)"""
+    # Check if teacher exists
+    teacher = db.query(UserInDB).filter(
+        UserInDB.id == group_data.teacher_id,
+        UserInDB.role == "teacher"
+    ).first()
+    if not teacher:
+        raise HTTPException(status_code=400, detail="Teacher not found")
+    
+    # Check if curator exists if provided
+    curator = None
+    if group_data.curator_id:
+        curator = db.query(UserInDB).filter(
+            UserInDB.id == group_data.curator_id,
+            UserInDB.role == "curator"
+        ).first()
+        if not curator:
+            raise HTTPException(status_code=400, detail="Curator not found")
+    
+    # Check if group name already exists
+    existing_group = db.query(Group).filter(Group.name == group_data.name).first()
+    if existing_group:
+        raise HTTPException(status_code=400, detail="Group name already exists")
+    
+    new_group = Group(
+        name=group_data.name,
+        description=group_data.description,
+        teacher_id=group_data.teacher_id,
+        curator_id=group_data.curator_id,
+        is_active=group_data.is_active
+    )
+    
+    db.add(new_group)
+    db.commit()
+    db.refresh(new_group)
+    
+    # Create response with teacher and curator names
+    group_response = GroupSchema(
+        id=new_group.id,
+        name=new_group.name,
+        description=new_group.description,
+        teacher_id=new_group.teacher_id,
+        teacher_name=teacher.name,
+        curator_id=new_group.curator_id,
+        curator_name=curator.name if curator else None,
+        student_count=0,
+        students=[],
+        created_at=new_group.created_at,
+        is_active=new_group.is_active
+    )
+    
+    return group_response
+
+@router.put("/groups/{group_id}", response_model=GroupSchema)
+def update_group(
+    group_id: int,
+    group_data: UpdateGroupRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Update a group (admin only)"""
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check if new teacher exists if provided
+    if group_data.teacher_id is not None:
+        teacher = db.query(UserInDB).filter(
+            UserInDB.id == group_data.teacher_id,
+            UserInDB.role == "teacher"
+        ).first()
+        if not teacher:
+            raise HTTPException(status_code=400, detail="Teacher not found")
+    
+    # Check if new curator exists if provided
+    if group_data.curator_id is not None:
+        if group_data.curator_id:
+            curator = db.query(UserInDB).filter(
+                UserInDB.id == group_data.curator_id,
+                UserInDB.role == "curator"
+            ).first()
+            if not curator:
+                raise HTTPException(status_code=400, detail="Curator not found")
+        else:
+            curator = None
+    
+    # Check if new name already exists (if changing name)
+    if group_data.name and group_data.name != group.name:
+        existing_group = db.query(Group).filter(
+            Group.name == group_data.name,
+            Group.id != group_id
+        ).first()
+        if existing_group:
+            raise HTTPException(status_code=400, detail="Group name already exists")
+    
+    # Update fields
+    if group_data.name is not None:
+        group.name = group_data.name
+    if group_data.description is not None:
+        group.description = group_data.description
+    if group_data.teacher_id is not None:
+        group.teacher_id = group_data.teacher_id
+    if group_data.curator_id is not None:
+        group.curator_id = group_data.curator_id
+    if group_data.is_active is not None:
+        group.is_active = group_data.is_active
+    
+    db.commit()
+    db.refresh(group)
+    
+    # Create response with teacher name, curator name and student count
+    teacher = db.query(UserInDB).filter(UserInDB.id == group.teacher_id).first()
+    curator = db.query(UserInDB).filter(UserInDB.id == group.curator_id).first() if group.curator_id else None
+    
+    # Get student count using GroupStudent association table
+    student_count = db.query(GroupStudent).filter(
+        GroupStudent.group_id == group.id
+    ).count()
+    
+    # Get students for this group
+    group_students = db.query(GroupStudent).filter(GroupStudent.group_id == group.id).all()
+    students = []
+    
+    for group_student in group_students:
+        student = db.query(UserInDB).filter(
+            UserInDB.id == group_student.student_id,
+            UserInDB.role == "student",
+            UserInDB.is_active == True
+        ).first()
+        if student:
+            students.append(UserSchema.from_orm(student))
+    
+    group_response = GroupSchema(
+        id=group.id,
+        name=group.name,
+        description=group.description,
+        teacher_id=group.teacher_id,
+        teacher_name=teacher.name if teacher else "Unknown",
+        curator_id=group.curator_id,
+        curator_name=curator.name if curator else None,
+        student_count=len(students),
+        students=students,
+        created_at=group.created_at,
+        is_active=group.is_active
+    )
+    
+    return group_response
+
+@router.delete("/groups/{group_id}")
+def delete_group(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Delete a group (admin only) - soft delete"""
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check if group has students
+    student_count = db.query(GroupStudent).filter(GroupStudent.group_id == group_id).count()
+    
+    if student_count > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete group with {student_count} active students. Remove students first."
+        )
+    
+    # Soft delete
+    group.is_active = False
+    db.commit()
+    
+    return {"detail": f"Group '{group.name}' deleted successfully"}
+
+@router.post("/groups/{group_id}/assign-teacher")
+def assign_teacher_to_group(
+    group_id: int,
+    teacher_data: AssignTeacherRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Assign a teacher to a group (admin only)"""
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    teacher = db.query(UserInDB).filter(
+        UserInDB.id == teacher_data.teacher_id,
+        UserInDB.role == "teacher"
+    ).first()
+    if not teacher:
+        raise HTTPException(status_code=400, detail="Teacher not found")
+    
+    group.teacher_id = teacher_data.teacher_id
+    db.commit()
+    
+    return {"detail": f"Teacher '{teacher.name}' assigned to group '{group.name}'"}
+
+
+
+# =============================================================================
+# USER MANAGEMENT ENDPOINTS (ADMIN ONLY)
+# =============================================================================
+
+@router.get("/users", response_model=UserListResponse)
+def get_all_users(
+    skip: int = 0,
+    limit: int = 50,
+    role: Optional[str] = None,
+    group_id: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    search: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Get all users with filtering (admin only)"""
+    
+    query = db.query(UserInDB)
+    
+    # Apply filters
+    if role:
+        query = query.filter(UserInDB.role == role)
+    if group_id is not None:
+        # Filter by group using the association table
+        query = query.join(GroupStudent, UserInDB.id == GroupStudent.student_id).filter(GroupStudent.group_id == group_id)
+    if is_active is not None:
+        query = query.filter(UserInDB.is_active == is_active)
+    if search:
+        search_filter = f"%{search}%"
+        query = query.filter(
+            (UserInDB.name.ilike(search_filter)) |
+            (UserInDB.email.ilike(search_filter)) |
+            (UserInDB.student_id.ilike(search_filter))
+        )
+    
+    # Get total count
+    total = query.count()
+    
+    # Apply pagination
+    users = query.offset(skip).limit(limit).all()
+    
+    # Enrich with group information (name, teacher, curator)
+    result = []
+    for user in users:
+        # Get groups for this user first
+        teacher_name = None
+        curator_name = None
+        
+        if user.role == "student":
+            
+            # Check if there are any group associations for this student
+            group_students = db.query(GroupStudent).filter(GroupStudent.student_id == user.id).all()
+            
+            if group_students:
+                # Get all groups for this student
+                teacher_names = []
+                curator_names = []
+                
+                for group_student in group_students:
+                    
+                    group = db.query(Group).filter(Group.id == group_student.group_id).first()
+                    
+                    if group:
+                        # Get teacher name
+                        teacher = db.query(UserInDB).filter(UserInDB.id == group.teacher_id).first()
+                        if teacher and teacher.name not in teacher_names:
+                            teacher_names.append(teacher.name)
+                        
+                        # Get curator name from group.curator_id
+                        if group.curator_id:
+                            curator = db.query(UserInDB).filter(UserInDB.id == group.curator_id).first()
+                            if curator and curator.name not in curator_names:
+                                curator_names.append(curator.name)
+                
+                # Use the first teacher and curator (or combine them)
+                teacher_name = ", ".join(teacher_names) if teacher_names else None
+                curator_name = ", ".join(curator_names) if curator_names else None
+        
+        # Create UserSchema with group information
+        user_data = UserSchema(
+            id=user.id,
+            email=user.email,
+            name=user.name,
+            role=user.role,
+            avatar_url=user.avatar_url,
+            is_active=user.is_active,
+            student_id=user.student_id,
+            teacher_name=teacher_name,
+            curator_name=curator_name,
+            total_study_time_minutes=user.total_study_time_minutes,
+            created_at=user.created_at
+        )
+        
+        result.append(user_data)
+    
+    return UserListResponse(
+        users=result,
+        total=total,
+        skip=skip,
+        limit=limit
+    )
+
+@router.put("/users/{user_id}", response_model=UserSchema)
+def update_user(
+    user_id: int,
+    user_data: UpdateUserRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Update a user (admin only)"""
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Check if email already exists (if changing email)
+    if user_data.email and user_data.email != user.email:
+        existing_user = db.query(UserInDB).filter(
+            UserInDB.email == user_data.email,
+            UserInDB.id != user_id
+        ).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Update fields
+    if user_data.name is not None:
+        user.name = user_data.name
+    if user_data.email is not None:
+        user.email = user_data.email
+    if user_data.role is not None:
+        user.role = user_data.role
+    if user_data.student_id is not None:
+        user.student_id = user_data.student_id
+    if user_data.is_active is not None:
+        user.is_active = user_data.is_active
+    if user_data.password is not None:
+        user.hashed_password = hash_password(user_data.password)
+        user.refresh_token = None  # Invalidate sessions
+    
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
+    
+    # Create response
+    user_response = UserSchema.from_orm(user)
+    
+    return user_response
+
+@router.delete("/users/{user_id}")
+def deactivate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Deactivate a user (admin only) - soft delete"""
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot deactivate yourself")
+    
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Soft delete
+    user.is_active = False
+    user.refresh_token = None  # Invalidate sessions
+    user.updated_at = datetime.utcnow()
+    db.commit()
+    
+    return {"detail": f"User '{user.name}' deactivated successfully"}
+
+@router.post("/users/{user_id}/assign-group")
+def assign_user_to_group(
+    user_id: int,
+    group_data: AssignUserToGroupRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Assign a user to a group (admin only)"""
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    group = db.query(Group).filter(Group.id == group_data.group_id).first()
+    if not group:
+        raise HTTPException(status_code=400, detail="Group not found")
+    
+    # Check if user is already in this group
+    existing_association = db.query(GroupStudent).filter(
+        GroupStudent.group_id == group_data.group_id,
+        GroupStudent.student_id == user_id
+    ).first()
+    if existing_association:
+        raise HTTPException(status_code=400, detail="User is already in this group")
+    
+    # Add user to group
+    group_student = GroupStudent(
+        group_id=group_data.group_id,
+        student_id=user_id
+    )
+    db.add(group_student)
+    db.commit()
+    
+    return {"detail": f"User '{user.name}' assigned to group '{group.name}'"}
+
+@router.post("/users/bulk-assign-group")
+def bulk_assign_users_to_group(
+    bulk_data: BulkAssignUsersRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Bulk assign users to a group (admin only)"""
+    group = db.query(Group).filter(Group.id == bulk_data.group_id).first()
+    if not group:
+        raise HTTPException(status_code=400, detail="Group not found")
+    
+    # Get all users to assign
+    users = db.query(UserInDB).filter(UserInDB.id.in_(bulk_data.user_ids)).all()
+    if len(users) != len(bulk_data.user_ids):
+        raise HTTPException(status_code=400, detail="Some users not found")
+    
+    # Assign users to group
+    assigned_count = 0
+    for user in users:
+        # Check if user is already in this group
+        existing_association = db.query(GroupStudent).filter(
+            GroupStudent.group_id == bulk_data.group_id,
+            GroupStudent.student_id == user.id
+        ).first()
+        if not existing_association:
+            group_student = GroupStudent(
+                group_id=bulk_data.group_id,
+                student_id=user.id
+            )
+            db.add(group_student)
+            assigned_count += 1
+    
+    db.commit()
+    
+    return {"detail": f"{assigned_count} users assigned to group '{group.name}'"}
+
+@router.get("/dashboard", response_model=AdminDashboardResponse)
+def get_admin_dashboard(
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Get admin dashboard data (admin only)"""
+    # Get basic stats
+    total_users = db.query(UserInDB).count()
+    total_students = db.query(UserInDB).filter(UserInDB.role == "student").count()
+    total_teachers = db.query(UserInDB).filter(UserInDB.role == "teacher").count()
+    total_curators = db.query(UserInDB).filter(UserInDB.role == "curator").count()
+    total_courses = db.query(Course).count()
+    total_active_enrollments = db.query(Enrollment).filter(Enrollment.is_active == True).count()
+    
+    # Recent registrations (last 7 days)
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    recent_registrations = db.query(UserInDB).filter(
+        UserInDB.created_at >= week_ago
+    ).count()
+    
+    stats = AdminStatsResponse(
+        total_users=total_users,
+        total_students=total_students,
+        total_teachers=total_teachers,
+        total_curators=total_curators,
+        total_courses=total_courses,
+        total_active_enrollments=total_active_enrollments,
+        recent_registrations=recent_registrations
+    )
+    
+    # Recent users (last 5)
+    recent_users = db.query(UserInDB).order_by(desc(UserInDB.created_at)).limit(5).all()
+    recent_users_data = [UserSchema.from_orm(user) for user in recent_users]
+    
+    # Recent groups (last 5)
+    recent_groups = db.query(Group).order_by(desc(Group.created_at)).limit(5).all()
+    recent_groups_data = []
+    for group in recent_groups:
+        teacher = db.query(UserInDB).filter(UserInDB.id == group.teacher_id).first()
+        student_count = db.query(GroupStudent).filter(GroupStudent.group_id == group.id).count()
+        
+        group_data = GroupSchema(
+            id=group.id,
+            name=group.name,
+            description=group.description,
+            teacher_id=group.teacher_id,
+            teacher_name=teacher.name if teacher else "Unknown",
+            curator_id=group.curator_id,
+            curator_name=None,  # Not needed for dashboard
+            student_count=student_count,
+            students=[],  # Not needed for dashboard
+            created_at=group.created_at,
+            is_active=group.is_active
+        )
+        recent_groups_data.append(group_data)
+    
+    # Recent courses (last 5)
+    recent_courses = db.query(Course).order_by(desc(Course.created_at)).limit(5).all()
+    recent_courses_data = []
+    for course in recent_courses:
+        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
+        module_count = db.query(Module).filter(Module.course_id == course.id).count()
+        
+        course_data = {
+            "id": course.id,
+            "title": course.title,
+            "teacher_name": teacher.name if teacher else "Unknown",
+            "module_count": module_count,
+            "is_active": course.is_active,
+            "created_at": course.created_at
+        }
+        recent_courses_data.append(course_data)
+    
+    return AdminDashboardResponse(
+        stats=stats,
+        recent_users=recent_users_data,
+        recent_groups=recent_groups_data,
+        recent_courses=recent_courses_data
+    )
+
+# =============================================================================
+# GROUP STUDENTS MANAGEMENT ENDPOINTS
+# =============================================================================
+
+@router.get("/groups/{group_id}/students", response_model=GroupStudentsResponse)
+def get_group_students(
+    group_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
+):
+    """Get all students in a group"""
+    # Check if group exists
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check permissions
+    if current_user.role == "teacher" and group.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get students in this group
+    group_students = db.query(GroupStudent).filter(GroupStudent.group_id == group_id).all()
+    students = []
+    
+    for group_student in group_students:
+        student = db.query(UserInDB).filter(
+            UserInDB.id == group_student.student_id,
+            UserInDB.role == "student",
+            UserInDB.is_active == True
+        ).first()
+        if student:
+            students.append(UserSchema.from_orm(student))
+    
+    return GroupStudentsResponse(
+        group_id=group_id,
+        group_name=group.name,
+        students=students,
+        total_students=len(students)
+    )
+
+@router.post("/groups/{group_id}/students", response_model=dict)
+def add_student_to_group(
+    group_id: int,
+    student_data: AddStudentToGroupRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
+):
+    """Add a student to a group"""
+    # Check if group exists
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check permissions
+    if current_user.role == "teacher" and group.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if student exists and is active
+    student = db.query(UserInDB).filter(
+        UserInDB.id == student_data.student_id,
+        UserInDB.role == "student",
+        UserInDB.is_active == True
+    ).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Check if student is already in this group
+    existing_association = db.query(GroupStudent).filter(
+        GroupStudent.group_id == group_id,
+        GroupStudent.student_id == student_data.student_id
+    ).first()
+    if existing_association:
+        raise HTTPException(status_code=400, detail="Student is already in this group")
+    
+    # Add student to group
+    group_student = GroupStudent(
+        group_id=group_id,
+        student_id=student_data.student_id
+    )
+    db.add(group_student)
+    db.commit()
+    
+    return {"detail": f"Student '{student.name}' added to group '{group.name}'"}
+
+@router.delete("/groups/{group_id}/students/{student_id}", response_model=dict)
+def remove_student_from_group(
+    group_id: int,
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
+):
+    """Remove a student from a group"""
+    # Check if group exists
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check permissions
+    if current_user.role == "teacher" and group.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if student exists
+    student = db.query(UserInDB).filter(
+        UserInDB.id == student_id,
+        UserInDB.role == "student"
+    ).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Check if student is in this group
+    group_student = db.query(GroupStudent).filter(
+        GroupStudent.group_id == group_id,
+        GroupStudent.student_id == student_id
+    ).first()
+    if not group_student:
+        raise HTTPException(status_code=400, detail="Student is not in this group")
+    
+    # Remove student from group
+    db.delete(group_student)
+    db.commit()
+    
+    return {"detail": f"Student '{student.name}' removed from group '{group.name}'"}
+
+@router.post("/groups/{group_id}/students/bulk", response_model=dict)
+def bulk_add_students_to_group(
+    group_id: int,
+    student_ids: List[int],
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
+):
+    """Add multiple students to a group"""
+    # Check if group exists
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check permissions
+    if current_user.role == "teacher" and group.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check if all students exist and are active
+    students = db.query(UserInDB).filter(
+        UserInDB.id.in_(student_ids),
+        UserInDB.role == "student",
+        UserInDB.is_active == True
+    ).all()
+    if len(students) != len(student_ids):
+        raise HTTPException(status_code=400, detail="Some students not found")
+    
+    # Add students to group (skip if already in group)
+    added_count = 0
+    for student_id in student_ids:
+        existing_association = db.query(GroupStudent).filter(
+            GroupStudent.group_id == group_id,
+            GroupStudent.student_id == student_id
+        ).first()
+        if not existing_association:
+            group_student = GroupStudent(
+                group_id=group_id,
+                student_id=student_id
+            )
+            db.add(group_student)
+            added_count += 1
+    
+    db.commit()
+    
+    return {"detail": f"{added_count} students added to group '{group.name}'"}

@@ -1,0 +1,9 @@
+venv/
+.cursorrules
+cursor-logs.md
+
+.env
+
+__pycache__/
+
+uploads/
