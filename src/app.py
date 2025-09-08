@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, PlainTextResponse
+from datetime import datetime
 from src.config import init_db
 from src.routes.auth import router as auth_router
 from src.routes.admin import router as admin_router
@@ -56,6 +57,19 @@ app.include_router(assignments_router, prefix="/assignments", tags=["Assignments
 app.include_router(messages_router, prefix="/messages", tags=["Messages"])
 app.include_router(progress_router, prefix="/progress", tags=["Progress"])
 app.include_router(media_router, prefix="/media", tags=["Media"])
+
+# Health check endpoint
+@app.get("/health")
+def health_check():
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "1.0.0",
+            "update": 1
+        }
+    )
 
 # -----------------------------------------------------------------------------
 # Socket.IO setup (WebSocket messaging)
