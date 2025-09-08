@@ -525,10 +525,10 @@ async def handle_contacts_get(sid, data=None):
         # Sort by name
         available_contacts.sort(key=lambda x: x["name"])
         
-        return available_contacts
+        return {"available_contacts": available_contacts}
     except Exception as e:
         logger.error(f"Error getting contacts: {e}")
-        return []
+        return {"available_contacts": []}
     finally:
         db.close()
 
