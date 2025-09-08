@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 sio = socketio.AsyncServer(
     async_mode='asgi',
     cors_allowed_origins=["http://localhost:3000", "http://localhost:5174", "http://localhost:5173", "https://mastereducation.kz", "https://lms.mastereducation.kz", "https://lms-master.vercel.app"],
-    logger=True,
-    engineio_logger=True,
+    logger=False,
+    engineio_logger=False,
     # Optimized connection settings for better stability
     ping_timeout=60,  # Increased from default 20s
     ping_interval=25,  # Keep default 25s
@@ -41,7 +41,7 @@ def _get_user_id_from_environ(environ, auth=None) -> int | None:
             payload = verify_token(token)
             if payload:
                 uid = payload.get('user_id')
-                logger.warning(f"UID: {uid} from token: {token}")
+                logger.debug(f"UID: {uid} from token: {token}")
                 if uid:
                     try:
                         return int(uid)
@@ -111,11 +111,11 @@ async def connect(sid, environ, auth):
     # Use the proper function to get user_id from token
     user_id = _get_user_id_from_environ(environ, auth)
     if not user_id:
-        logger.warning(f"Connection rejected for sid {sid}: Invalid token")
+        logger.debug(f"Connection rejected for sid {sid}: Invalid token")
         await sio.disconnect(sid)
         return
     
-    logger.info(f"User {user_id} connected with sid {sid}")
+    logger.debug(f"User {user_id} connected with sid {sid}")
     await sio.save_session(sid, { 'user_id': user_id })
     await sio.enter_room(sid, f"{USER_ROOM_PREFIX}{user_id}")
 
@@ -123,7 +123,7 @@ async def connect(sid, environ, auth):
 async def disconnect(sid):
     session = await sio.get_session(sid)
     user_id = session.get('user_id') if session else None
-    logger.info(f"User {user_id} disconnected with sid {sid}")
+    logger.debug(f"User {user_id} disconnected with sid {sid}")
     # Rooms get auto-cleaned on disconnect
     return
 

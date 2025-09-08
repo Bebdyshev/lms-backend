@@ -14,6 +14,7 @@ from src.routes.messages import router as messages_router
 from src.routes.progress import router as progress_router
 from src.routes.media import router as media_router
 from dotenv import load_dotenv
+import logging
 from src.routes.socket_messages import create_socket_app
 
 load_dotenv()
@@ -26,6 +27,9 @@ app = FastAPI(
 
 # Initialize database
 init_db()
+
+# Set global logging level to WARNING to reduce noise
+logging.basicConfig(level=logging.WARNING)
 
 # CORS middleware
 app.add_middleware(
@@ -91,7 +95,7 @@ def health_check():
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
             "version": "1.0.0",
-            "update": 5
+            "update": 6
         }
     )
 
