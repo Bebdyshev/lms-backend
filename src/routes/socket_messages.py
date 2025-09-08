@@ -341,7 +341,8 @@ async def handle_messages_get(sid, data):
             (Message.from_user_id == current_user_id) | (Message.to_user_id == current_user_id)
         )
         if partner_id:
-            if not can_communicate_with_user(db.query(UserInDB).get(current_user_id), partner_id, db):
+            current_user = db.get(UserInDB, current_user_id)
+            if not can_communicate_with_user(current_user, partner_id, db):
                 return []
             query = query.filter(
                 or_(
