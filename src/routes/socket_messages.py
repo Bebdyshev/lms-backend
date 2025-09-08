@@ -392,7 +392,7 @@ async def handle_contacts_get(sid, data=None):
         available_contacts = []
         
         if current_user.role == "student":
-            # Students can write to teachers and curators of their courses/groups
+            # Students can write to teachers and curators of their courses/groups and admins
             
             # Teachers of courses the student is enrolled in
             teacher_ids = db.query(Course.teacher_id).join(Enrollment).filter(
@@ -449,6 +449,20 @@ async def handle_contacts_get(sid, data=None):
                         "name": curator.name,
                         "role": curator.role,
                         "avatar_url": curator.avatar_url
+                    })
+            
+            # Admins (always available to students)
+            admins = db.query(UserInDB).filter(
+                UserInDB.role == "admin",
+                UserInDB.is_active == True
+            ).all()
+            for admin in admins:
+                if not any(contact["user_id"] == admin.id for contact in available_contacts):
+                    available_contacts.append({
+                        "user_id": admin.id,
+                        "name": admin.name,
+                        "role": admin.role,
+                        "avatar_url": admin.avatar_url
                     })
         
         elif current_user.role == "teacher":

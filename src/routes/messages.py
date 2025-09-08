@@ -329,6 +329,20 @@ def get_available_contacts(
                     "role": curator.role,
                     "avatar_url": curator.avatar_url
                 })
+
+        # Администраторы (всегда доступны студентам)
+        admins = db.query(UserInDB).filter(
+            UserInDB.role == "admin",
+            UserInDB.is_active == True
+        ).all()
+        for admin in admins:
+            if not any(contact["user_id"] == admin.id for contact in available_contacts):
+                available_contacts.append({
+                    "user_id": admin.id,
+                    "name": admin.name,
+                    "role": admin.role,
+                    "avatar_url": admin.avatar_url
+                })
     
     elif current_user.role == "teacher":
         # Учителя могут писать всем студентам и другим учителям
@@ -444,7 +458,9 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
         return False
     
     if current_user.role == "student":
-        # Студенты могут общаться с учителями/кураторами своих курсов/групп
+        # Студенты могут общаться с учителями/кураторами своих курсов/групп и с администраторами
+        if target_user.role == "admin":
+            return True
         if target_user.role in ["teacher", "curator"]:
             # Проверяем, есть ли общие курсы с учителем
             if target_user.role == "teacher":
