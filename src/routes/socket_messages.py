@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Create Socket.IO server
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins=["http://localhost:3000", "http://localhost:5173", "https://lms-master.vercel.app", "https://lms.mastereducation.kz", "https://mastereducation.kz"],
+    cors_allowed_origins=["http://localhost:3000", "http://localhost:5174", "http://localhost:5173", "https://mastereducation.kz", "https://lms.mastereducation.kz", "https://lms-master.vercel.app"],
     logger=True,
     engineio_logger=True
 )
