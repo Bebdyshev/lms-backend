@@ -42,8 +42,26 @@ def upgrade() -> None:
             # Ignore if index doesn't exist or name differs; this is best-effort clean-up
             pass
 
-    op.add_column('groups', sa.Column('curator_id', sa.Integer(), nullable=True))
-    op.create_foreign_key(None, 'groups', 'users', ['curator_id'], ['id'])
+    # Add column and FK only if not exists
+    bind.execute(text("ALTER TABLE groups ADD COLUMN IF NOT EXISTS curator_id INTEGER"))
+    bind.execute(text(
+        """
+        DO $$
+        BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.table_constraints tc
+            WHERE tc.constraint_name = 'fk_groups_curator_id_users'
+              AND tc.table_name = 'groups'
+              AND tc.constraint_type = 'FOREIGN KEY'
+        ) THEN
+            ALTER TABLE groups
+            ADD CONSTRAINT fk_groups_curator_id_users
+            FOREIGN KEY (curator_id) REFERENCES users(id);
+        END IF;
+        END$$;
+        """
+    ))
     # ### end Alembic commands ###
 
 
