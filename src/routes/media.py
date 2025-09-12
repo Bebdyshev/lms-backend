@@ -111,7 +111,8 @@ async def upload_file(
     allowed_types = {
         "teacher_assignment": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"],
         "assignment": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"],
-        "submission": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"]
+        "submission": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"],
+        "step_attachment": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt", "zip", "xlsx", "pptx"]
     }
     
     if file_type not in allowed_types:
@@ -146,6 +147,148 @@ async def upload_file(
         "original_filename": file.filename,
         "file_size": len(content)
     }
+
+@router.post("/steps/{step_id}/attachments")
+async def upload_step_attachment(
+    step_id: int,
+    file: UploadFile = File(...),
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """Upload a file attachment for a lesson step"""
+    from src.schemas.models import Step
+    
+    step = db.query(Step).filter(Step.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    
+    # Check access permissions through lesson -> module -> course
+    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    course = db.query(Course).filter(Course.id == module.course_id).first()
+    
+    if current_user.role != "admin" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Validate file type
+    allowed_types = {
+        "application/pdf": "pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/msword": "doc",
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "text/plain": "txt",
+        "application/zip": "zip",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx"
+    }
+    
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"File type {file.content_type} not allowed. Allowed: {list(allowed_types.values())}"
+        )
+    
+    file_type = allowed_types[file.content_type]
+    
+    # Create upload directory
+    upload_dir = Path("uploads/step_attachments")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate safe filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_filename = f"step_{step_id}_{timestamp}_{file.filename}"
+    file_path = upload_dir / safe_filename
+    
+    # Save file
+    try:
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        file_size = len(content)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    # Update step attachments
+    import json
+    current_attachments = json.loads(step.attachments) if step.attachments else []
+    
+    new_attachment = {
+        "id": len(current_attachments) + 1,
+        "filename": file.filename,
+        "file_url": f"/uploads/step_attachments/{safe_filename}",
+        "file_type": file_type,
+        "file_size": file_size,
+        "uploaded_at": datetime.now().isoformat()
+    }
+    
+    current_attachments.append(new_attachment)
+    step.attachments = json.dumps(current_attachments)
+    
+    db.commit()
+    db.refresh(step)
+    
+    return {
+        "attachment_id": new_attachment["id"],
+        "filename": new_attachment["filename"],
+        "file_url": new_attachment["file_url"],
+        "file_type": new_attachment["file_type"],
+        "file_size": new_attachment["file_size"]
+    }
+
+@router.delete("/steps/{step_id}/attachments/{attachment_id}")
+async def delete_step_attachment(
+    step_id: int,
+    attachment_id: int,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """Delete a file attachment from a lesson step"""
+    from src.schemas.models import Step
+    
+    step = db.query(Step).filter(Step.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    
+    # Check access permissions
+    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    course = db.query(Course).filter(Course.id == module.course_id).first()
+    
+    if current_user.role != "admin" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Parse current attachments
+    import json
+    current_attachments = json.loads(step.attachments) if step.attachments else []
+    
+    # Find and remove the attachment
+    attachment_to_remove = None
+    for i, attachment in enumerate(current_attachments):
+        if attachment["id"] == attachment_id:
+            attachment_to_remove = current_attachments.pop(i)
+            break
+    
+    if not attachment_to_remove:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    
+    # Delete file from disk
+    try:
+        file_path = Path(f".{attachment_to_remove['file_url']}")
+        if file_path.exists():
+            file_path.unlink()
+    except Exception as e:
+        print(f"Warning: Could not delete file {attachment_to_remove['file_url']}: {e}")
+    
+    # Update step attachments
+    step.attachments = json.dumps(current_attachments)
+    db.commit()
+    
+    return {"detail": "Attachment deleted successfully"}
 @router.put("/courses/{course_id}/thumbnail-url")
 def set_course_thumbnail_url(
     course_id: int,

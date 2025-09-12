@@ -167,6 +167,7 @@ class Step(Base):
     video_url = Column(String, nullable=True)
     content_text = Column(Text, nullable=True)
     original_image_url = Column(String, nullable=True)  # For SAT question images
+    attachments = Column(Text, nullable=True)  # JSON array of file attachments
     order_index = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -181,6 +182,7 @@ class StepSchema(BaseModel):
     video_url: Optional[str] = None
     content_text: Optional[str] = None
     original_image_url: Optional[str] = None
+    attachments: Optional[str] = None
     order_index: int
     created_at: datetime
     
@@ -193,6 +195,7 @@ class StepCreateSchema(BaseModel):
     video_url: Optional[str] = None
     content_text: Optional[str] = None
     original_image_url: Optional[str] = None
+    attachments: Optional[str] = None
     order_index: int = 0
 
 # =============================================================================
@@ -253,6 +256,8 @@ class Lesson(Base):
     duration_minutes = Column(Integer, default=0)
     order_index = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Explicit next-lesson pointer within the same course
+    next_lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)
     
     # Relationships
     module = relationship("Module", back_populates="lessons")
@@ -339,6 +344,7 @@ class BaseLessonSchema(BaseModel):
     duration_minutes: int
     order_index: int
     created_at: datetime
+    next_lesson_id: Optional[int] = None
     steps: Optional[List[StepSchema]] = None
     
     class Config:
@@ -380,6 +386,7 @@ class LessonCreateSchema(BaseModel):
     description: Optional[str] = None
     duration_minutes: int = 0
     order_index: int = 0
+    next_lesson_id: Optional[int] = None
 
 class LessonMaterialSchema(BaseModel):
     id: int

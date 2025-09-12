@@ -569,7 +569,8 @@ def create_lesson(
         title=lesson_data.title,
         description=lesson_data.description,
         duration_minutes=lesson_data.duration_minutes,
-        order_index=calculated_order_index
+        order_index=calculated_order_index,
+        next_lesson_id=lesson_data.next_lesson_id
     )
     
     db.add(new_lesson)
@@ -644,6 +645,8 @@ def update_lesson(
     lesson.title = lesson_data.title
     lesson.description = lesson_data.description
     lesson.duration_minutes = lesson_data.duration_minutes
+    # Update explicit next lesson if provided (can be None)
+    lesson.next_lesson_id = lesson_data.next_lesson_id
     
     # Only update order_index if it's not 0 (preserve existing order)
     if lesson_data.order_index != 0:
@@ -753,6 +756,7 @@ def create_step(
         video_url=step_data.video_url,
         content_text=content_text,
         original_image_url=step_data.original_image_url,
+        attachments=step_data.attachments,
         order_index=calculated_order_index
     )
     
@@ -814,6 +818,10 @@ def update_step(
     step.video_url = step_data.video_url
     step.content_text = content_text
     step.original_image_url = step_data.original_image_url
+    
+    # Update attachments if provided
+    if step_data.attachments is not None:
+        step.attachments = step_data.attachments
     
     # Only update order_index if it's not 0 (preserve existing order)
     if step_data.order_index != 0:
