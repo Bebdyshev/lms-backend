@@ -57,6 +57,8 @@ class UserInDB(Base):
     # Student specific fields
     student_id = Column(String, unique=True, nullable=True)  # For students only
     total_study_time_minutes = Column(Integer, default=0, nullable=False)
+    daily_streak = Column(Integer, default=0, nullable=False)  # Current daily streak count
+    last_activity_date = Column(Date, nullable=True)  # Last date when student was active
     
     # Relationships
     groups = relationship("GroupStudent", back_populates="student", cascade="all, delete-orphan")
@@ -83,6 +85,8 @@ class UserSchema(BaseModel):
     teacher_name: Optional[str] = None
     curator_name: Optional[str] = None
     total_study_time_minutes: Optional[int] = 0
+    daily_streak: Optional[int] = 0
+    last_activity_date: Optional[date] = None
     created_at: datetime
 
     class Config:

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, and_
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 from src.config import get_db
 from src.schemas.models import (
@@ -15,6 +15,45 @@ from src.utils.permissions import check_course_access, check_student_access
 from src.schemas.models import GroupStudent
 
 router = APIRouter()
+
+# =============================================================================
+# DAILY STREAK HELPER FUNCTIONS
+# =============================================================================
+
+def update_daily_streak(user: UserInDB, db: Session):
+    """
+    Update user's daily streak based on current activity.
+    
+    Logic:
+    - If user is active today and was active yesterday: increment streak
+    - If user is active today but wasn't active yesterday: reset streak to 1
+    - If user hasn't been active today yet: start/continue streak
+    """
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    
+    # If user was already active today, don't update again
+    if user.last_activity_date == today:
+        return
+    
+    # Calculate new streak based on previous last_activity_date
+    previous_activity_date = user.last_activity_date
+    
+    # Update last activity date to today
+    user.last_activity_date = today
+    
+    # Calculate new streak
+    if previous_activity_date is None:
+        # First time activity
+        user.daily_streak = 1
+    elif previous_activity_date == yesterday:
+        # Consecutive day activity
+        user.daily_streak += 1
+    elif previous_activity_date < yesterday:
+        # Gap in activity, reset streak
+        user.daily_streak = 1
+    
+    db.commit()
 
 # =============================================================================
 # PROGRESS TRACKING
@@ -209,6 +248,9 @@ def mark_lesson_complete(
     # Обновляем общее время изучения пользователя
     current_user.total_study_time_minutes += time_spent
     
+    # Обновляем daily streak
+    update_daily_streak(current_user, db)
+    
     db.commit()
     
     return {"detail": "Lesson marked as complete", "time_spent": time_spent}
@@ -252,6 +294,9 @@ def start_lesson(
         if progress.status == "not_started":
             progress.status = "in_progress"
         progress.last_accessed = datetime.utcnow()
+    
+    # Обновляем daily streak при начале урока
+    update_daily_streak(current_user, db)
     
     db.commit()
     
@@ -631,6 +676,8 @@ def get_student_progress_overview(
         "completed_steps": completed_steps,
         "overall_completion_percentage": round(overall_completion_percentage, 1),
         "total_time_spent_minutes": total_time_spent,
+        "daily_streak": current_user.daily_streak or 0,
+        "last_activity_date": current_user.last_activity_date,
         "courses": course_progress
     }
 
@@ -790,6 +837,8 @@ def get_student_progress_overview_by_id(
         "completed_steps": completed_steps,
         "overall_completion_percentage": round(overall_completion_percentage, 1),
         "total_time_spent_minutes": total_time_spent,
+        "daily_streak": student.daily_streak or 0,
+        "last_activity_date": student.last_activity_date,
         "courses": course_progress
     }
 
@@ -855,6 +904,9 @@ def mark_step_visited(
     
     # Обновляем общее время изучения пользователя
     current_user.total_study_time_minutes += step_data.time_spent_minutes
+    
+    # Обновляем daily streak при посещении шага
+    update_daily_streak(current_user, db)
     
     db.commit()
     db.refresh(step_progress)
@@ -1062,3 +1114,34 @@ def get_course_students_steps_progress(
         course_progress["modules"].append(module_data)
     
     return course_progress
+
+@router.get("/my-streak")
+def get_my_daily_streak(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить информацию о daily streak текущего студента"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can access streak information")
+    
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    
+    # Определяем статус streak
+    streak_status = "active"
+    if current_user.last_activity_date is None:
+        streak_status = "not_started"
+    elif current_user.last_activity_date < yesterday:
+        streak_status = "broken"
+    elif current_user.last_activity_date == yesterday:
+        streak_status = "at_risk"  # Нужна активность сегодня
+    
+    return {
+        "student_id": current_user.id,
+        "student_name": current_user.name,
+        "daily_streak": current_user.daily_streak or 0,
+        "last_activity_date": current_user.last_activity_date,
+        "streak_status": streak_status,
+        "is_active_today": current_user.last_activity_date == today,
+        "total_study_time_minutes": current_user.total_study_time_minutes
+    }
