@@ -41,7 +41,7 @@ jobs:
         script: |
           set -e
           echo "🏥 Performing health check..."
-          cd ~/lms-master
+          cd ~/projects/lms
           for i in {1..10}; do
             if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
               echo "✅ Health check passed"
