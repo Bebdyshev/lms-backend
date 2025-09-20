@@ -18,9 +18,9 @@ jobs:
     - name: Deploy to Azure VM
       uses: appleboy/ssh-action@v1.0.0
       with:
-        host: ${{ secrets.AZURE_HOST }}
-        username: ${{ secrets.AZURE_USERNAME }}
-        key: ${{ secrets.AZURE_SSH_KEY }}
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
           set -e
           echo "🚀 Starting backend deployment..."
@@ -35,9 +35,9 @@ jobs:
     - name: Health Check
       uses: appleboy/ssh-action@v1.0.0
       with:
-        host: ${{ secrets.AZURE_HOST }}
-        username: ${{ secrets.AZURE_USERNAME }}
-        key: ${{ secrets.AZURE_SSH_KEY }}
+        host: ${{ secrets.HOST }}
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
           set -e
           echo "🏥 Performing health check..."
