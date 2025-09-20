@@ -24,7 +24,7 @@ jobs:
         script: |
           set -e
           echo "🚀 Starting backend deployment..."
-          cd ~/lms-master
+          cd ~/projects/lms
           git fetch origin main
           git reset --hard origin/main
           docker compose pull || true
