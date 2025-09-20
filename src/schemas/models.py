@@ -727,3 +727,148 @@ class NotificationSchema(BaseModel):
     
     class Config:
         from_attributes = True
+
+# =============================================================================
+# EVENT MODELS - Schedule and Events Management
+# =============================================================================
+
+class Event(Base):
+    __tablename__ = "events"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    event_type = Column(String, nullable=False)  # "class", "weekly_test", "webinar"
+    start_datetime = Column(DateTime, nullable=False)
+    end_datetime = Column(DateTime, nullable=False)
+    location = Column(String, nullable=True)  # Аудитория или ссылка
+    is_online = Column(Boolean, default=True)
+    meeting_url = Column(String, nullable=True)  # Zoom/Teams ссылка
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    is_active = Column(Boolean, default=True)
+    is_recurring = Column(Boolean, default=False)  # Для уикли тестов
+    recurrence_pattern = Column(String, nullable=True)  # "weekly", "daily"
+    recurrence_end_date = Column(Date, nullable=True)  # Когда заканчивается повторение
+    max_participants = Column(Integer, nullable=True)  # Для вебинаров
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    creator = relationship("UserInDB", foreign_keys=[created_by])
+    event_groups = relationship("EventGroup", back_populates="event", cascade="all, delete-orphan")
+    event_participants = relationship("EventParticipant", back_populates="event", cascade="all, delete-orphan")
+
+class EventGroup(Base):
+    __tablename__ = "event_groups"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
+    group_id = Column(Integer, ForeignKey("groups.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    event = relationship("Event", back_populates="event_groups")
+    group = relationship("Group")
+    
+    # Unique constraint to prevent duplicate associations
+    __table_args__ = (
+        UniqueConstraint('event_id', 'group_id', name='uq_event_group'),
+    )
+
+class EventParticipant(Base):
+    __tablename__ = "event_participants"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    registration_status = Column(String, default="registered")  # "registered", "attended", "missed"
+    registered_at = Column(DateTime, default=datetime.utcnow)
+    attended_at = Column(DateTime, nullable=True)
+    
+    # Relationships
+    event = relationship("Event", back_populates="event_participants")
+    user = relationship("UserInDB")
+    
+    # Unique constraint to prevent duplicate registrations
+    __table_args__ = (
+        UniqueConstraint('event_id', 'user_id', name='uq_event_participant'),
+    )
+
+# Pydantic schemas for Events
+class EventSchema(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    event_type: str
+    start_datetime: datetime
+    end_datetime: datetime
+    location: Optional[str] = None
+    is_online: bool
+    meeting_url: Optional[str] = None
+    created_by: int
+    creator_name: Optional[str] = None
+    is_active: bool
+    is_recurring: bool
+    recurrence_pattern: Optional[str] = None
+    recurrence_end_date: Optional[date] = None
+    max_participants: Optional[int] = None
+    participant_count: int = 0
+    groups: Optional[List[str]] = None  # List of group names
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class CreateEventRequest(BaseModel):
+    title: str
+    description: Optional[str] = None
+    event_type: str  # "class", "weekly_test", "webinar"
+    start_datetime: datetime
+    end_datetime: datetime
+    location: Optional[str] = None
+    is_online: bool = True
+    meeting_url: Optional[str] = None
+    is_recurring: bool = False
+    recurrence_pattern: Optional[str] = None  # "weekly", "daily"
+    recurrence_end_date: Optional[date] = None
+    max_participants: Optional[int] = None
+    group_ids: List[int] = []  # List of group IDs to assign event to
+
+class UpdateEventRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    event_type: Optional[str] = None
+    start_datetime: Optional[datetime] = None
+    end_datetime: Optional[datetime] = None
+    location: Optional[str] = None
+    is_online: Optional[bool] = None
+    meeting_url: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_recurring: Optional[bool] = None
+    recurrence_pattern: Optional[str] = None
+    recurrence_end_date: Optional[date] = None
+    max_participants: Optional[int] = None
+    group_ids: Optional[List[int]] = None
+
+class EventGroupSchema(BaseModel):
+    id: int
+    event_id: int
+    group_id: int
+    group_name: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class EventParticipantSchema(BaseModel):
+    id: int
+    event_id: int
+    user_id: int
+    user_name: Optional[str] = None
+    registration_status: str
+    registered_at: datetime
+    attended_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

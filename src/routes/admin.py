@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
-    StudentProgress, Assignment, AssignmentSubmission
+    StudentProgress, Assignment, AssignmentSubmission, Event, EventGroup, EventParticipant,
+    EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema
 )
 from src.utils.auth_utils import hash_password
 from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups
@@ -1216,3 +1217,295 @@ def bulk_add_students_to_group(
     db.commit()
     
     return {"detail": f"{added_count} students added to group '{group.name}'"}
+
+# =============================================================================
+# EVENT MANAGEMENT ENDPOINTS
+# =============================================================================
+
+@router.get("/events", response_model=List[EventSchema])
+def get_all_events(
+    skip: int = 0,
+    limit: int = 100,
+    event_type: Optional[str] = None,
+    group_id: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Get all events with filtering options (admin only)"""
+    query = db.query(Event).filter(Event.is_active == True)
+    
+    # Apply filters
+    if event_type:
+        query = query.filter(Event.event_type == event_type)
+    if start_date:
+        query = query.filter(Event.start_datetime >= start_date)
+    if end_date:
+        query = query.filter(Event.end_datetime <= end_date)
+    if group_id:
+        query = query.join(EventGroup).filter(EventGroup.group_id == group_id)
+    
+    events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
+    
+    # Enrich with additional data
+    result = []
+    for event in events:
+        event_data = EventSchema.from_orm(event)
+        
+        # Add creator name
+        creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
+        event_data.creator_name = creator.name if creator else "Unknown"
+        
+        # Add group names
+        event_groups = db.query(EventGroup).join(Group).filter(EventGroup.event_id == event.id).all()
+        group_names = [eg.group.name for eg in event_groups if eg.group]
+        event_data.groups = group_names
+        
+        # Add participant count
+        participant_count = db.query(EventParticipant).filter(EventParticipant.event_id == event.id).count()
+        event_data.participant_count = participant_count
+        
+        result.append(event_data)
+    
+    return result
+
+@router.post("/events", response_model=EventSchema)
+def create_event(
+    event_data: CreateEventRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Create a new event (admin only)"""
+    
+    # Validate event type
+    valid_types = ["class", "weekly_test", "webinar"]
+    if event_data.event_type not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid event type. Must be one of: {valid_types}")
+    
+    # Validate datetime
+    if event_data.start_datetime >= event_data.end_datetime:
+        raise HTTPException(status_code=400, detail="Start datetime must be before end datetime")
+    
+    # Validate groups exist
+    if event_data.group_ids:
+        groups = db.query(Group).filter(Group.id.in_(event_data.group_ids)).all()
+        if len(groups) != len(event_data.group_ids):
+            raise HTTPException(status_code=400, detail="One or more groups not found")
+    
+    # Create event
+    event = Event(
+        title=event_data.title,
+        description=event_data.description,
+        event_type=event_data.event_type,
+        start_datetime=event_data.start_datetime,
+        end_datetime=event_data.end_datetime,
+        location=event_data.location,
+        is_online=event_data.is_online,
+        meeting_url=event_data.meeting_url,
+        created_by=current_user.id,
+        is_recurring=event_data.is_recurring,
+        recurrence_pattern=event_data.recurrence_pattern,
+        recurrence_end_date=event_data.recurrence_end_date,
+        max_participants=event_data.max_participants
+    )
+    
+    db.add(event)
+    db.flush()  # To get the event ID
+    
+    # Create event-group associations
+    for group_id in event_data.group_ids:
+        event_group = EventGroup(event_id=event.id, group_id=group_id)
+        db.add(event_group)
+    
+    # If recurring, create additional events
+    if event_data.is_recurring and event_data.recurrence_pattern and event_data.recurrence_end_date:
+        create_recurring_events(db, event, event_data)
+    
+    db.commit()
+    db.refresh(event)
+    
+    # Return enriched event data
+    result = EventSchema.from_orm(event)
+    creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
+    result.creator_name = creator.name if creator else "Unknown"
+    
+    return result
+
+@router.put("/events/{event_id}", response_model=EventSchema)
+def update_event(
+    event_id: int,
+    event_data: UpdateEventRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Update an event (admin only)"""
+    
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Update fields
+    update_data = event_data.dict(exclude_unset=True)
+    
+    if "event_type" in update_data:
+        valid_types = ["class", "weekly_test", "webinar"]
+        if update_data["event_type"] not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid event type. Must be one of: {valid_types}")
+    
+    if "start_datetime" in update_data and "end_datetime" in update_data:
+        if update_data["start_datetime"] >= update_data["end_datetime"]:
+            raise HTTPException(status_code=400, detail="Start datetime must be before end datetime")
+    
+    # Update group associations if provided
+    if "group_ids" in update_data:
+        # Validate groups exist
+        if update_data["group_ids"]:
+            groups = db.query(Group).filter(Group.id.in_(update_data["group_ids"])).all()
+            if len(groups) != len(update_data["group_ids"]):
+                raise HTTPException(status_code=400, detail="One or more groups not found")
+        
+        # Remove existing associations
+        db.query(EventGroup).filter(EventGroup.event_id == event_id).delete()
+        
+        # Create new associations
+        for group_id in update_data["group_ids"]:
+            event_group = EventGroup(event_id=event_id, group_id=group_id)
+            db.add(event_group)
+        
+        del update_data["group_ids"]
+    
+    # Update event fields
+    for field, value in update_data.items():
+        setattr(event, field, value)
+    
+    event.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(event)
+    
+    # Return enriched event data
+    result = EventSchema.from_orm(event)
+    creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
+    result.creator_name = creator.name if creator else "Unknown"
+    
+    return result
+
+@router.delete("/events/{event_id}")
+def delete_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Delete an event (admin only)"""
+    
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Soft delete - just mark as inactive
+    event.is_active = False
+    event.updated_at = datetime.utcnow()
+    
+    db.commit()
+    
+    return {"detail": "Event deleted successfully"}
+
+@router.post("/events/bulk", response_model=List[EventSchema])
+def create_bulk_events(
+    events_data: List[CreateEventRequest],
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Create multiple events at once (admin only)"""
+    
+    created_events = []
+    
+    for event_data in events_data:
+        # Validate event type
+        valid_types = ["class", "weekly_test", "webinar"]
+        if event_data.event_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid event type. Must be one of: {valid_types}")
+        
+        # Validate datetime
+        if event_data.start_datetime >= event_data.end_datetime:
+            raise HTTPException(status_code=400, detail="Start datetime must be before end datetime")
+        
+        # Create event
+        event = Event(
+            title=event_data.title,
+            description=event_data.description,
+            event_type=event_data.event_type,
+            start_datetime=event_data.start_datetime,
+            end_datetime=event_data.end_datetime,
+            location=event_data.location,
+            is_online=event_data.is_online,
+            meeting_url=event_data.meeting_url,
+            created_by=current_user.id,
+            is_recurring=event_data.is_recurring,
+            recurrence_pattern=event_data.recurrence_pattern,
+            recurrence_end_date=event_data.recurrence_end_date,
+            max_participants=event_data.max_participants
+        )
+        
+        db.add(event)
+        db.flush()
+        
+        # Create event-group associations
+        for group_id in event_data.group_ids:
+            event_group = EventGroup(event_id=event.id, group_id=group_id)
+            db.add(event_group)
+        
+        created_events.append(event)
+    
+    db.commit()
+    
+    # Return enriched event data
+    result = []
+    for event in created_events:
+        db.refresh(event)
+        event_schema = EventSchema.from_orm(event)
+        creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
+        event_schema.creator_name = creator.name if creator else "Unknown"
+        result.append(event_schema)
+    
+    return result
+
+def create_recurring_events(db: Session, base_event: Event, event_data: CreateEventRequest):
+    """Helper function to create recurring events"""
+    from datetime import timedelta
+    
+    if event_data.recurrence_pattern == "weekly":
+        delta = timedelta(weeks=1)
+    elif event_data.recurrence_pattern == "daily":
+        delta = timedelta(days=1)
+    else:
+        return  # Unsupported pattern
+    
+    current_start = base_event.start_datetime + delta
+    current_end = base_event.end_datetime + delta
+    
+    while current_start.date() <= event_data.recurrence_end_date:
+        recurring_event = Event(
+            title=base_event.title,
+            description=base_event.description,
+            event_type=base_event.event_type,
+            start_datetime=current_start,
+            end_datetime=current_end,
+            location=base_event.location,
+            is_online=base_event.is_online,
+            meeting_url=base_event.meeting_url,
+            created_by=base_event.created_by,
+            is_recurring=False,  # Individual instances are not recurring
+            max_participants=base_event.max_participants
+        )
+        
+        db.add(recurring_event)
+        db.flush()
+        
+        # Copy group associations
+        for group_id in event_data.group_ids:
+            event_group = EventGroup(event_id=recurring_event.id, group_id=group_id)
+            db.add(event_group)
+        
+        current_start += delta
+        current_end += delta

@@ -13,6 +13,7 @@ from src.routes.assignments import router as assignments_router
 from src.routes.messages import router as messages_router
 from src.routes.progress import router as progress_router
 from src.routes.media import router as media_router
+from src.routes.events import router as events_router
 from dotenv import load_dotenv
 import logging
 from src.routes.socket_messages import create_socket_app
@@ -61,6 +62,7 @@ app.include_router(assignments_router, prefix="/assignments", tags=["Assignments
 app.include_router(messages_router, prefix="/messages", tags=["Messages"])
 app.include_router(progress_router, prefix="/progress", tags=["Progress"])
 app.include_router(media_router, prefix="/media", tags=["Media"])
+app.include_router(events_router, prefix="/events", tags=["Events"])
 
 # Root endpoint with ASCII art
 @app.get("/")
@@ -94,7 +96,7 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.17.0",
+            "version": "1.18.0",
         }
     )
 
