@@ -104,6 +104,66 @@ def get_courses(
     
     return courses_data
 
+@router.get("/my-courses", response_model=List[CourseSchema])
+def get_my_courses(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get student's enrolled courses with basic info"""
+    if current_user.role != "student":
+        raise HTTPException(status_code=403, detail="Only students can access this endpoint")
+    
+    # Get enrolled course IDs
+    enrolled_course_ids = db.query(Enrollment.course_id).filter(
+        Enrollment.user_id == current_user.id,
+        Enrollment.is_active == True
+    ).subquery()
+    
+    # Get group access course IDs
+    group_student = db.query(GroupStudent).filter(
+        GroupStudent.student_id == current_user.id
+    ).first()
+    
+    group_course_ids = None
+    if group_student:
+        group_course_ids = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id == group_student.group_id,
+            CourseGroupAccess.is_active == True
+        ).subquery()
+    
+    # Combine both sets of course IDs
+    if group_course_ids is not None:
+        # Use UNION to combine both queries
+        from sqlalchemy import union
+        combined_course_ids = db.query(union(
+            enrolled_course_ids.select(),
+            group_course_ids.select()
+        ).alias('course_id')).subquery()
+        courses = db.query(Course).filter(
+            Course.id.in_(combined_course_ids), 
+            Course.is_active == True
+        ).all()
+    else:
+        # Only enrolled courses
+        courses = db.query(Course).filter(
+            Course.id.in_(enrolled_course_ids), 
+            Course.is_active == True
+        ).all()
+    
+    # Enrich with teacher names and module counts
+    courses_data = []
+    for course in courses:
+        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
+        module_count = db.query(Module).filter(Module.course_id == course.id).count()
+        
+        course_data = CourseSchema.from_orm(course)
+        course_data.teacher_name = teacher.name if teacher else "Unknown"
+        course_data.total_modules = module_count
+        course_data.status = 'active' if course.is_active else 'draft'
+        courses_data.append(course_data)
+    
+    return courses_data
+
 @router.post("/", response_model=CourseSchema)
 def create_course(
     course_data: CourseCreateSchema,
