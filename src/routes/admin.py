@@ -313,6 +313,49 @@ def create_admin(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create admin: {str(e)}")
 
+@router.post("/create-admin-temp", response_model=CreateAdminResponse)
+def create_admin_temp(
+    admin_data: CreateAdminRequest,
+    db: Session = Depends(get_db)
+):
+    """Create a new admin user (temporary endpoint without auth - will be deleted)"""
+    try:
+        # Check if email already exists
+        existing_user = db.query(UserInDB).filter(UserInDB.email == admin_data.email).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Generate password if not provided
+        password = admin_data.password
+        generated_password = None
+        if not password:
+            password = generate_password()
+            generated_password = password
+        
+        # Create admin user
+        new_admin = UserInDB(
+            email=admin_data.email,
+            name=admin_data.name,
+            hashed_password=hash_password(password),
+            role="admin",  # Fixed role for admin creation
+            is_active=admin_data.is_active
+        )
+        
+        db.add(new_admin)
+        db.commit()
+        db.refresh(new_admin)
+        
+        return CreateAdminResponse(
+            admin=UserSchema.from_orm(new_admin),
+            generated_password=generated_password
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create admin: {str(e)}")
+
 @router.put("/users/{user_id}", response_model=UserSchema)
 def update_user(
     user_id: int,
