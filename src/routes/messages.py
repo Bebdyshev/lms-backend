@@ -311,24 +311,33 @@ def get_available_contacts(
                 })
         
         # Кураторы из той же группы
-        if current_user.group_id:
-            # Get curators in the same group using GroupStudent association table
-            group_student_ids = db.query(GroupStudent.student_id).filter(
-                GroupStudent.group_id == current_user.group_id
+        # First get the student's group(s)
+        student_groups = db.query(GroupStudent.group_id).filter(
+            GroupStudent.student_id == current_user.id
+        ).all()
+        
+        if student_groups:
+            group_ids = [group[0] for group in student_groups]
+            
+            # Get curators from the same groups
+            curator_ids_in_groups = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(group_ids)
             ).subquery()
+            
             curators = db.query(UserInDB).filter(
                 UserInDB.role == "curator",
-                UserInDB.id.in_(group_student_ids),
+                UserInDB.id.in_(curator_ids_in_groups),
                 UserInDB.is_active == True
             ).all()
             
             for curator in curators:
-                available_contacts.append({
-                    "user_id": curator.id,
-                    "name": curator.name,
-                    "role": curator.role,
-                    "avatar_url": curator.avatar_url
-                })
+                if not any(contact["user_id"] == curator.id for contact in available_contacts):
+                    available_contacts.append({
+                        "user_id": curator.id,
+                        "name": curator.name,
+                        "role": curator.role,
+                        "avatar_url": curator.avatar_url
+                    })
 
         # Администраторы (всегда доступны студентам)
         admins = db.query(UserInDB).filter(
@@ -392,11 +401,19 @@ def get_available_contacts(
     
     elif current_user.role == "curator":
         # Кураторы могут писать ученикам из своей группы
-        if current_user.group_id:
-            # Get students in curator's group using GroupStudent association table
+        # First get the curator's group(s)
+        curator_groups = db.query(GroupStudent.group_id).filter(
+            GroupStudent.student_id == current_user.id
+        ).all()
+        
+        if curator_groups:
+            group_ids = [group[0] for group in curator_groups]
+            
+            # Get students in curator's groups
             group_student_ids = db.query(GroupStudent.student_id).filter(
-                GroupStudent.group_id == current_user.group_id
+                GroupStudent.group_id.in_(group_ids)
             ).subquery()
+            
             students = db.query(UserInDB).filter(
                 UserInDB.role == "student",
                 UserInDB.id.in_(group_student_ids),
