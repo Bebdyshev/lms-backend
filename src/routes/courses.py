@@ -61,7 +61,7 @@ def get_courses(
             ).subquery()
         
         # Combine both sets of course IDs
-        if group_course_ids:
+        if group_course_ids is not None:
             # Use UNION to combine both queries
             from sqlalchemy import union
             combined_course_ids = db.query(union(
