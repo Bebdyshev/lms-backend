@@ -474,10 +474,12 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
     if not target_user or not target_user.is_active:
         return False
     
+    # Все пользователи могут общаться с администраторами
+    if target_user.role == "admin":
+        return True
+    
     if current_user.role == "student":
-        # Студенты могут общаться с учителями/кураторами своих курсов/групп и с администраторами
-        if target_user.role == "admin":
-            return True
+        # Студенты могут общаться с учителями/кураторами своих курсов/групп
         if target_user.role in ["teacher", "curator"]:
             # Проверяем, есть ли общие курсы с учителем
             if target_user.role == "teacher":
@@ -511,14 +513,14 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
         return False
     
     elif current_user.role == "teacher":
-        # Учителя могут общаться со всеми студентами, учителями и кураторами
-        if target_user.role in ["student", "teacher", "curator"]:
+        # Учителя могут общаться со всеми студентами, учителями, кураторами и администраторами
+        if target_user.role in ["student", "teacher", "curator", "admin"]:
             return True
         
         return False
     
     elif current_user.role == "curator":
-        # Кураторы могут общаться с учениками из своей группы
+        # Кураторы могут общаться с учениками из своей группы и с администраторами
         if target_user.role == "student":
             return (current_user.group_id is not None and 
                    current_user.group_id == target_user.group_id)
