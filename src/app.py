@@ -23,7 +23,7 @@ load_dotenv()
 app = FastAPI(
     title="LMS Platform API",
     description="Learning Management System API",
-    version="1.0.0"
+    version="1.24.0"
 )
 
 # Initialize database
@@ -96,7 +96,7 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.23.0",
+            "version": "1.24.0",
         }
     )
 
