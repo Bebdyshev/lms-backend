@@ -8,7 +8,8 @@ from src.config import get_db
 from src.schemas.models import (
     StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
     UserInDB, AssignmentSubmission, ProgressSchema, StepProgress,
-    StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent
+    StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent,
+    ProgressSnapshot
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access
@@ -54,6 +55,150 @@ def update_daily_streak(user: UserInDB, db: Session):
         user.daily_streak = 1
     
     db.commit()
+
+# =============================================================================
+# PROGRESS UPDATE FUNCTIONS
+# =============================================================================
+
+def update_student_progress(user_id: int, course_id: int, db: Session):
+    """
+    Обновить или создать запись прогресса студента по курсу
+    Используем существующую модель StudentProgress для общего прогресса по курсу
+    """
+    # Получаем все шаги курса
+    total_steps = db.query(func.count(Step.id)).join(Lesson).join(Module).filter(
+        Module.course_id == course_id
+    ).scalar() or 0
+    
+    # Получаем завершенные шаги
+    completed_steps = db.query(func.count(StepProgress.id)).join(Step).join(Lesson).join(Module).filter(
+        Module.course_id == course_id,
+        StepProgress.user_id == user_id,
+        StepProgress.status == 'completed'
+    ).scalar() or 0
+    
+    # Получаем общее время изучения
+    total_time = db.query(func.sum(StepProgress.time_spent_minutes)).join(Step).join(Lesson).join(Module).filter(
+        Module.course_id == course_id,
+        StepProgress.user_id == user_id
+    ).scalar() or 0
+    
+    # Рассчитываем процент завершения
+    completion_percentage = int((completed_steps / total_steps * 100)) if total_steps > 0 else 0
+    
+    # Находим или создаем запись общего прогресса по курсу (без lesson_id и assignment_id)
+    student_progress = db.query(StudentProgress).filter(
+        StudentProgress.user_id == user_id,
+        StudentProgress.course_id == course_id,
+        StudentProgress.lesson_id.is_(None),
+        StudentProgress.assignment_id.is_(None)
+    ).first()
+    
+    if not student_progress:
+        # Создаем новую запись общего прогресса по курсу
+        student_progress = StudentProgress(
+            user_id=user_id,
+            course_id=course_id,
+            lesson_id=None,  # Общий прогресс по курсу
+            assignment_id=None,
+            status="in_progress" if completion_percentage > 0 else "not_started",
+            completion_percentage=completion_percentage,
+            time_spent_minutes=int(total_time) if total_time else 0,
+            last_accessed=datetime.utcnow(),
+            completed_at=datetime.utcnow() if completion_percentage >= 100 else None
+        )
+        db.add(student_progress)
+    else:
+        # Обновляем существующую запись
+        student_progress.completion_percentage = completion_percentage
+        student_progress.time_spent_minutes = int(total_time) if total_time else 0
+        student_progress.last_accessed = datetime.utcnow()
+        
+        # Обновляем статус
+        if completion_percentage >= 100:
+            student_progress.status = "completed"
+            if not student_progress.completed_at:
+                student_progress.completed_at = datetime.utcnow()
+        elif completion_percentage > 0:
+            student_progress.status = "in_progress"
+        else:
+            student_progress.status = "not_started"
+    
+    db.commit()
+    return student_progress
+
+def create_progress_snapshot(user_id: int, course_id: int, db: Session):
+    """
+    Создать снимок прогресса студента
+    """
+    today = date.today()
+    
+    # Проверяем, есть ли уже снимок на сегодня
+    existing_snapshot = db.query(ProgressSnapshot).filter(
+        ProgressSnapshot.user_id == user_id,
+        ProgressSnapshot.course_id == course_id,
+        ProgressSnapshot.snapshot_date == today
+    ).first()
+    
+    if existing_snapshot:
+        return existing_snapshot
+    
+    # Получаем актуальный прогресс (общий по курсу)
+    student_progress = db.query(StudentProgress).filter(
+        StudentProgress.user_id == user_id,
+        StudentProgress.course_id == course_id,
+        StudentProgress.lesson_id.is_(None),
+        StudentProgress.assignment_id.is_(None)
+    ).first()
+    
+    if not student_progress:
+        return None
+    
+    # Получаем дополнительную статистику для снимка
+    total_steps = db.query(func.count(Step.id)).join(Lesson).join(Module).filter(
+        Module.course_id == course_id
+    ).scalar() or 0
+    
+    completed_steps = db.query(func.count(StepProgress.id)).join(Step).join(Lesson).join(Module).filter(
+        Module.course_id == course_id,
+        StepProgress.user_id == user_id,
+        StepProgress.status == 'completed'
+    ).scalar() or 0
+    
+    # Получаем статистику заданий
+    total_assignments = db.query(func.count(Assignment.id)).join(Lesson).join(Module).filter(
+        Module.course_id == course_id
+    ).scalar() or 0
+    
+    completed_assignments = db.query(func.count(AssignmentSubmission.id)).join(Assignment).join(Lesson).join(Module).filter(
+        Module.course_id == course_id,
+        AssignmentSubmission.user_id == user_id,
+        AssignmentSubmission.is_graded == True
+    ).scalar() or 0
+    
+    avg_assignment_score = db.query(func.avg(AssignmentSubmission.score)).join(Assignment).join(Lesson).join(Module).filter(
+        Module.course_id == course_id,
+        AssignmentSubmission.user_id == user_id,
+        AssignmentSubmission.is_graded == True
+    ).scalar() or 0
+    
+    # Создаем снимок
+    snapshot = ProgressSnapshot(
+        user_id=user_id,
+        course_id=course_id,
+        snapshot_date=today,
+        completed_steps=completed_steps,
+        total_steps=total_steps,
+        completion_percentage=float(student_progress.completion_percentage),
+        total_time_spent_minutes=student_progress.time_spent_minutes,
+        assignments_completed=completed_assignments,
+        total_assignments=total_assignments,
+        assignment_score_percentage=float(avg_assignment_score) if avg_assignment_score else 0.0
+    )
+    
+    db.add(snapshot)
+    db.commit()
+    return snapshot
 
 # =============================================================================
 # PROGRESS TRACKING
@@ -846,6 +991,61 @@ def get_student_progress_overview_by_id(
 # STEP PROGRESS TRACKING
 # =============================================================================
 
+@router.post("/step/{step_id}/start", response_model=StepProgressSchema)
+def mark_step_started(
+    step_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Отметить начало изучения шага"""
+    # Получаем информацию о шаге
+    step = db.query(Step).filter(Step.id == step_id).first()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+    
+    # Получаем урок и модуль
+    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    # Проверяем существующий прогресс
+    existing_progress = db.query(StepProgress).filter(
+        StepProgress.user_id == current_user.id,
+        StepProgress.step_id == step_id
+    ).first()
+    
+    if existing_progress:
+        # Если шаг уже начат, просто обновляем время посещения
+        if existing_progress.started_at is None:
+            existing_progress.started_at = datetime.utcnow()
+            existing_progress.status = "in_progress"
+        existing_progress.visited_at = datetime.utcnow()
+        db.commit()
+        db.refresh(existing_progress)
+        return StepProgressSchema.from_orm(existing_progress)
+    
+    # Создаем новую запись прогресса
+    step_progress = StepProgress(
+        user_id=current_user.id,
+        course_id=module.course_id,
+        lesson_id=lesson.id,
+        step_id=step_id,
+        status="in_progress",
+        started_at=datetime.utcnow(),
+        visited_at=datetime.utcnow(),
+        time_spent_minutes=0
+    )
+    
+    db.add(step_progress)
+    db.commit()
+    db.refresh(step_progress)
+    
+    return StepProgressSchema.from_orm(step_progress)
+
 @router.post("/step/{step_id}/visit", response_model=StepProgressSchema)
 def mark_step_visited(
     step_id: int,
@@ -882,13 +1082,14 @@ def mark_step_visited(
     ).first()
     
     if not step_progress:
-        # Создаем новую запись прогресса
+        # Создаем новую запись прогресса (если шаг завершается без предварительного старта)
         step_progress = StepProgress(
             user_id=current_user.id,
             course_id=module.course_id,
             lesson_id=lesson.id,
             step_id=step_id,
             status="completed",
+            started_at=datetime.utcnow(),  # Устанавливаем время начала равным времени завершения
             visited_at=datetime.utcnow(),
             completed_at=datetime.utcnow(),
             time_spent_minutes=step_data.time_spent_minutes
@@ -896,10 +1097,14 @@ def mark_step_visited(
         db.add(step_progress)
     else:
         # Обновляем существующую запись
-        if step_progress.status == "not_started":
-            step_progress.status = "completed"
-            step_progress.visited_at = datetime.utcnow()
-            step_progress.completed_at = datetime.utcnow()
+        step_progress.status = "completed"
+        step_progress.visited_at = datetime.utcnow()
+        step_progress.completed_at = datetime.utcnow()
+        
+        # Если не было времени начала, устанавливаем его
+        if step_progress.started_at is None:
+            step_progress.started_at = datetime.utcnow()
+        
         step_progress.time_spent_minutes += step_data.time_spent_minutes
     
     # Обновляем общее время изучения пользователя
@@ -907,6 +1112,12 @@ def mark_step_visited(
     
     # Обновляем daily streak при посещении шага
     update_daily_streak(current_user, db)
+    
+    # Обновляем общий прогресс студента по курсу
+    update_student_progress(current_user.id, module.course_id, db)
+    
+    # Создаем снимок прогресса (если еще нет на сегодня)
+    create_progress_snapshot(current_user.id, module.course_id, db)
     
     db.commit()
     db.refresh(step_progress)
@@ -1145,3 +1356,103 @@ def get_my_daily_streak(
         "is_active_today": current_user.last_activity_date == today,
         "total_study_time_minutes": current_user.total_study_time_minutes
     }
+
+# =============================================================================
+# PROGRESS INITIALIZATION
+# =============================================================================
+
+@router.post("/initialize-progress")
+def initialize_progress(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Инициализировать прогресс для всех студентов на основе существующих данных
+    Только для администраторов
+    """
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can initialize progress")
+    
+    try:
+        # Получаем всех студентов
+        students = db.query(UserInDB).filter(UserInDB.role == "student").all()
+        
+        # Получаем все курсы
+        courses = db.query(Course).all()
+        
+        initialized_count = 0
+        snapshots_created = 0
+        
+        for student in students:
+            for course in courses:
+                # Проверяем, записан ли студент на курс
+                enrollment = db.query(Enrollment).filter(
+                    Enrollment.user_id == student.id,
+                    Enrollment.course_id == course.id
+                ).first()
+                
+                if enrollment:
+                    # Обновляем прогресс студента по курсу
+                    update_student_progress(student.id, course.id, db)
+                    initialized_count += 1
+                    
+                    # Создаем снимок прогресса
+                    snapshot = create_progress_snapshot(student.id, course.id, db)
+                    if snapshot:
+                        snapshots_created += 1
+        
+        return {
+            "message": "Progress initialization completed",
+            "students_processed": len(students),
+            "courses_processed": len(courses),
+            "progress_records_updated": initialized_count,
+            "snapshots_created": snapshots_created
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to initialize progress: {str(e)}")
+
+@router.post("/recalculate-progress/{course_id}")
+def recalculate_course_progress(
+    course_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Пересчитать прогресс всех студентов для конкретного курса
+    Для администраторов и преподавателей курса
+    """
+    if current_user.role not in ["admin", "teacher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Проверяем доступ к курсу
+    if not check_course_access(course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    try:
+        # Получаем всех студентов, записанных на курс
+        enrollments = db.query(Enrollment).filter(Enrollment.course_id == course_id).all()
+        
+        updated_count = 0
+        snapshots_created = 0
+        
+        for enrollment in enrollments:
+            # Обновляем прогресс студента
+            update_student_progress(enrollment.user_id, course_id, db)
+            updated_count += 1
+            
+            # Создаем снимок прогресса
+            snapshot = create_progress_snapshot(enrollment.user_id, course_id, db)
+            if snapshot:
+                snapshots_created += 1
+        
+        return {
+            "message": f"Progress recalculated for course {course_id}",
+            "students_updated": updated_count,
+            "snapshots_created": snapshots_created
+        }
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to recalculate progress: {str(e)}")

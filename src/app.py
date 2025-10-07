@@ -14,6 +14,7 @@ from src.routes.messages import router as messages_router
 from src.routes.progress import router as progress_router
 from src.routes.media import router as media_router
 from src.routes.events import router as events_router
+from src.routes.analytics import router as analytics_router
 from dotenv import load_dotenv
 import logging
 from src.routes.socket_messages import create_socket_app
@@ -63,6 +64,7 @@ app.include_router(messages_router, prefix="/messages", tags=["Messages"])
 app.include_router(progress_router, prefix="/progress", tags=["Progress"])
 app.include_router(media_router, prefix="/media", tags=["Media"])
 app.include_router(events_router, prefix="/events", tags=["Events"])
+app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 
 # Root endpoint with ASCII art
 @app.get("/")
@@ -96,13 +98,18 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.24.0",
+            "version": "1.27.0",
+            "update": 27,
+            "features": {
+                "progress_tracking": "enabled",
+                "analytics_system": "enhanced",
+                "pdf_reports": "enabled",
+                "progress_snapshots": "enabled",
+                "step_timing": "enabled"
+            }
         }
     )
-
-# -----------------------------------------------------------------------------
-# Socket.IO setup (WebSocket messaging)
-# -----------------------------------------------------------------------------
+#-----------------------------------------------------------------------------
 socket_app = create_socket_app(app)
 
 # Error handlers

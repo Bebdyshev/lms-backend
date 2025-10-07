@@ -583,9 +583,10 @@ class StepProgress(Base):
     step_id = Column(Integer, ForeignKey("steps.id"), nullable=False)
     
     # Progress tracking
-    status = Column(String, nullable=False, default="not_started")  # not_started, completed
-    visited_at = Column(DateTime, nullable=True)
-    completed_at = Column(DateTime, nullable=True)
+    status = Column(String, nullable=False, default="not_started")  # not_started, in_progress, completed
+    started_at = Column(DateTime, nullable=True)  # Время начала изучения шага
+    visited_at = Column(DateTime, nullable=True)  # Время последнего посещения
+    completed_at = Column(DateTime, nullable=True)  # Время завершения
     time_spent_minutes = Column(Integer, default=0)
     
     # Relationships
@@ -597,6 +598,34 @@ class StepProgress(Base):
     # Unique constraint to prevent duplicate progress records
     __table_args__ = (
         UniqueConstraint('user_id', 'step_id', name='uq_user_step_progress'),
+    )
+
+class ProgressSnapshot(Base):
+    """Модель для хранения снимков прогресса студентов для отслеживания динамики"""
+    __tablename__ = "progress_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)  # None для общего прогресса
+    snapshot_date = Column(Date, nullable=False, default=date.today)
+    
+    # Метрики прогресса на момент снимка
+    completed_steps = Column(Integer, default=0, nullable=False)
+    total_steps = Column(Integer, default=0, nullable=False)
+    completion_percentage = Column(Float, default=0.0, nullable=False)
+    total_time_spent_minutes = Column(Integer, default=0, nullable=False)
+    assignments_completed = Column(Integer, default=0, nullable=False)
+    total_assignments = Column(Integer, default=0, nullable=False)
+    assignment_score_percentage = Column(Float, default=0.0, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("UserInDB")
+    course = relationship("Course")
+    
+    # Уникальный индекс для предотвращения дублирования снимков
+    __table_args__ = (
+        UniqueConstraint('user_id', 'course_id', 'snapshot_date', name='uq_progress_snapshot'),
     )
 
 # Progress Schemas
@@ -618,6 +647,7 @@ class StepProgressSchema(BaseModel):
     lesson_id: int
     step_id: int
     status: str
+    started_at: Optional[datetime] = None
     visited_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     time_spent_minutes: int
@@ -628,6 +658,23 @@ class StepProgressSchema(BaseModel):
 class StepProgressCreateSchema(BaseModel):
     step_id: int
     time_spent_minutes: int = 0
+
+class ProgressSnapshotSchema(BaseModel):
+    id: int
+    user_id: int
+    course_id: Optional[int] = None
+    snapshot_date: date
+    completed_steps: int
+    total_steps: int
+    completion_percentage: float
+    total_time_spent_minutes: int
+    assignments_completed: int
+    total_assignments: int
+    assignment_score_percentage: float
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
 
 class ProgressSchema(BaseModel):
     id: int
