@@ -20,9 +20,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    pass
+    # Add started_at column to step_progress table
+    op.add_column('step_progress', sa.Column('started_at', sa.DateTime(), nullable=True))
+    
+    # Update status column to support 'in_progress' state
+    # PostgreSQL doesn't need explicit enum modification for string columns
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    pass
+    # Remove started_at column from step_progress table
+    op.drop_column('step_progress', 'started_at')
