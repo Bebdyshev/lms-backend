@@ -98,15 +98,20 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.32.0",
-            "update": 32,
+            "version": "1.33.0",
+            "update": 33,
             "features": {
                 "progress_tracking": "enabled",
                 "analytics_system": "enhanced",
                 "pdf_reports": "enabled",
                 "progress_snapshots": "enabled",
                 "step_timing": "enabled",
-                "export_all_students": "fixed"
+                "export_all_students": "fixed",
+                "enhanced_quiz_types": "enabled",
+                "long_text_questions": "enabled",
+                "media_questions": "enabled",
+                "flashcard_steps": "enabled",
+                "question_media_upload": "enabled"
             }
         }
     )

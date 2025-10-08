@@ -25,17 +25,44 @@ class QuizQuestion(BaseModel):
     id: str
     assignment_id: str = ""
     question_text: str
-    question_type: str  # single_choice, multiple_choice, fill_blank
+    question_type: str  # single_choice, multiple_choice, fill_blank, long_text, media_question
     options: Optional[List[QuestionOption]] = None
     correct_answer: Union[str, List[str]] = ""
     points: int = 1
     order_index: int = 0
+    # New fields for enhanced question types
+    media_url: Optional[str] = None  # For PDF/image attachments
+    media_type: Optional[str] = None  # 'pdf', 'image'
+    expected_length: Optional[int] = None  # For long text questions (character count)
+    keywords: Optional[List[str]] = None  # For auto-grading long text answers
 
 class QuizData(BaseModel):
     title: str
     questions: List[QuizQuestion]
     time_limit_minutes: Optional[int] = None
     max_score: Optional[int] = None
+
+# =============================================================================
+# FLASHCARD MODELS
+# =============================================================================
+
+class FlashcardItem(BaseModel):
+    id: str
+    front_text: str
+    back_text: str
+    front_image_url: Optional[str] = None
+    back_image_url: Optional[str] = None
+    difficulty: str = "normal"  # easy, normal, hard
+    tags: Optional[List[str]] = None
+    order_index: int = 0
+
+class FlashcardSet(BaseModel):
+    title: str
+    description: Optional[str] = None
+    cards: List[FlashcardItem]
+    study_mode: str = "sequential"  # sequential, random, spaced_repetition
+    auto_flip: bool = False
+    show_progress: bool = True
 
 # =============================================================================
 # USER MODELS - LMS PLATFORM
@@ -167,7 +194,7 @@ class Step(Base):
     id = Column(Integer, primary_key=True, index=True)
     lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
     title = Column(String, nullable=False)
-    content_type = Column(String, nullable=False, default="text")  # video_text, text, quiz
+    content_type = Column(String, nullable=False, default="text")  # video_text, text, quiz, flashcard
     video_url = Column(String, nullable=True)
     content_text = Column(Text, nullable=True)
     original_image_url = Column(String, nullable=True)  # For SAT question images
