@@ -475,12 +475,28 @@ def get_all_students_analytics(
             GroupStudent.student_id == student.id
         ).all()
         
-        # Получаем активные курсы студента
-        active_courses = db.query(Course).join(Enrollment).filter(
-            Enrollment.user_id == student.id,
-            Enrollment.is_active == True,
-            Course.is_active == True
-        ).all()
+        # Получаем ВСЕ курсы где есть прогресс студента (не через Enrollment!)
+        # Используем StepProgress чтобы найти курсы где студент действительно учится
+        courses_with_progress = db.query(Course).join(
+            Module, Module.course_id == Course.id
+        ).join(
+            Lesson, Lesson.module_id == Module.id
+        ).join(
+            Step, Step.lesson_id == Lesson.id
+        ).join(
+            StepProgress, StepProgress.step_id == Step.id
+        ).filter(
+            StepProgress.user_id == student.id
+        ).distinct().all()
+        
+        # Если нет прогресса, пробуем через Enrollment
+        if not courses_with_progress:
+            courses_with_progress = db.query(Course).join(Enrollment).filter(
+                Enrollment.user_id == student.id,
+                Course.is_active == True
+            ).all()
+        
+        active_courses = courses_with_progress
         
         # Подсчитываем общий прогресс
         total_steps = 0
@@ -497,9 +513,16 @@ def get_all_students_analytics(
             ).count()
             total_steps += course_steps
             
-            course_completed_steps = db.query(StepProgress).filter(
+            # Правильный подсчет завершенных шагов через JOIN (как в детальном прогрессе)
+            course_completed_steps = db.query(StepProgress).join(
+                Step, StepProgress.step_id == Step.id
+            ).join(
+                Lesson, Step.lesson_id == Lesson.id
+            ).join(
+                Module, Lesson.module_id == Module.id
+            ).filter(
                 StepProgress.user_id == student.id,
-                StepProgress.course_id == course.id,
+                Module.course_id == course.id,
                 StepProgress.status == "completed"
             ).count()
             completed_steps += course_completed_steps
@@ -1166,8 +1189,157 @@ def export_all_students_report(
         raise HTTPException(status_code=403, detail="Access denied")
     
     try:
-        # Получаем данные всех студентов
-        all_students_data = get_all_students_analytics(current_user, db)
+        # Получаем данные всех студентов (дублируем логику из get_all_students_analytics)
+        students_query = db.query(UserInDB).filter(UserInDB.role == "student", UserInDB.is_active == True)
+        
+        # Фильтрация по ролям
+        if current_user.role == "teacher":
+            teacher_groups = db.query(Group.id).filter(Group.teacher_id == current_user.id).subquery()
+            teacher_courses = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
+            
+            group_students = db.query(GroupStudent.student_id).filter(GroupStudent.group_id.in_(teacher_groups)).subquery()
+            course_students = db.query(Enrollment.user_id).filter(Enrollment.course_id.in_(teacher_courses)).subquery()
+            
+            students_query = students_query.filter(
+                or_(
+                    UserInDB.id.in_(group_students),
+                    UserInDB.id.in_(course_students)
+                )
+            )
+        
+        elif current_user.role == "curator":
+            curator_groups = db.query(Group.id).filter(Group.curator_id == current_user.id).subquery()
+            group_students = db.query(GroupStudent.student_id).filter(GroupStudent.group_id.in_(curator_groups)).subquery()
+            
+            students_query = students_query.filter(UserInDB.id.in_(group_students))
+        
+        students = students_query.all()
+        
+        students_analytics = []
+        for student in students:
+            # Получаем группы студента
+            student_groups = db.query(Group).join(GroupStudent).filter(
+                GroupStudent.student_id == student.id
+            ).all()
+            
+            # Получаем ВСЕ курсы где есть прогресс студента (не через Enrollment!)
+            # Используем StepProgress чтобы найти курсы где студент действительно учится
+            courses_with_progress = db.query(Course).join(
+                Module, Module.course_id == Course.id
+            ).join(
+                Lesson, Lesson.module_id == Module.id
+            ).join(
+                Step, Step.lesson_id == Lesson.id
+            ).join(
+                StepProgress, StepProgress.step_id == Step.id
+            ).filter(
+                StepProgress.user_id == student.id
+            ).distinct().all()
+            
+            # Если нет прогресса, пробуем через Enrollment
+            if not courses_with_progress:
+                courses_with_progress = db.query(Course).join(Enrollment).filter(
+                    Enrollment.user_id == student.id,
+                    Course.is_active == True
+                ).all()
+            
+            active_courses = courses_with_progress
+            
+            # Подсчитываем общий прогресс
+            total_steps = 0
+            completed_steps = 0
+            total_assignments = 0
+            completed_assignments = 0
+            total_assignment_score = 0
+            total_max_score = 0
+            
+            for course in active_courses:
+                # Подсчет шагов
+                course_steps = db.query(Step).join(Lesson).join(Module).filter(
+                    Module.course_id == course.id
+                ).count()
+                total_steps += course_steps
+                
+                # Правильный подсчет завершенных шагов через JOIN (как в детальном прогрессе)
+                course_completed_steps = db.query(StepProgress).join(
+                    Step, StepProgress.step_id == Step.id
+                ).join(
+                    Lesson, Step.lesson_id == Lesson.id
+                ).join(
+                    Module, Lesson.module_id == Module.id
+                ).filter(
+                    StepProgress.user_id == student.id,
+                    Module.course_id == course.id,
+                    StepProgress.status == "completed"
+                ).count()
+                completed_steps += course_completed_steps
+                
+                # Подсчет заданий
+                course_assignments = db.query(Assignment).join(Lesson).join(Module).filter(
+                    Module.course_id == course.id
+                ).all()
+                total_assignments += len(course_assignments)
+                
+                for assignment in course_assignments:
+                    submission = db.query(AssignmentSubmission).filter(
+                        AssignmentSubmission.assignment_id == assignment.id,
+                        AssignmentSubmission.user_id == student.id
+                    ).first()
+                    
+                    if submission and submission.is_graded:
+                        completed_assignments += 1
+                        total_assignment_score += submission.score or 0
+                        total_max_score += assignment.max_score or 0
+            
+            # Вычисляем проценты
+            completion_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
+            assignment_score_percentage = (total_assignment_score / total_max_score * 100) if total_max_score > 0 else 0
+            
+            students_analytics.append({
+                "student_id": student.id,
+                "student_name": student.name,
+                "student_email": student.email,
+                "student_number": student.student_id,
+                "groups": [{"id": g.id, "name": g.name} for g in student_groups],
+                "active_courses_count": len(active_courses),
+                "total_steps": total_steps,
+                "completed_steps": completed_steps,
+                "completion_percentage": round(completion_percentage, 1),
+                "total_assignments": total_assignments,
+                "completed_assignments": completed_assignments,
+                "assignment_score_percentage": round(assignment_score_percentage, 1),
+                "total_study_time_minutes": student.total_study_time_minutes,
+                "daily_streak": student.daily_streak,
+                "last_activity_date": student.last_activity_date
+            })
+        
+        all_students_data = {
+            "students": students_analytics,
+            "total_students": len(students_analytics)
+        }
+        
+        # Debug logging
+        print(f"DEBUG: Total students found: {len(students_analytics)}")
+        print(f"DEBUG: Students data: {students_analytics[:2] if students_analytics else 'No students'}")
+        
+        # Проверяем, есть ли данные
+        if len(students_analytics) == 0:
+            # Если нет студентов, возвращаем пустой отчет с сообщением
+            report_text = f"""
+NO STUDENTS FOUND
+
+Your role: {current_user.role}
+User ID: {current_user.id}
+
+No students are accessible with your current permissions.
+
+Report generated: {datetime.now().strftime('%d.%m.%Y %H:%M')}
+"""
+            return Response(
+                content=report_text.encode('utf-8'),
+                media_type="text/plain",
+                headers={"Content-Disposition": f"attachment; filename=no_students_{datetime.now().strftime('%Y%m%d')}.txt"}
+            )
         
         # Генерируем PDF отчет
         try:
@@ -1182,19 +1354,19 @@ def export_all_students_report(
             styles = getSampleStyleSheet()
             story = []
             
-            # Заголовок
-            story.append(Paragraph("Сводный отчет по всем студентам", styles['Title']))
+            # Title (English to avoid Cyrillic encoding issues)
+            story.append(Paragraph("All Students Report", styles['Title']))
             story.append(Spacer(1, 12))
             
-            # Общая статистика
+            # Overall Statistics
             total_students = all_students_data['total_students']
             avg_completion = sum(s['completion_percentage'] for s in all_students_data['students']) / total_students if total_students > 0 else 0
             total_study_time = sum(s['total_study_time_minutes'] for s in all_students_data['students'])
             
             summary_info = [
-                ['Всего студентов:', str(total_students)],
-                ['Средний прогресс:', f"{avg_completion:.1f}%"],
-                ['Общее время обучения:', f"{total_study_time} мин ({total_study_time//60} ч)"],
+                ['Total Students:', str(total_students)],
+                ['Average Progress:', f"{avg_completion:.1f}%"],
+                ['Total Study Time:', f"{total_study_time} min ({total_study_time//60} h)"],
             ]
             
             summary_table = Table(summary_info, colWidths=[2*inch, 3*inch])
@@ -1205,18 +1377,18 @@ def export_all_students_report(
                 ('FONTSIZE', (0, 0), (-1, -1), 10),
             ]))
             
-            story.append(Paragraph("Общая статистика", styles['Heading2']))
+            story.append(Paragraph("Overall Statistics", styles['Heading2']))
             story.append(summary_table)
             story.append(Spacer(1, 12))
             
-            # Таблица всех студентов
+            # Students Table
             if all_students_data['students']:
-                story.append(Paragraph("Детальная информация по студентам", styles['Heading2']))
+                story.append(Paragraph("Detailed Student Information", styles['Heading2']))
                 
-                student_data = [['Имя', 'Группы', 'Прогресс %', 'Курсы', 'Время (ч)']]
+                student_data = [['Name', 'Groups', 'Progress %', 'Courses', 'Time (h)']]
                 
                 for student in all_students_data['students']:
-                    groups_str = ', '.join([g['name'] for g in student['groups']]) if student['groups'] else 'Нет группы'
+                    groups_str = ', '.join([g['name'] for g in student['groups']]) if student['groups'] else 'No group'
                     student_data.append([
                         student['student_name'],
                         groups_str[:20] + '...' if len(groups_str) > 20 else groups_str,
@@ -1240,35 +1412,35 @@ def export_all_students_report(
                 story.append(students_table)
             
             story.append(Spacer(1, 12))
-            story.append(Paragraph(f"Отчет сгенерирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}", styles['Normal']))
+            story.append(Paragraph(f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['Normal']))
             
             doc.build(story)
             buffer.seek(0)
             pdf_content = buffer.getvalue()
             
         except ImportError:
-            # Fallback к текстовому отчету
+            # Fallback to text report
             report_text = f"""
-СВОДНЫЙ ОТЧЕТ ПО ВСЕМ СТУДЕНТАМ
+ALL STUDENTS REPORT
 
-ОБЩАЯ СТАТИСТИКА:
-- Всего студентов: {all_students_data['total_students']}
-- Средний прогресс: {sum(s['completion_percentage'] for s in all_students_data['students']) / all_students_data['total_students'] if all_students_data['total_students'] > 0 else 0:.1f}%
-- Общее время обучения: {sum(s['total_study_time_minutes'] for s in all_students_data['students'])} мин
+OVERALL STATISTICS:
+- Total Students: {all_students_data['total_students']}
+- Average Progress: {sum(s['completion_percentage'] for s in all_students_data['students']) / all_students_data['total_students'] if all_students_data['total_students'] > 0 else 0:.1f}%
+- Total Study Time: {sum(s['total_study_time_minutes'] for s in all_students_data['students'])} min
 
-СТУДЕНТЫ:
+STUDENTS:
 """
             for student in all_students_data['students']:
-                groups_str = ', '.join([g['name'] for g in student['groups']]) if student['groups'] else 'Нет группы'
+                groups_str = ', '.join([g['name'] for g in student['groups']]) if student['groups'] else 'No group'
                 report_text += f"""
 - {student['student_name']} ({student['student_email']})
-  Группы: {groups_str}
-  Прогресс: {student['completion_percentage']}%
-  Активных курсов: {student['active_courses_count']}
-  Время обучения: {student['total_study_time_minutes']} мин
+  Groups: {groups_str}
+  Progress: {student['completion_percentage']}%
+  Active Courses: {student['active_courses_count']}
+  Study Time: {student['total_study_time_minutes']} min
 """
             
-            report_text += f"\nОтчет сгенерирован: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            report_text += f"\nReport generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
             pdf_content = report_text.encode('utf-8')
         
         filename = f"all_students_report_{datetime.now().strftime('%Y%m%d')}.pdf"
