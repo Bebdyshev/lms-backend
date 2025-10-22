@@ -98,8 +98,8 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.35.0",
-            "update": 35,
+            "version": "1.37.0",
+            "update": 37,
             "features": {
                 "progress_tracking": "enabled",
                 "analytics_system": "enhanced",
@@ -114,7 +114,10 @@ def health_check():
                 "question_media_upload": "enabled",
                 "curator_permissions": "fixed",
                 "analytics_access_control": "improved",
-                "course_overview_student_discovery": "fixed"
+                "course_overview_student_discovery": "fixed",
+                "groups_analytics_fixed": "enabled",
+                "course_groups_view": "enabled",
+                "group_students_analytics_fixed": "enabled"
             }
         }
     )

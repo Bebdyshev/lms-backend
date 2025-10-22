@@ -619,12 +619,28 @@ def get_groups_analytics(
         students_with_progress = 0
         
         for student in students:
-            # Получаем активные курсы студента
-            active_courses = db.query(Course).join(Enrollment).filter(
-                Enrollment.user_id == student.id,
-                Enrollment.is_active == True,
-                Course.is_active == True
-            ).all()
+            # Получаем курсы где есть прогресс студента (через StepProgress)
+            courses_with_progress = db.query(Course).join(
+                Module, Module.course_id == Course.id
+            ).join(
+                Lesson, Lesson.module_id == Module.id
+            ).join(
+                Step, Step.lesson_id == Lesson.id
+            ).join(
+                StepProgress, StepProgress.step_id == Step.id
+            ).filter(
+                StepProgress.user_id == student.id
+            ).distinct().all()
+            
+            # Фолбэк на Enrollment если нет прогресса
+            if not courses_with_progress:
+                courses_with_progress = db.query(Course).join(Enrollment).filter(
+                    Enrollment.user_id == student.id,
+                    Enrollment.is_active == True,
+                    Course.is_active == True
+                ).all()
+            
+            active_courses = courses_with_progress
             
             if active_courses:
                 student_total_steps = 0
@@ -639,9 +655,16 @@ def get_groups_analytics(
                     ).count()
                     student_total_steps += course_steps
                     
-                    course_completed_steps = db.query(StepProgress).filter(
+                    # Правильный подсчет завершенных шагов через JOIN
+                    course_completed_steps = db.query(StepProgress).join(
+                        Step, StepProgress.step_id == Step.id
+                    ).join(
+                        Lesson, Step.lesson_id == Lesson.id
+                    ).join(
+                        Module, Lesson.module_id == Module.id
+                    ).filter(
                         StepProgress.user_id == student.id,
-                        StepProgress.course_id == course.id,
+                        Module.course_id == course.id,
                         StepProgress.status == "completed"
                     ).count()
                     student_completed_steps += course_completed_steps
@@ -694,6 +717,126 @@ def get_groups_analytics(
         "total_groups": len(groups_analytics)
     }
 
+@router.get("/course/{course_id}/groups")
+def get_course_groups_analytics(
+    course_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get analytics for groups in a specific course"""
+    
+    if current_user.role not in ["teacher", "curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check course access
+    if not check_course_access(course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    # Get groups with students who have progress in this course
+    groups_with_students = db.query(Group).join(
+        GroupStudent, GroupStudent.group_id == Group.id
+    ).join(
+        UserInDB, GroupStudent.student_id == UserInDB.id
+    ).join(
+        StepProgress, StepProgress.user_id == UserInDB.id
+    ).join(
+        Step, StepProgress.step_id == Step.id
+    ).join(
+        Lesson, Step.lesson_id == Lesson.id
+    ).join(
+        Module, Lesson.module_id == Module.id
+    ).filter(
+        Module.course_id == course_id,
+        Group.is_active == True
+    ).distinct().all()
+    
+    # Get course structure for calculations
+    total_steps_in_course = db.query(Step).join(Lesson).join(Module).filter(
+        Module.course_id == course_id
+    ).count()
+    
+    groups_analytics = []
+    for group in groups_with_students:
+        # Get students in this group
+        students = db.query(UserInDB).join(GroupStudent).filter(
+            GroupStudent.group_id == group.id,
+            UserInDB.is_active == True
+        ).all()
+        
+        # Calculate group metrics for this course
+        total_completion = 0
+        total_assignment_score = 0
+        total_study_time = 0
+        students_with_progress = 0
+        
+        for student in students:
+            # Get student's progress in THIS course
+            completed_steps = db.query(StepProgress).join(
+                Step, StepProgress.step_id == Step.id
+            ).join(
+                Lesson, Step.lesson_id == Lesson.id
+            ).join(
+                Module, Lesson.module_id == Module.id
+            ).filter(
+                StepProgress.user_id == student.id,
+                Module.course_id == course_id,
+                StepProgress.status == "completed"
+            ).count()
+            
+            if total_steps_in_course > 0:
+                completion_pct = (completed_steps / total_steps_in_course) * 100
+                total_completion += completion_pct
+                if completed_steps > 0:
+                    students_with_progress += 1
+            
+            # Get assignment scores for this course
+            assignments = db.query(Assignment).join(Lesson).join(Module).filter(
+                Module.course_id == course_id
+            ).all()
+            
+            student_score = 0
+            student_max = 0
+            for assignment in assignments:
+                submission = db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == assignment.id,
+                    AssignmentSubmission.user_id == student.id
+                ).first()
+                
+                if submission and submission.is_graded:
+                    student_score += submission.score or 0
+                    student_max += assignment.max_score or 0
+            
+            if student_max > 0:
+                total_assignment_score += (student_score / student_max) * 100
+            
+            total_study_time += student.total_study_time_minutes
+        
+        # Calculate averages
+        student_count = len(students)
+        avg_completion = (total_completion / student_count) if student_count > 0 else 0
+        avg_assignment_score = (total_assignment_score / student_count) if student_count > 0 else 0
+        avg_study_time = (total_study_time / student_count) if student_count > 0 else 0
+        
+        groups_analytics.append({
+            "group_id": group.id,
+            "group_name": group.name,
+            "description": group.description,
+            "teacher_name": group.teacher.name if group.teacher else None,
+            "curator_name": group.curator.name if group.curator else None,
+            "students_count": student_count,
+            "students_with_progress": students_with_progress,
+            "average_completion_percentage": round(avg_completion, 1),
+            "average_assignment_score_percentage": round(avg_assignment_score, 1),
+            "average_study_time_minutes": round(avg_study_time, 0),
+            "created_at": group.created_at
+        })
+    
+    return {
+        "course_id": course_id,
+        "groups": groups_analytics,
+        "total_groups": len(groups_analytics)
+    }
+
 @router.get("/group/{group_id}/students")
 def get_group_students_analytics(
     group_id: int,
@@ -725,14 +868,35 @@ def get_group_students_analytics(
     
     students_analytics = []
     for student in students:
-        # Получаем активные курсы студента
-        active_courses = db.query(Course).join(Enrollment).filter(
-            Enrollment.user_id == student.id,
-            Enrollment.is_active == True,
-            Course.is_active == True
+        # Получаем курсы где есть прогресс студента (через StepProgress - source of truth)
+        courses_with_progress = db.query(Course).join(
+            Module, Module.course_id == Course.id
+        ).join(
+            Lesson, Lesson.module_id == Module.id
+        ).join(
+            Step, Step.lesson_id == Lesson.id
+        ).join(
+            StepProgress, StepProgress.step_id == Step.id
+        ).filter(
+            StepProgress.user_id == student.id
+        ).distinct().all()
+        
+        # Фолбэк на Enrollment если нет прогресса
+        if not courses_with_progress:
+            courses_with_progress = db.query(Course).join(Enrollment).filter(
+                Enrollment.user_id == student.id,
+                Enrollment.is_active == True,
+                Course.is_active == True
+            ).all()
+        
+        active_courses = courses_with_progress
+        
+        # Получаем группы студента для отображения
+        student_groups = db.query(Group).join(GroupStudent).filter(
+            GroupStudent.student_id == student.id
         ).all()
         
-        # Подсчитываем прогресс (аналогично предыдущему эндпоинту)
+        # Подсчитываем прогресс
         total_steps = 0
         completed_steps = 0
         total_assignments = 0
@@ -746,9 +910,16 @@ def get_group_students_analytics(
             ).count()
             total_steps += course_steps
             
-            course_completed_steps = db.query(StepProgress).filter(
+            # Правильный подсчет завершенных шагов через JOIN
+            course_completed_steps = db.query(StepProgress).join(
+                Step, StepProgress.step_id == Step.id
+            ).join(
+                Lesson, Step.lesson_id == Lesson.id
+            ).join(
+                Module, Lesson.module_id == Module.id
+            ).filter(
                 StepProgress.user_id == student.id,
-                StepProgress.course_id == course.id,
+                Module.course_id == course.id,
                 StepProgress.status == "completed"
             ).count()
             completed_steps += course_completed_steps
@@ -777,6 +948,7 @@ def get_group_students_analytics(
             "student_name": student.name,
             "student_email": student.email,
             "student_number": student.student_id,
+            "groups": [{"id": g.id, "name": g.name} for g in student_groups],
             "active_courses_count": len(active_courses),
             "total_steps": total_steps,
             "completed_steps": completed_steps,
