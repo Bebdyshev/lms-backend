@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, and_, or_
 from typing import List, Optional, Dict, Any
@@ -15,6 +15,7 @@ from src.schemas.models import (
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access
+from src.services.excel_export_service import get_excel_export_service
 
 router = APIRouter()
 
@@ -1890,3 +1891,390 @@ def get_student_learning_path(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get learning path: {str(e)}")
+
+@router.get("/export-excel")
+def export_analytics_to_excel(
+    course_id: int,
+    group_id: Optional[int] = None,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Export analytics data to Excel file with charts
+    
+    Args:
+        course_id: ID of the course to export
+        group_id: Optional group ID to filter students
+    
+    Returns:
+        Excel file (.xlsx) with detailed analytics and charts
+    """
+    
+    # Check permissions
+    if current_user.role not in ["teacher", "curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Check course access
+    if not check_course_access(course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    try:
+        # Get course info
+        course = db.query(Course).filter(Course.id == course_id).first()
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        
+        # Get course overview
+        course_overview_data = None
+        try:
+            # Reuse existing logic from get_course_analytics_overview
+            students_with_progress = db.query(UserInDB).join(
+                StepProgress, StepProgress.user_id == UserInDB.id
+            ).join(
+                Step, StepProgress.step_id == Step.id
+            ).join(
+                Lesson, Step.lesson_id == Lesson.id
+            ).join(
+                Module, Lesson.module_id == Module.id
+            ).filter(
+                Module.course_id == course_id,
+                UserInDB.role == "student",
+                UserInDB.is_active == True
+            ).distinct().all()
+            
+            enrolled_students_ids = db.query(Enrollment.user_id).filter(
+                Enrollment.course_id == course_id,
+                Enrollment.is_active == True
+            ).subquery()
+            
+            enrolled_no_progress = db.query(UserInDB).filter(
+                UserInDB.id.in_(enrolled_students_ids),
+                UserInDB.role == "student",
+                UserInDB.is_active == True
+            ).all()
+            
+            enrolled_students_set = {s.id: s for s in students_with_progress}
+            for student in enrolled_no_progress:
+                if student.id not in enrolled_students_set:
+                    enrolled_students_set[student.id] = student
+            
+            enrolled_students = list(enrolled_students_set.values())
+            
+            # Get course structure
+            modules = db.query(Module).filter(Module.course_id == course_id).all()
+            total_lessons = sum(len(db.query(Lesson).filter(Lesson.module_id == m.id).all()) for m in modules)
+            total_steps = sum(
+                len(db.query(Step).filter(Step.lesson_id == l.id).all())
+                for m in modules
+                for l in db.query(Lesson).filter(Lesson.module_id == m.id).all()
+            )
+            
+            # Calculate engagement metrics
+            total_time = sum(s.total_study_time_minutes for s in enrolled_students)
+            total_completed = db.query(StepProgress).join(
+                Step, StepProgress.step_id == Step.id
+            ).join(
+                Lesson, Step.lesson_id == Lesson.id
+            ).join(
+                Module, Lesson.module_id == Module.id
+            ).filter(
+                Module.course_id == course_id,
+                StepProgress.status == "completed"
+            ).count()
+            
+            avg_completion = 0
+            if enrolled_students and total_steps > 0:
+                total_completion = 0
+                for student in enrolled_students:
+                    completed = db.query(StepProgress).join(
+                        Step, StepProgress.step_id == Step.id
+                    ).join(
+                        Lesson, Step.lesson_id == Lesson.id
+                    ).join(
+                        Module, Lesson.module_id == Module.id
+                    ).filter(
+                        StepProgress.user_id == student.id,
+                        Module.course_id == course_id,
+                        StepProgress.status == "completed"
+                    ).count()
+                    total_completion += (completed / total_steps) * 100
+                avg_completion = total_completion / len(enrolled_students)
+            
+            course_overview_data = {
+                "course_info": {
+                    "id": course.id,
+                    "title": course.title,
+                    "teacher_name": course.teacher.name if course.teacher else "N/A"
+                },
+                "structure": {
+                    "total_modules": len(modules),
+                    "total_lessons": total_lessons,
+                    "total_steps": total_steps
+                },
+                "engagement": {
+                    "total_enrolled_students": len(enrolled_students),
+                    "total_time_spent_minutes": total_time,
+                    "total_completed_steps": total_completed,
+                    "average_completion_rate": avg_completion
+                }
+            }
+        except Exception as e:
+            print(f"Warning: Could not get course overview: {e}")
+        
+        # Get students data
+        if group_id:
+            # Filter by group
+            group = db.query(Group).filter(Group.id == group_id).first()
+            if not group:
+                raise HTTPException(status_code=404, detail="Group not found")
+            
+            # Check group access
+            if current_user.role == "teacher" and group.teacher_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Access denied to this group")
+            elif current_user.role == "curator" and group.curator_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Access denied to this group")
+            
+            students = db.query(UserInDB).join(GroupStudent).filter(
+                GroupStudent.group_id == group_id,
+                UserInDB.is_active == True
+            ).all()
+            
+            title_suffix = f" - {group.name}"
+        else:
+            students = enrolled_students
+            title_suffix = ""
+        
+        # Prepare students data
+        students_data = []
+        for student in students:
+            # Get courses with progress
+            courses_with_progress = db.query(Course).join(
+                Module, Module.course_id == Course.id
+            ).join(
+                Lesson, Lesson.module_id == Module.id
+            ).join(
+                Step, Step.lesson_id == Lesson.id
+            ).join(
+                StepProgress, StepProgress.step_id == Step.id
+            ).filter(
+                StepProgress.user_id == student.id
+            ).distinct().all()
+            
+            if not courses_with_progress:
+                courses_with_progress = db.query(Course).join(Enrollment).filter(
+                    Enrollment.user_id == student.id,
+                    Enrollment.is_active == True,
+                    Course.is_active == True
+                ).all()
+            
+            # Get student groups
+            student_groups = db.query(Group).join(GroupStudent).filter(
+                GroupStudent.student_id == student.id
+            ).all()
+            
+            # Calculate metrics
+            total_steps = 0
+            completed_steps = 0
+            total_assignments = 0
+            completed_assignments = 0
+            total_score = 0
+            max_score = 0
+            
+            for course in courses_with_progress:
+                course_steps = db.query(Step).join(Lesson).join(Module).filter(
+                    Module.course_id == course.id
+                ).count()
+                total_steps += course_steps
+                
+                course_completed = db.query(StepProgress).join(
+                    Step, StepProgress.step_id == Step.id
+                ).join(
+                    Lesson, Step.lesson_id == Lesson.id
+                ).join(
+                    Module, Lesson.module_id == Module.id
+                ).filter(
+                    StepProgress.user_id == student.id,
+                    Module.course_id == course.id,
+                    StepProgress.status == "completed"
+                ).count()
+                completed_steps += course_completed
+                
+                assignments = db.query(Assignment).join(Lesson).join(Module).filter(
+                    Module.course_id == course.id
+                ).all()
+                total_assignments += len(assignments)
+                
+                for assignment in assignments:
+                    submission = db.query(AssignmentSubmission).filter(
+                        AssignmentSubmission.assignment_id == assignment.id,
+                        AssignmentSubmission.user_id == student.id
+                    ).first()
+                    
+                    if submission and submission.is_graded:
+                        completed_assignments += 1
+                        total_score += submission.score or 0
+                        max_score += assignment.max_score or 0
+            
+            completion_pct = (completed_steps / total_steps * 100) if total_steps > 0 else 0
+            score_pct = (total_score / max_score * 100) if max_score > 0 else 0
+            
+            students_data.append({
+                "student_id": student.id,
+                "student_name": student.name,
+                "student_email": student.email,
+                "student_number": student.student_id,
+                "groups": [{"id": g.id, "name": g.name} for g in student_groups],
+                "active_courses_count": len(courses_with_progress),
+                "total_steps": total_steps,
+                "completed_steps": completed_steps,
+                "completion_percentage": completion_pct,
+                "total_assignments": total_assignments,
+                "completed_assignments": completed_assignments,
+                "assignment_score_percentage": score_pct,
+                "total_study_time_minutes": student.total_study_time_minutes,
+                "daily_streak": student.daily_streak,
+                "last_activity_date": student.last_activity_date
+            })
+        
+        # Get groups data if no specific group filter
+        groups_data = None
+        if not group_id:
+            try:
+                groups_with_students = db.query(Group).join(
+                    GroupStudent, GroupStudent.group_id == Group.id
+                ).join(
+                    UserInDB, GroupStudent.student_id == UserInDB.id
+                ).join(
+                    StepProgress, StepProgress.user_id == UserInDB.id
+                ).join(
+                    Step, StepProgress.step_id == Step.id
+                ).join(
+                    Lesson, Step.lesson_id == Lesson.id
+                ).join(
+                    Module, Lesson.module_id == Module.id
+                ).filter(
+                    Module.course_id == course_id,
+                    Group.is_active == True
+                ).distinct().all()
+                
+                groups_data = []
+                for group in groups_with_students:
+                    group_students = db.query(UserInDB).join(GroupStudent).filter(
+                        GroupStudent.group_id == group.id,
+                        UserInDB.is_active == True
+                    ).all()
+                    
+                    total_completion = 0
+                    total_score = 0
+                    total_time = 0
+                    
+                    for st in group_students:
+                        completed = db.query(StepProgress).join(
+                            Step, StepProgress.step_id == Step.id
+                        ).join(
+                            Lesson, Step.lesson_id == Lesson.id
+                        ).join(
+                            Module, Lesson.module_id == Module.id
+                        ).filter(
+                            StepProgress.user_id == st.id,
+                            Module.course_id == course_id,
+                            StepProgress.status == "completed"
+                        ).count()
+                        
+                        if total_steps > 0:
+                            total_completion += (completed / total_steps) * 100
+                        
+                        total_time += st.total_study_time_minutes
+                    
+                    avg_completion = total_completion / len(group_students) if group_students else 0
+                    avg_time = total_time / len(group_students) if group_students else 0
+                    
+                    groups_data.append({
+                        "group_id": group.id,
+                        "group_name": group.name,
+                        "description": group.description,
+                        "teacher_name": group.teacher.name if group.teacher else None,
+                        "curator_name": group.curator.name if group.curator else None,
+                        "students_count": len(group_students),
+                        "average_completion_percentage": avg_completion,
+                        "average_assignment_score_percentage": 0,
+                        "average_study_time_minutes": avg_time,
+                        "created_at": group.created_at
+                    })
+            except Exception as e:
+                print(f"Warning: Could not get groups data: {e}")
+        
+        # Format data for Excel export
+        formatted_students_data = []
+        for student_dict in students_data:
+            formatted_students_data.append({
+                "student_id": student_dict.get("student_id"),
+                "student_name": student_dict.get("student_name", "N/A"),
+                "email": student_dict.get("student_email", "N/A"),
+                "groups": [g["name"] for g in student_dict.get("groups", [])],
+                "progress_percentage": student_dict.get("completion_percentage", 0),
+                "completed_steps": student_dict.get("completed_steps", 0),
+                "total_steps": student_dict.get("total_steps", 0),
+                "assignments_completed": student_dict.get("completed_assignments", 0),
+                "total_assignments": student_dict.get("total_assignments", 0),
+                "average_score": student_dict.get("assignment_score_percentage", 0),
+                "total_study_time": student_dict.get("total_study_time_minutes", 0),
+                "current_streak": student_dict.get("daily_streak", 0),
+                "last_activity": str(student_dict.get("last_activity_date", "Never"))
+            })
+        
+        # Format course overview
+        formatted_course_overview = None
+        if course_overview_data:
+            formatted_course_overview = {
+                "course_name": course.title,
+                "total_students": len(students),
+                "average_progress": course_overview_data.get("engagement", {}).get("average_completion_rate", 0),
+                "total_modules": course_overview_data.get("structure", {}).get("total_modules", 0),
+                "total_lessons": course_overview_data.get("structure", {}).get("total_lessons", 0),
+                "total_steps": course_overview_data.get("structure", {}).get("total_steps", 0),
+                "total_assignments": 0,  # Can add this if needed
+                "active_students": len([s for s in formatted_students_data if s["progress_percentage"] > 0]),
+                "students_above_50": len([s for s in formatted_students_data if s["progress_percentage"] >= 50]),
+                "students_above_80": len([s for s in formatted_students_data if s["progress_percentage"] >= 80]),
+                "average_study_time": sum(s["total_study_time"] for s in formatted_students_data) / len(formatted_students_data) if formatted_students_data else 0
+            }
+        
+        # Format groups data
+        formatted_groups_data = None
+        if groups_data:
+            formatted_groups_data = []
+            for group_dict in groups_data:
+                formatted_groups_data.append({
+                    "group_name": group_dict.get("group_name", "N/A"),
+                    "student_count": group_dict.get("students_count", 0),
+                    "average_progress": group_dict.get("average_completion_percentage", 0),
+                    "teacher_name": group_dict.get("teacher_name"),
+                    "curator_name": group_dict.get("curator_name"),
+                    "active_students": len([s for s in formatted_students_data if any(g in [grp for grp in s["groups"]] for g in [group_dict.get("group_name")])])
+                })
+        
+        # Create Excel file
+        excel_service = get_excel_export_service()
+        
+        excel_buffer = excel_service.create_analytics_workbook(
+            course_name=course.title,
+            students_data=formatted_students_data,
+            course_overview=formatted_course_overview,
+            groups_data=formatted_groups_data
+        )
+        
+        # Generate filename
+        filename = f"Analytics_{course.title.replace(' ', '_')}{title_suffix.replace(' ', '_')}_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+        
+        # Return as streaming response
+        return StreamingResponse(
+            excel_buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to export to Excel: {str(e)}")
