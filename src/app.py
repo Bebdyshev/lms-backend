@@ -98,8 +98,8 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.42.0",
-            "update": 42,
+            "version": "1.43.0",
+            "update": 43,
             "features": {
                 "progress_tracking": "enabled",
                 "analytics_system": "enhanced",
