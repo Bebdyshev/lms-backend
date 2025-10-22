@@ -39,31 +39,9 @@ def get_detailed_student_analytics(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
     
-    # Check access rights based on role
-    if current_user.role == "teacher":
-        # Teachers can only see students in their courses
-        teacher_courses = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
-        student_enrollments = db.query(Enrollment).filter(
-            Enrollment.user_id == student_id,
-            Enrollment.course_id.in_(teacher_courses)
-        ).first()
-        if not student_enrollments:
-            raise HTTPException(status_code=403, detail="Access denied to this student")
-    
-    elif current_user.role == "curator":
-        # Curators can see students in their groups
-        group_student = db.query(GroupStudent).filter(
-            GroupStudent.student_id == student_id
-        ).first()
-        if not group_student:
-            raise HTTPException(status_code=403, detail="Student not in any group")
-        
-        curator_group = db.query(Group).filter(
-            Group.id == group_student.group_id,
-            Group.curator_id == current_user.id
-        ).first()
-        if not curator_group:
-            raise HTTPException(status_code=403, detail="Access denied to this student")
+    # Check access rights based on role using centralized permission check
+    if current_user.role != "admin" and not check_student_access(student_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this student")
     
     # Get student's courses
     courses_query = db.query(Course).join(Enrollment).filter(
@@ -189,7 +167,7 @@ def get_course_analytics_overview(
     if current_user.role not in ["teacher", "curator", "admin"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Check course access
+    # Check course access (now properly validates curator access via group students)
     if not check_course_access(course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
@@ -197,12 +175,41 @@ def get_course_analytics_overview(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
     
-    # Get enrolled students
-    enrolled_students = db.query(UserInDB).join(Enrollment).filter(
+    # Get students with progress in this course (via StepProgress - source of truth)
+    # This finds students who actually have learning activity, not just enrollment records
+    students_with_progress = db.query(UserInDB).join(
+        StepProgress, StepProgress.user_id == UserInDB.id
+    ).join(
+        Step, StepProgress.step_id == Step.id
+    ).join(
+        Lesson, Step.lesson_id == Lesson.id
+    ).join(
+        Module, Lesson.module_id == Module.id
+    ).filter(
+        Module.course_id == course_id,
+        UserInDB.role == "student",
+        UserInDB.is_active == True
+    ).distinct().all()
+    
+    # Also get students enrolled but without progress yet
+    enrolled_students_ids = db.query(Enrollment.user_id).filter(
         Enrollment.course_id == course_id,
-        Enrollment.is_active == True,
-        UserInDB.role == "student"
+        Enrollment.is_active == True
+    ).subquery()
+    
+    enrolled_no_progress = db.query(UserInDB).filter(
+        UserInDB.id.in_(enrolled_students_ids),
+        UserInDB.role == "student",
+        UserInDB.is_active == True
     ).all()
+    
+    # Combine both lists (students with progress + enrolled without progress)
+    enrolled_students_set = {s.id: s for s in students_with_progress}
+    for student in enrolled_no_progress:
+        if student.id not in enrolled_students_set:
+            enrolled_students_set[student.id] = student
+    
+    enrolled_students = list(enrolled_students_set.values())
     
     # Get course structure
     modules = db.query(Module).filter(Module.course_id == course_id).order_by(Module.order_index).all()
@@ -296,6 +303,7 @@ def get_video_engagement_analytics(
     if current_user.role not in ["teacher", "curator", "admin"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Properly validate access including curator permissions
     if not check_course_access(course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
@@ -350,6 +358,7 @@ def get_quiz_performance_analytics(
     if current_user.role not in ["teacher", "curator", "admin"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Properly validate access including curator permissions
     if not check_course_access(course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
@@ -1466,15 +1475,16 @@ def get_student_detailed_progress(
     db: Session = Depends(get_db)
 ):
     """
-    Получить детальный прогресс студента по шагам
-    Показывает каждый шаг, время прохождения, порядок выполнения
+    Get detailed step-by-step progress for a student
+    Shows each step, completion time, and order of completion
+    Properly validates curator access via group membership
     """
     
-    # Проверка прав доступа
+    # Check role-based access
     if current_user.role not in ["teacher", "curator", "admin"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Проверяем доступ к студенту
+    # Validate student access (now properly checks curator permissions)
     if current_user.role != "admin" and not check_student_access(student_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this student")
     
@@ -1637,13 +1647,15 @@ def get_student_learning_path(
     db: Session = Depends(get_db)
 ):
     """
-    Получить путь обучения студента - хронологический порядок прохождения шагов
+    Get student learning path - chronological order of step completion
+    Properly validates curator access via group membership
     """
     
-    # Проверка прав доступа
+    # Check role-based access
     if current_user.role not in ["teacher", "curator", "admin"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Validate student access (now properly checks curator permissions)
     if current_user.role != "admin" and not check_student_access(student_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this student")
     

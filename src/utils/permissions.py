@@ -99,9 +99,29 @@ def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
         return False
     
     elif user.role == "curator":
-        # Curators can access courses if they have students enrolled
-        # TODO: Implement curator-student assignment logic
-        return True  # For now, allow all curators
+        # Curators can access courses if they have students from their groups enrolled
+        from src.schemas.models import GroupStudent, Group
+        
+        # Get groups where user is curator
+        curator_groups = db.query(Group).filter(Group.curator_id == user.id).all()
+        
+        if not curator_groups:
+            return False
+        
+        curator_group_ids = [g.id for g in curator_groups]
+        
+        # Check if any students from curator's groups are enrolled in this course
+        student_ids_in_groups = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id.in_(curator_group_ids)
+        ).subquery()
+        
+        enrolled_students = db.query(Enrollment).filter(
+            Enrollment.course_id == course_id,
+            Enrollment.user_id.in_(student_ids_in_groups),
+            Enrollment.is_active == True
+        ).first()
+        
+        return enrolled_students is not None
     
     return False
 
@@ -156,10 +176,23 @@ def check_student_access(student_id: int, user: UserInDB, db: Session) -> bool:
     
     elif user.role == "curator":
         # Curators can access students in their assigned groups
-        if user.group_id and student.group_id == user.group_id:
-            return True
-        # TODO: Implement more complex curator-student assignment logic
-        return True  # For now, allow all curators
+        from src.schemas.models import GroupStudent, Group
+        
+        # Get groups where user is curator
+        curator_groups = db.query(Group).filter(Group.curator_id == user.id).all()
+        
+        if not curator_groups:
+            return False
+        
+        curator_group_ids = [g.id for g in curator_groups]
+        
+        # Check if student is in any of curator's groups
+        student_in_group = db.query(GroupStudent).filter(
+            GroupStudent.student_id == student_id,
+            GroupStudent.group_id.in_(curator_group_ids)
+        ).first()
+        
+        return student_in_group is not None
     
     return False
 
