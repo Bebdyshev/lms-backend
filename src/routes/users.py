@@ -72,7 +72,8 @@ def complete_onboarding(
 ):
     """Mark user's onboarding as completed."""
     if user.onboarding_completed:
-        raise HTTPException(status_code=400, detail="Onboarding already completed")
+        # Already completed, just return the user
+        return user
     
     user.onboarding_completed = True
     from datetime import timezone
