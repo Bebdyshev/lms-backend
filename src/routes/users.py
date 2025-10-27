@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 from src.schemas.models import UserInDB, UserSchema
 from src.config import get_db
@@ -62,3 +63,20 @@ def update_profile(
     db.commit()
     db.refresh(user)
     return user 
+
+
+@router.post("/complete-onboarding", response_model=UserSchema)
+def complete_onboarding(
+    db: Session = Depends(get_db),
+    user: UserInDB = Depends(get_current_user),
+):
+    """Mark user's onboarding as completed."""
+    if user.onboarding_completed:
+        raise HTTPException(status_code=400, detail="Onboarding already completed")
+    
+    user.onboarding_completed = True
+    from datetime import timezone
+    user.onboarding_completed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user)
+    return user

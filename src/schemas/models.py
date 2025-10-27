@@ -81,6 +81,10 @@ class UserInDB(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     refresh_token = Column(String, nullable=True)
     
+    # Onboarding tracking
+    onboarding_completed = Column(Boolean, default=False, nullable=False)
+    onboarding_completed_at = Column(DateTime, nullable=True)
+    
     # Student specific fields
     student_id = Column(String, unique=True, nullable=True)  # For students only
     total_study_time_minutes = Column(Integer, default=0, nullable=False)
@@ -114,6 +118,8 @@ class UserSchema(BaseModel):
     total_study_time_minutes: Optional[int] = 0
     daily_streak: Optional[int] = 0
     last_activity_date: Optional[date] = None
+    onboarding_completed: Optional[bool] = False
+    onboarding_completed_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:

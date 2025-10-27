@@ -24,7 +24,7 @@ load_dotenv()
 app = FastAPI(
     title="LMS Platform API",
     description="Learning Management System API",
-    version="1.24.0"
+    version="1.25.0"
 )
 
 # Initialize database
@@ -98,8 +98,8 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.43.0",
-            "update": 43,
+            "version": "1.44.0",
+            "update": 44,
             "features": {
                 "progress_tracking": "enabled",
                 "analytics_system": "enhanced",
@@ -119,7 +119,8 @@ def health_check():
                 "course_groups_view": "enabled",
                 "group_students_analytics_fixed": "enabled",
                 "excel_export_with_charts": "enabled",
-                "unsaved_changes_warnings": "implemented"
+                "unsaved_changes_warnings": "implemented",
+                "onboarding_tracking": "enabled"
             }
         }
     )
