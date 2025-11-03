@@ -61,7 +61,7 @@ def run_migrations_online() -> None:
 
     """
     # Get database URL from environment or config
-    database_url = os.getenv("POSTGRES_URL", "postgresql://myuser:mypassword@localhost:5432/mydatabase")
+    database_url = os.getenv("POSTGRES_URL", "postgresql://myuser:mypassword@localhost:5432/lms_db")
     
     # Override the config with our database URL
     config.set_main_option("sqlalchemy.url", database_url)

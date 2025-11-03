@@ -661,6 +661,29 @@ class ProgressSnapshot(Base):
         UniqueConstraint('user_id', 'course_id', 'snapshot_date', name='uq_progress_snapshot'),
     )
 
+class QuizAttempt(Base):
+    """Модель для хранения попыток прохождения квизов"""
+    __tablename__ = "quiz_attempts"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    step_id = Column(Integer, ForeignKey("steps.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
+    quiz_title = Column(String, nullable=True)
+    total_questions = Column(Integer, nullable=False)
+    correct_answers = Column(Integer, nullable=False)
+    score_percentage = Column(Float, nullable=False)
+    answers = Column(Text, nullable=True)  # JSON string of user answers
+    time_spent_seconds = Column(Integer, nullable=True)
+    completed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("UserInDB")
+    step = relationship("Step")
+    course = relationship("Course")
+    lesson = relationship("Lesson")
+
 # Progress Schemas
 class EnrollmentSchema(BaseModel):
     id: int
@@ -708,6 +731,35 @@ class ProgressSnapshotSchema(BaseModel):
     
     class Config:
         from_attributes = True
+
+class QuizAttemptSchema(BaseModel):
+    id: int
+    user_id: int
+    step_id: int
+    course_id: int
+    lesson_id: int
+    quiz_title: Optional[str] = None
+    total_questions: int
+    correct_answers: int
+    score_percentage: float
+    answers: Optional[str] = None
+    time_spent_seconds: Optional[int] = None
+    completed_at: datetime
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class QuizAttemptCreateSchema(BaseModel):
+    step_id: int
+    course_id: int
+    lesson_id: int
+    quiz_title: Optional[str] = None
+    total_questions: int
+    correct_answers: int
+    score_percentage: float
+    answers: Optional[str] = None
+    time_spent_seconds: Optional[int] = None
 
 class ProgressSchema(BaseModel):
     id: int

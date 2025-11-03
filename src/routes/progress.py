@@ -9,7 +9,7 @@ from src.schemas.models import (
     StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
     UserInDB, AssignmentSubmission, ProgressSchema, StepProgress,
     StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent,
-    ProgressSnapshot
+    ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access
@@ -795,6 +795,7 @@ def get_student_progress_overview(
         course_progress.append({
             "course_id": course.id,
             "course_title": course.title,
+            "teacher_id": course.teacher_id,
             "teacher_name": teacher.name if teacher else "Unknown",
             "cover_image_url": course.cover_image_url,
             "total_lessons": course_lessons,
@@ -1456,3 +1457,208 @@ def recalculate_course_progress(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to recalculate progress: {str(e)}")
+
+
+# =============================================================================
+# QUIZ ATTEMPTS
+# =============================================================================
+
+@router.post("/quiz-attempt", response_model=QuizAttemptSchema)
+def create_quiz_attempt(
+    attempt_data: QuizAttemptCreateSchema,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Сохранить попытку прохождения квиза"""
+    try:
+        # Create quiz attempt record
+        quiz_attempt = QuizAttempt(
+            user_id=current_user.id,
+            step_id=attempt_data.step_id,
+            course_id=attempt_data.course_id,
+            lesson_id=attempt_data.lesson_id,
+            quiz_title=attempt_data.quiz_title,
+            total_questions=attempt_data.total_questions,
+            correct_answers=attempt_data.correct_answers,
+            score_percentage=attempt_data.score_percentage,
+            answers=attempt_data.answers,
+            time_spent_seconds=attempt_data.time_spent_seconds,
+            completed_at=datetime.utcnow(),
+            created_at=datetime.utcnow()
+        )
+        
+        db.add(quiz_attempt)
+        db.commit()
+        db.refresh(quiz_attempt)
+        
+        return quiz_attempt
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to save quiz attempt: {str(e)}")
+
+
+@router.get("/quiz-attempts/step/{step_id}", response_model=List[QuizAttemptSchema])
+def get_step_quiz_attempts(
+    step_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить все попытки прохождения квиза для конкретного степа текущего пользователя"""
+    attempts = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == current_user.id,
+        QuizAttempt.step_id == step_id
+    ).order_by(desc(QuizAttempt.completed_at)).all()
+    
+    return attempts
+
+
+@router.get("/quiz-attempts/course/{course_id}", response_model=List[QuizAttemptSchema])
+def get_course_quiz_attempts(
+    course_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить все попытки прохождения квизов для курса текущего пользователя"""
+    # Check if user has access to this course
+    check_student_access(current_user, course_id, db)
+    
+    attempts = db.query(QuizAttempt).filter(
+        QuizAttempt.user_id == current_user.id,
+        QuizAttempt.course_id == course_id
+    ).order_by(desc(QuizAttempt.completed_at)).all()
+    
+    return attempts
+
+
+@router.get("/quiz-attempts/analytics/course/{course_id}")
+def get_course_quiz_analytics(
+    course_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить аналитику по квизам для курса (для учителей/админов)"""
+    if current_user.role not in ["teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Only teachers, curators and admins can access quiz analytics")
+    
+    # Get course to verify access
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Teachers can only see their own courses
+    if current_user.role == "teacher" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only view analytics for your own courses")
+    
+    # Get all quiz attempts for this course
+    attempts = db.query(QuizAttempt).filter(
+        QuizAttempt.course_id == course_id
+    ).all()
+    
+    # Group by student
+    student_attempts = {}
+    for attempt in attempts:
+        if attempt.user_id not in student_attempts:
+            user = db.query(UserInDB).filter(UserInDB.id == attempt.user_id).first()
+            student_attempts[attempt.user_id] = {
+                "user_id": attempt.user_id,
+                "user_name": user.name if user else "Unknown",
+                "attempts": []
+            }
+        
+        student_attempts[attempt.user_id]["attempts"].append({
+            "id": attempt.id,
+            "step_id": attempt.step_id,
+            "lesson_id": attempt.lesson_id,
+            "quiz_title": attempt.quiz_title,
+            "total_questions": attempt.total_questions,
+            "correct_answers": attempt.correct_answers,
+            "score_percentage": attempt.score_percentage,
+            "time_spent_seconds": attempt.time_spent_seconds,
+            "completed_at": attempt.completed_at.isoformat() if attempt.completed_at else None
+        })
+    
+    # Calculate statistics
+    total_attempts = len(attempts)
+    if total_attempts > 0:
+        avg_score = sum(a.score_percentage for a in attempts) / total_attempts
+        avg_time = sum(a.time_spent_seconds or 0 for a in attempts) / total_attempts if any(a.time_spent_seconds for a in attempts) else 0
+    else:
+        avg_score = 0
+        avg_time = 0
+    
+    return {
+        "course_id": course_id,
+        "course_title": course.title,
+        "total_attempts": total_attempts,
+        "unique_students": len(student_attempts),
+        "average_score": round(avg_score, 2),
+        "average_time_seconds": round(avg_time, 2),
+        "student_attempts": list(student_attempts.values())
+    }
+
+
+@router.get("/quiz-attempts/analytics/student/{student_id}")
+def get_student_quiz_analytics(
+    student_id: int,
+    course_id: Optional[int] = None,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Получить аналитику по квизам для конкретного студента (для учителей/админов)"""
+    if current_user.role not in ["teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Only teachers, curators and admins can access student analytics")
+    
+    # Build query
+    query = db.query(QuizAttempt).filter(QuizAttempt.user_id == student_id)
+    
+    if course_id:
+        query = query.filter(QuizAttempt.course_id == course_id)
+    
+    attempts = query.order_by(desc(QuizAttempt.completed_at)).all()
+    
+    # Get student info
+    student = db.query(UserInDB).filter(UserInDB.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Group attempts by quiz (step_id)
+    quiz_attempts = {}
+    for attempt in attempts:
+        if attempt.step_id not in quiz_attempts:
+            quiz_attempts[attempt.step_id] = {
+                "step_id": attempt.step_id,
+                "lesson_id": attempt.lesson_id,
+                "course_id": attempt.course_id,
+                "quiz_title": attempt.quiz_title,
+                "attempts": [],
+                "best_score": 0,
+                "latest_score": 0,
+                "total_attempts": 0
+            }
+        
+        quiz_attempts[attempt.step_id]["attempts"].append({
+            "id": attempt.id,
+            "score_percentage": attempt.score_percentage,
+            "correct_answers": attempt.correct_answers,
+            "total_questions": attempt.total_questions,
+            "time_spent_seconds": attempt.time_spent_seconds,
+            "completed_at": attempt.completed_at.isoformat() if attempt.completed_at else None
+        })
+        quiz_attempts[attempt.step_id]["total_attempts"] += 1
+        quiz_attempts[attempt.step_id]["best_score"] = max(
+            quiz_attempts[attempt.step_id]["best_score"], 
+            attempt.score_percentage
+        )
+    
+    # Set latest score for each quiz
+    for step_id, quiz_data in quiz_attempts.items():
+        if quiz_data["attempts"]:
+            quiz_data["latest_score"] = quiz_data["attempts"][0]["score_percentage"]
+    
+    return {
+        "student_id": student_id,
+        "student_name": student.name,
+        "total_attempts": len(attempts),
+        "quizzes": list(quiz_attempts.values())
+    }
