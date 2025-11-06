@@ -198,7 +198,7 @@ class GroupStudent(Base):
 class Step(Base):
     __tablename__ = "steps"
     id = Column(Integer, primary_key=True, index=True)
-    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
     title = Column(String, nullable=False)
     content_type = Column(String, nullable=False, default="text")  # video_text, text, quiz, flashcard
     video_url = Column(String, nullable=True)
@@ -305,7 +305,7 @@ class Lesson(Base):
 class LessonMaterial(Base):
     __tablename__ = "lesson_materials"
     id = Column(Integer, primary_key=True, index=True)
-    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
     title = Column(String, nullable=False)
     file_type = Column(String, nullable=False)  # pdf, docx, image, etc.
     file_url = Column(String, nullable=False)
@@ -444,8 +444,8 @@ class LessonMaterialSchema(BaseModel):
 class Assignment(Base):
     __tablename__ = "assignments"
     id = Column(Integer, primary_key=True, index=True)
-    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)  # Can be standalone
-    group_id = Column(Integer, ForeignKey("groups.id"), nullable=True)  # For group-specific assignments
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)  # Can be standalone
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)  # For group-specific assignments
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     assignment_type = Column(String, nullable=False)  # single_choice, multiple_choice, etc.
@@ -463,12 +463,12 @@ class Assignment(Base):
     # Relationships
     lesson = relationship("Lesson", back_populates="assignments")
     group = relationship("Group")
-    submissions = relationship("AssignmentSubmission", back_populates="assignment")
+    submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
 
 class AssignmentSubmission(Base):
     __tablename__ = "assignment_submissions"
     id = Column(Integer, primary_key=True, index=True)
-    assignment_id = Column(Integer, ForeignKey("assignments.id"), nullable=False)
+    assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     answers = Column(Text, nullable=False)  # JSON with student answers
     file_url = Column(String, nullable=True)  # File attachment for submission
@@ -611,9 +611,9 @@ class StepProgress(Base):
     __tablename__ = "step_progress"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
-    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
-    step_id = Column(Integer, ForeignKey("steps.id"), nullable=False)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
+    step_id = Column(Integer, ForeignKey("steps.id", ondelete="CASCADE"), nullable=False)
     
     # Progress tracking
     status = Column(String, nullable=False, default="not_started")  # not_started, in_progress, completed
@@ -666,9 +666,9 @@ class QuizAttempt(Base):
     __tablename__ = "quiz_attempts"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    step_id = Column(Integer, ForeignKey("steps.id"), nullable=False, index=True)
-    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
-    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=False)
+    step_id = Column(Integer, ForeignKey("steps.id", ondelete="CASCADE"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False, index=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
     quiz_title = Column(String, nullable=True)
     total_questions = Column(Integer, nullable=False)
     correct_answers = Column(Integer, nullable=False)
