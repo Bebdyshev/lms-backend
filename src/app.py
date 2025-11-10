@@ -22,6 +22,9 @@ from src.routes.socket_messages import create_socket_app
 
 load_dotenv()
 
+# Set max upload size to 5MB
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB in bytes
+
 app = FastAPI(
     title="LMS Platform API",
     description="Learning Management System API",
@@ -50,6 +53,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Middleware to check file size
+from starlette.requests import Request
+from starlette.responses import Response
+
+@app.middleware("http")
+async def check_file_size(request: Request, call_next):
+    if request.method in ["POST", "PUT", "PATCH"]:
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_UPLOAD_SIZE:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB"}
+            )
+    response = await call_next(request)
+    return response
 
 # Static files
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
