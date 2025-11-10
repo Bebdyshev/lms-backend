@@ -65,6 +65,50 @@ class FlashcardSet(BaseModel):
     show_progress: bool = True
 
 # =============================================================================
+# FAVORITE FLASHCARD MODELS
+# =============================================================================
+
+class FavoriteFlashcard(Base):
+    __tablename__ = "favorite_flashcards"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    step_id = Column(Integer, ForeignKey("steps.id", ondelete="CASCADE"), nullable=False)
+    flashcard_id = Column(String, nullable=False)  # ID карточки внутри flashcard set
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=True)
+    flashcard_data = Column(Text, nullable=False)  # JSON данные самой карточки
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("UserInDB", backref="favorite_flashcards")
+    step = relationship("Step", backref="favorite_flashcards")
+    
+    # Unique constraint - один студент не может добавить одну и ту же карточку дважды
+    __table_args__ = (
+        UniqueConstraint('user_id', 'step_id', 'flashcard_id', name='uq_user_flashcard'),
+    )
+
+class FavoriteFlashcardSchema(BaseModel):
+    id: int
+    user_id: int
+    step_id: int
+    flashcard_id: str
+    lesson_id: Optional[int] = None
+    course_id: Optional[int] = None
+    flashcard_data: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class FavoriteFlashcardCreateSchema(BaseModel):
+    step_id: int
+    flashcard_id: str
+    lesson_id: Optional[int] = None
+    course_id: Optional[int] = None
+    flashcard_data: str  # JSON string with FlashcardItem data
+
+# =============================================================================
 # USER MODELS - LMS PLATFORM
 # =============================================================================
 

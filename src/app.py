@@ -15,6 +15,7 @@ from src.routes.progress import router as progress_router
 from src.routes.media import router as media_router
 from src.routes.events import router as events_router
 from src.routes.analytics import router as analytics_router
+from src.routes.flashcards import router as flashcards_router
 from dotenv import load_dotenv
 import logging
 from src.routes.socket_messages import create_socket_app
@@ -65,6 +66,7 @@ app.include_router(progress_router, prefix="/progress", tags=["Progress"])
 app.include_router(media_router, prefix="/media", tags=["Media"])
 app.include_router(events_router, prefix="/events", tags=["Events"])
 app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
+app.include_router(flashcards_router, prefix="/flashcards", tags=["Flashcards"])
 
 # Root endpoint with ASCII art
 @app.get("/")
