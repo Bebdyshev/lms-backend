@@ -80,8 +80,8 @@ class FavoriteFlashcard(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    user = relationship("UserInDB", backref="favorite_flashcards")
-    step = relationship("Step", backref="favorite_flashcards")
+    user = relationship("UserInDB", back_populates="favorite_flashcards")
+    step = relationship("Step", back_populates="favorite_flashcards")
     
     # Unique constraint - один студент не может добавить одну и ту же карточку дважды
     __table_args__ = (
@@ -143,6 +143,7 @@ class UserInDB(Base):
     received_messages = relationship("Message", foreign_keys="Message.to_user_id", back_populates="recipient")
     created_courses = relationship("Course", back_populates="teacher")
     assignment_submissions = relationship("AssignmentSubmission", foreign_keys="AssignmentSubmission.user_id", back_populates="user")
+    favorite_flashcards = relationship("FavoriteFlashcard", back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
 
 class Token(BaseModel):
     access_token: str
@@ -254,6 +255,7 @@ class Step(Base):
     
     # Relationships
     lesson = relationship("Lesson", back_populates="steps")
+    favorite_flashcards = relationship("FavoriteFlashcard", back_populates="step", cascade="all, delete-orphan", passive_deletes=True)
 
 class StepSchema(BaseModel):
     id: int
