@@ -892,6 +892,48 @@ def update_step(
     
     return StepSchema.from_orm(step)
 
+@router.post("/lessons/{lesson_id}/reorder-steps")
+def reorder_steps(
+    lesson_id: int,
+    step_orders: dict,  # Expected format: {"step_ids": [1, 3, 2, 4]}
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Reorder steps in a lesson by updating their order_index"""
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    # Get course through module, check permissions
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    course = db.query(Course).filter(Course.id == module.course_id).first()
+    
+    if current_user.role != "admin" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get the new order of step IDs
+    step_ids = step_orders.get("step_ids", [])
+    if not step_ids:
+        raise HTTPException(status_code=400, detail="step_ids is required")
+    
+    # Verify all steps belong to this lesson
+    steps = db.query(Step).filter(Step.lesson_id == lesson_id).all()
+    step_id_set = {step.id for step in steps}
+    
+    for step_id in step_ids:
+        if step_id not in step_id_set:
+            raise HTTPException(status_code=400, detail=f"Step {step_id} does not belong to lesson {lesson_id}")
+    
+    # Update order_index for each step
+    for new_index, step_id in enumerate(step_ids, start=1):
+        step = db.query(Step).filter(Step.id == step_id).first()
+        if step:
+            step.order_index = new_index
+    
+    db.commit()
+    
+    return {"message": "Steps reordered successfully", "step_ids": step_ids}
+
 @router.delete("/steps/{step_id}")
 def delete_step(
     step_id: int,
