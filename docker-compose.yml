@@ -26,6 +26,7 @@ services:
       - VIRTUAL_HOST=lmsapi.mastereducation.kz
       - LETSENCRYPT_HOST=lmsapi.mastereducation.kz
       - VIRTUAL_PORT=8000
+      - CLIENT_MAX_BODY_SIZE=5m
     depends_on:
       - postgres
     networks:
