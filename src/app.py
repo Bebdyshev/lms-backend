@@ -18,6 +18,7 @@ from src.routes.analytics import router as analytics_router
 from src.routes.flashcards import router as flashcards_router
 from dotenv import load_dotenv
 import logging
+import os
 from src.routes.socket_messages import create_socket_app
 
 load_dotenv()
@@ -147,6 +148,20 @@ def health_check():
     )
 #-----------------------------------------------------------------------------
 socket_app = create_socket_app(app)
+
+# Запуск RabbitMQ Consumer
+try:
+    from src.services.rabbitmq_consumer import start_rabbitmq_consumer_thread
+    rabbitmq_enabled = os.getenv('RABBITMQ_URL')
+    
+    if rabbitmq_enabled:
+        consumer = start_rabbitmq_consumer_thread()
+        logging.info("✅ RabbitMQ consumer initialized")
+    else:
+        logging.warning("⚠️  RabbitMQ URL not configured, skipping consumer initialization")
+except Exception as e:
+    logging.error(f"❌ Failed to initialize RabbitMQ consumer: {e}")
+    logging.warning("⚠️  Continuing without RabbitMQ consumer")
 
 # Error handlers
 @app.exception_handler(404)
