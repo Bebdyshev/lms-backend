@@ -18,6 +18,7 @@ from src.schemas.models import (
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, require_admin, check_course_access
 from src.services.azure_openai_service import AzureOpenAIService
+from src.utils.duration_calculator import update_course_duration
 
 router = APIRouter()
 
@@ -216,6 +217,11 @@ def get_course(
     teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
     module_count = db.query(Module).filter(Module.course_id == course.id).count()
     
+    # Auto-recalculate duration if it's 0 or not set
+    if course.estimated_duration_minutes == 0:
+        update_course_duration(course.id, db)
+        db.refresh(course)
+    
     course_response = CourseSchema.from_orm(course)
     course_response.teacher_name = teacher.name if teacher else "Unknown"
     course_response.total_modules = module_count
@@ -257,6 +263,30 @@ def update_course(
     course_response.total_modules = module_count
     
     return course_response
+
+@router.post("/{course_id}/recalculate-duration")
+def recalculate_course_duration(
+    course_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Recalculate and update course duration based on all steps"""
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Check permissions
+    if current_user.role != "admin" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Calculate and update duration
+    new_duration = update_course_duration(course_id, db)
+    
+    return {
+        "detail": "Course duration recalculated successfully",
+        "course_id": course_id,
+        "estimated_duration_minutes": new_duration
+    }
 
 @router.post("/{course_id}/publish")
 def publish_course(
@@ -824,6 +854,9 @@ def create_step(
     db.commit()
     db.refresh(new_step)
     
+    # Update course duration
+    update_course_duration(course.id, db)
+    
     return StepSchema.from_orm(new_step)
 
 @router.get("/steps/{step_id}", response_model=StepSchema)
@@ -889,6 +922,9 @@ def update_step(
     
     db.commit()
     db.refresh(step)
+    
+    # Update course duration
+    update_course_duration(course.id, db)
     
     return StepSchema.from_orm(step)
 
@@ -962,6 +998,9 @@ def delete_step(
     # Now delete the step
     db.delete(step)
     db.commit()
+    
+    # Update course duration
+    update_course_duration(course.id, db)
     
     return {"detail": "Step deleted successfully"}
 
