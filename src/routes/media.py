@@ -6,6 +6,7 @@ import os
 import json
 from pathlib import Path
 from datetime import datetime
+import aiofiles
 
 from src.config import get_db
 from src.schemas.models import UserInDB, LessonMaterial, Lesson, Module, Course, Assignment, Group
@@ -82,9 +83,9 @@ async def upload_course_thumbnail(
     file_path = upload_dir / safe_filename
 
     try:
-        with open(file_path, "wb") as buffer:
+        async with aiofiles.open(file_path, "wb") as buffer:
             content = await file.read()
-            buffer.write(content)
+            await buffer.write(content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save thumbnail: {str(e)}")
 
@@ -134,9 +135,9 @@ async def upload_file(
     file_path = upload_dir / safe_filename
     
     try:
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        content = await file.read()
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
     
@@ -205,9 +206,9 @@ async def upload_step_attachment(
     
     # Save file
     try:
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        content = await file.read()
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content)
         
         file_size = len(content)
         
@@ -466,9 +467,9 @@ async def upload_lesson_material(
     
     # Сохраняем файл
     try:
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        content = await file.read()
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content)
         
         file_size = len(content)
         
@@ -708,9 +709,9 @@ async def upload_assignment_file(
     
     # Сохраняем файл
     try:
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        content = await file.read()
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
@@ -797,8 +798,8 @@ async def upload_submission_file(
     
     # Сохраняем файл
     try:
-        with open(file_path, "wb") as buffer:
-            buffer.write(content)
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")

@@ -5,6 +5,7 @@ from typing import List, Optional
 import os
 import uuid
 from datetime import datetime
+import aiofiles
 
 from src.config import get_db
 from src.schemas.models import (
@@ -1394,9 +1395,9 @@ async def analyze_sat_image(
         file_path = os.path.join(uploads_dir, unique_filename)
         
         # Save uploaded file
-        with open(file_path, "wb") as buffer:
-            content = await image.read()
-            buffer.write(content)
+        content = await image.read()
+        async with aiofiles.open(file_path, "wb") as buffer:
+            await buffer.write(content)
         
         # Initialize Azure OpenAI service
         azure_service = AzureOpenAIService()

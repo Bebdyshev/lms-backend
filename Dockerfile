@@ -23,5 +23,5 @@ RUN mkdir -p uploads
 # Открытие порта
 EXPOSE 8000
 
-# Запуск приложения (Socket.IO wrapped ASGI app)
-CMD ["uvicorn", "src.app:socket_app", "--host", "0.0.0.0", "--port", "8000"]
+# Запуск приложения (Socket.IO wrapped ASGI app) с 4 workers для concurrency
+CMD ["uvicorn", "src.app:socket_app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
