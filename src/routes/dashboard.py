@@ -160,7 +160,7 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         Course.is_active == True
     ).all()
     
-    total_courses = len(teacher_courses)
+    total_courses = len(teacher_courses) if teacher_courses else 0
     total_students = 0
     total_assignments = 0
     pending_submissions = 0
@@ -185,38 +185,40 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         ),
         Assignment.is_active == True
     ).all()
-    total_assignments = len(teacher_assignments)
+    total_assignments = len(teacher_assignments) if teacher_assignments else 0
     
     # Get pending submissions (ungraded)
     from src.schemas.models import AssignmentSubmission
     pending_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]),
+        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]) if teacher_assignments else [],
         AssignmentSubmission.is_graded == False
-    ).count()
+    ).count() if teacher_assignments else 0
     
     # Get total submissions and graded submissions for score calculation
     total_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments])
-    ).count()
+        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]) if teacher_assignments else []
+    ).count() if teacher_assignments else 0
     
     graded_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]),
+        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]) if teacher_assignments else [],
         AssignmentSubmission.is_graded == True,
         AssignmentSubmission.score.isnot(None)
-    ).all()
+    ).all() if teacher_assignments else []
     
     # Calculate average student score
-    if graded_submissions:
-        total_score = sum(sub.score for sub in graded_submissions)
-        avg_student_score = round(total_score / len(graded_submissions))
+    if graded_submissions and len(graded_submissions) > 0:
+        total_score = sum(sub.score for sub in graded_submissions if sub.score is not None)
+        avg_student_score = round(total_score / len(graded_submissions)) if len(graded_submissions) > 0 else 0
+    else:
+        avg_student_score = 0
     
     # Get recent enrollments (last 7 days)
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
     recent_enrollments = db.query(Enrollment).filter(
-        Enrollment.course_id.in_([c.id for c in teacher_courses]),
+        Enrollment.course_id.in_([c.id for c in teacher_courses]) if teacher_courses else [],
         Enrollment.enrolled_at >= seven_days_ago,
         Enrollment.is_active == True
-    ).count()
+    ).count() if teacher_courses else 0
     
     # Get upcoming deadlines (next 7 days)
     seven_days_from_now = datetime.utcnow() + timedelta(days=7)
@@ -225,7 +227,7 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             db.query(Lesson.id).filter(
                 Lesson.module_id.in_(
                     db.query(Module.id).filter(
-                        Module.course_id.in_([c.id for c in teacher_courses])
+                        Module.course_id.in_([c.id for c in teacher_courses]) if teacher_courses else []
                     )
                 )
             )
@@ -234,7 +236,7 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         Assignment.due_date.isnot(None),
         Assignment.due_date >= datetime.utcnow(),
         Assignment.due_date <= seven_days_from_now
-    ).count()
+    ).count() if teacher_courses else 0
     
     course_stats = []
     
@@ -298,6 +300,18 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     
     # Calculate average completion rate
     avg_completion_rate = round(total_completion_rate / total_courses) if total_courses > 0 else 0
+    # Гарантируем, что все значения числовые
+    total_courses = total_courses or 0
+    total_students = total_students or 0
+    total_assignments = total_assignments or 0
+    pending_submissions = pending_submissions or 0
+    recent_enrollments = recent_enrollments or 0
+    avg_completion_rate = avg_completion_rate or 0
+    upcoming_deadlines = upcoming_deadlines or 0
+    avg_student_score = avg_student_score or 0
+    total_submissions = total_submissions or 0
+    graded_submissions = len(graded_submissions) if graded_submissions else 0
+    grading_progress = round((graded_submissions / total_submissions) * 100) if total_submissions > 0 else 0
     
     return DashboardStatsSchema(
         user={
@@ -316,8 +330,8 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "upcoming_deadlines": upcoming_deadlines,
             "avg_student_score": avg_student_score,
             "total_submissions": total_submissions,
-            "graded_submissions": len(graded_submissions),
-            "grading_progress": round((len(graded_submissions) / total_submissions) * 100) if total_submissions > 0 else 0
+            "graded_submissions": graded_submissions,
+            "grading_progress": grading_progress
         },
         recent_courses=course_stats[:6]
     )
