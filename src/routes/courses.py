@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc
 from typing import List, Optional
 import os
@@ -399,8 +399,30 @@ def get_course_modules(
     # Create a map of module_id to lesson_count
     lesson_count_map = {module_id: count for module_id, count in lesson_counts}
     
+    # Fetch progress if user is a student
+    completed_step_ids = set()
+    completed_lesson_ids = set()
+    
+    if current_user.role == "student":
+        # Get completed steps
+        from src.schemas.models import StepProgress
+        completed_steps = db.query(StepProgress.step_id).filter(
+            StepProgress.user_id == current_user.id,
+            StepProgress.course_id == course_id,
+            StepProgress.status == "completed"
+        ).all()
+        completed_step_ids = {s[0] for s in completed_steps}
+        
+        # Get completed lessons (from StudentProgress)
+        completed_lessons = db.query(StudentProgress.lesson_id).filter(
+            StudentProgress.user_id == current_user.id,
+            StudentProgress.course_id == course_id,
+            StudentProgress.status == "completed",
+            StudentProgress.lesson_id.isnot(None)
+        ).all()
+        completed_lesson_ids = {l[0] for l in completed_lessons}
+    
     # Use joinedload to control lesson loading
-    from sqlalchemy.orm import joinedload
     
     if include_lessons:
         modules = db.query(Module).options(
@@ -438,13 +460,39 @@ def get_course_modules(
                 steps = sorted(lesson.steps, key=lambda x: x.order_index) if lesson.steps else []
                 
                 lesson_schema = LessonSchema.from_orm(lesson)
-                lesson_schema.steps = [StepSchema.from_orm(step) for step in steps]
+                lesson_schema.steps = []
+                
+                # Check if all steps are completed to mark lesson as completed
+                all_steps_completed = True if steps else False
+                
+                for step in steps:
+                    step_schema = StepSchema.from_orm(step)
+                    step_schema.is_completed = step.id in completed_step_ids
+                    lesson_schema.steps.append(step_schema)
+                    
+                    if not step_schema.is_completed:
+                        all_steps_completed = False
+                
                 lesson_schema.total_steps = len(steps)
+                
+                # Determine lesson completion
+                if lesson.id in completed_lesson_ids:
+                    lesson_schema.is_completed = True
+                elif steps and all_steps_completed:
+                    lesson_schema.is_completed = True
+                else:
+                    lesson_schema.is_completed = False
                 
                 lessons_data.append(lesson_schema.model_dump())
             
             # Add lessons to module data
             module_dict["lessons"] = lessons_data
+            
+            # Check if all lessons in module are completed
+            if lessons_data and all(l["is_completed"] for l in lessons_data):
+                module_dict["is_completed"] = True
+            else:
+                module_dict["is_completed"] = False
         
         modules_data.append(module_dict)
     
@@ -564,7 +612,6 @@ def get_module_lessons(
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
     # Get lessons with steps
-    from sqlalchemy.orm import joinedload
     
     lessons = db.query(Lesson).options(
         joinedload(Lesson.steps)
@@ -597,7 +644,6 @@ def get_course_lessons(
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
     # Get all lessons for the course with module information and steps
-    from sqlalchemy.orm import joinedload
     
     lessons = db.query(Lesson).join(Module).options(
         joinedload(Lesson.steps)
@@ -681,7 +727,6 @@ def get_lesson(
     db: Session = Depends(get_db)
 ):
     """Get lesson details with course access check"""
-    from sqlalchemy.orm import joinedload
     
     lesson = db.query(Lesson).options(
         joinedload(Lesson.steps)
@@ -717,7 +762,6 @@ def update_lesson(
     db: Session = Depends(get_db)
 ):
     """Update lesson"""
-    from sqlalchemy.orm import joinedload
     
     lesson = db.query(Lesson).options(
         joinedload(Lesson.steps)

@@ -268,6 +268,7 @@ class StepSchema(BaseModel):
     attachments: Optional[str] = None
     order_index: int
     created_at: datetime
+    is_completed: Optional[bool] = False
     
     class Config:
         from_attributes = True
@@ -409,6 +410,7 @@ class ModuleSchema(BaseModel):
     total_lessons: int = 0
     lessons: Optional[List[dict]] = None
     created_at: datetime
+    is_completed: Optional[bool] = False
     
     class Config:
         from_attributes = True
@@ -429,6 +431,7 @@ class BaseLessonSchema(BaseModel):
     created_at: datetime
     next_lesson_id: Optional[int] = None
     steps: Optional[List[StepSchema]] = None
+    is_completed: Optional[bool] = False
     
     class Config:
         from_attributes = True
