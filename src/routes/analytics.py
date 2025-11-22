@@ -558,6 +558,39 @@ def get_all_students_analytics(
         completion_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
         assignment_score_percentage = (total_assignment_score / total_max_score * 100) if total_max_score > 0 else 0
         
+        # Получаем информацию о последнем уроке
+        last_lesson_info = None
+        last_step_progress = db.query(StepProgress).filter(
+            StepProgress.user_id == student.id
+        ).order_by(StepProgress.visited_at.desc()).first()
+        
+        if last_step_progress:
+            # Получаем информацию об уроке
+            lesson = db.query(Lesson).join(Step).filter(
+                Step.id == last_step_progress.step_id
+            ).first()
+            
+            if lesson:
+                # Считаем прогресс урока
+                total_lesson_steps = db.query(Step).filter(
+                    Step.lesson_id == lesson.id
+                ).count()
+                
+                completed_lesson_steps = db.query(StepProgress).join(Step).filter(
+                    StepProgress.user_id == student.id,
+                    Step.lesson_id == lesson.id,
+                    StepProgress.status == "completed"
+                ).count()
+                
+                lesson_progress_percentage = (completed_lesson_steps / total_lesson_steps * 100) if total_lesson_steps > 0 else 0
+                
+                last_lesson_info = {
+                    "lesson_title": lesson.title,
+                    "lesson_progress_percentage": round(lesson_progress_percentage, 1),
+                    "completed_steps": completed_lesson_steps,
+                    "total_steps": total_lesson_steps
+                }
+        
         students_analytics.append({
             "student_id": student.id,
             "student_name": student.name,
@@ -573,7 +606,8 @@ def get_all_students_analytics(
             "assignment_score_percentage": round(assignment_score_percentage, 1),
             "total_study_time_minutes": student.total_study_time_minutes,
             "daily_streak": student.daily_streak,
-            "last_activity_date": student.last_activity_date
+            "last_activity_date": student.last_activity_date,
+            "last_lesson": last_lesson_info
         })
     
     return {
@@ -944,6 +978,39 @@ def get_group_students_analytics(
         completion_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
         assignment_score_percentage = (total_assignment_score / total_max_score * 100) if total_max_score > 0 else 0
         
+        # Получаем информацию о последнем уроке
+        last_lesson_info = None
+        last_step_progress = db.query(StepProgress).filter(
+            StepProgress.user_id == student.id
+        ).order_by(StepProgress.visited_at.desc()).first()
+        
+        if last_step_progress:
+            # Получаем информацию об уроке
+            lesson = db.query(Lesson).join(Step).filter(
+                Step.id == last_step_progress.step_id
+            ).first()
+            
+            if lesson:
+                # Считаем прогресс урока
+                total_lesson_steps = db.query(Step).filter(
+                    Step.lesson_id == lesson.id
+                ).count()
+                
+                completed_lesson_steps = db.query(StepProgress).join(Step).filter(
+                    StepProgress.user_id == student.id,
+                    Step.lesson_id == lesson.id,
+                    StepProgress.status == "completed"
+                ).count()
+                
+                lesson_progress_percentage = (completed_lesson_steps / total_lesson_steps * 100) if total_lesson_steps > 0 else 0
+                
+                last_lesson_info = {
+                    "lesson_title": lesson.title,
+                    "lesson_progress_percentage": round(lesson_progress_percentage, 1),
+                    "completed_steps": completed_lesson_steps,
+                    "total_steps": total_lesson_steps
+                }
+        
         students_analytics.append({
             "student_id": student.id,
             "student_name": student.name,
@@ -959,7 +1026,8 @@ def get_group_students_analytics(
             "assignment_score_percentage": round(assignment_score_percentage, 1),
             "total_study_time_minutes": student.total_study_time_minutes,
             "daily_streak": student.daily_streak,
-            "last_activity_date": student.last_activity_date
+            "last_activity_date": student.last_activity_date,
+            "last_lesson": last_lesson_info
         })
     
     return {
@@ -1477,6 +1545,39 @@ def export_all_students_report(
             completion_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
             assignment_score_percentage = (total_assignment_score / total_max_score * 100) if total_max_score > 0 else 0
             
+            # Получаем информацию о последнем уроке
+            last_lesson_info = None
+            last_step_progress = db.query(StepProgress).filter(
+                StepProgress.user_id == student.id
+            ).order_by(StepProgress.visited_at.desc()).first()
+            
+            if last_step_progress:
+                # Получаем информацию об уроке
+                lesson = db.query(Lesson).join(Step).filter(
+                    Step.id == last_step_progress.step_id
+                ).first()
+                
+                if lesson:
+                    # Считаем прогресс урока
+                    total_lesson_steps = db.query(Step).filter(
+                        Step.lesson_id == lesson.id
+                    ).count()
+                    
+                    completed_lesson_steps = db.query(StepProgress).join(Step).filter(
+                        StepProgress.user_id == student.id,
+                        Step.lesson_id == lesson.id,
+                        StepProgress.status == "completed"
+                    ).count()
+                    
+                    lesson_progress_percentage = (completed_lesson_steps / total_lesson_steps * 100) if total_lesson_steps > 0 else 0
+                    
+                    last_lesson_info = {
+                        "lesson_title": lesson.title,
+                        "lesson_progress_percentage": round(lesson_progress_percentage, 1),
+                        "completed_steps": completed_lesson_steps,
+                        "total_steps": total_lesson_steps
+                    }
+            
             students_analytics.append({
                 "student_id": student.id,
                 "student_name": student.name,
@@ -1492,7 +1593,8 @@ def export_all_students_report(
                 "assignment_score_percentage": round(assignment_score_percentage, 1),
                 "total_study_time_minutes": student.total_study_time_minutes,
                 "daily_streak": student.daily_streak,
-                "last_activity_date": student.last_activity_date
+                "last_activity_date": student.last_activity_date,
+                "last_lesson": last_lesson_info
             })
         
         all_students_data = {
@@ -2118,6 +2220,39 @@ def export_analytics_to_excel(
             completion_pct = (completed_steps / total_steps * 100) if total_steps > 0 else 0
             score_pct = (total_score / max_score * 100) if max_score > 0 else 0
             
+            # Получаем информацию о последнем уроке
+            last_lesson_info = None
+            last_step_progress = db.query(StepProgress).filter(
+                StepProgress.user_id == student.id
+            ).order_by(StepProgress.visited_at.desc()).first()
+            
+            if last_step_progress:
+                # Получаем информацию об уроке
+                lesson = db.query(Lesson).join(Step).filter(
+                    Step.id == last_step_progress.step_id
+                ).first()
+                
+                if lesson:
+                    # Считаем прогресс урока
+                    total_lesson_steps = db.query(Step).filter(
+                        Step.lesson_id == lesson.id
+                    ).count()
+                    
+                    completed_lesson_steps = db.query(StepProgress).join(Step).filter(
+                        StepProgress.user_id == student.id,
+                        Step.lesson_id == lesson.id,
+                        StepProgress.status == "completed"
+                    ).count()
+                    
+                    lesson_progress_percentage = (completed_lesson_steps / total_lesson_steps * 100) if total_lesson_steps > 0 else 0
+                    
+                    last_lesson_info = {
+                        "lesson_title": lesson.title,
+                        "lesson_progress_percentage": round(lesson_progress_percentage, 1),
+                        "completed_steps": completed_lesson_steps,
+                        "total_steps": total_lesson_steps
+                    }
+            
             students_data.append({
                 "student_id": student.id,
                 "student_name": student.name,
@@ -2133,7 +2268,8 @@ def export_analytics_to_excel(
                 "assignment_score_percentage": score_pct,
                 "total_study_time_minutes": student.total_study_time_minutes,
                 "daily_streak": student.daily_streak,
-                "last_activity_date": student.last_activity_date
+                "last_activity_date": student.last_activity_date,
+                "last_lesson": last_lesson_info
             })
         
         # Get groups data if no specific group filter
@@ -2207,6 +2343,11 @@ def export_analytics_to_excel(
         # Format data for Excel export
         formatted_students_data = []
         for student_dict in students_data:
+            last_lesson = student_dict.get("last_lesson")
+            last_lesson_str = "N/A"
+            if last_lesson:
+                last_lesson_str = f"{last_lesson['lesson_title']} ({last_lesson['lesson_progress_percentage']}%)"
+            
             formatted_students_data.append({
                 "student_id": student_dict.get("student_id"),
                 "student_name": student_dict.get("student_name", "N/A"),
@@ -2220,7 +2361,8 @@ def export_analytics_to_excel(
                 "average_score": student_dict.get("assignment_score_percentage", 0),
                 "total_study_time": student_dict.get("total_study_time_minutes", 0),
                 "current_streak": student_dict.get("daily_streak", 0),
-                "last_activity": str(student_dict.get("last_activity_date", "Never"))
+                "last_activity": str(student_dict.get("last_activity_date", "Never")),
+                "current_lesson": last_lesson_str
             })
         
         # Format course overview

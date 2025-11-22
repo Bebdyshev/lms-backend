@@ -1025,6 +1025,10 @@ def mark_step_started(
             existing_progress.started_at = datetime.utcnow()
             existing_progress.status = "in_progress"
         existing_progress.visited_at = datetime.utcnow()
+        
+        # Обновляем daily streak при посещении шага
+        update_daily_streak(current_user, db)
+        
         db.commit()
         db.refresh(existing_progress)
         return StepProgressSchema.from_orm(existing_progress)
