@@ -90,7 +90,7 @@ app.include_router(flashcards_router, prefix="/flashcards", tags=["Flashcards"])
 
 # Root endpoint with ASCII art
 @app.get("/")
-def root():
+async def root():
     ascii_art = """⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⣶⣾⣿⣿⣿⣿⣷⣶⣦⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⠀⠀⠀⠀⠀
 ⠀⠀⠀⣠⣾⣿⣿⣿⣿⣿⣿⠿⣿⣿⡿⢿⣿⣿⠿⣿⣿⣿⣿⣿⣿⣷⣄⠀⠀⠀
@@ -114,7 +114,7 @@ def root():
 
 # Health check endpoint
 @app.get("/health")
-def health_check():
+async def health_check():
     return JSONResponse(
         status_code=200,
         content={

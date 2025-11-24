@@ -136,17 +136,17 @@ class AdminDashboardResponse(BaseModel):
     recent_groups: List[GroupSchema]
     recent_courses: List[dict]
 
-def generate_password(length: int = 8) -> str:
+async def generate_password(length: int = 8) -> str:
     """Generate a random password"""
     characters = string.ascii_letters + string.digits
     return ''.join(secrets.choice(characters) for _ in range(length))
 
-def generate_student_id() -> str:
+async def generate_student_id() -> str:
     """Generate a unique student ID"""
     return f"STU{secrets.randbelow(100000):05d}"
 
 @router.post("/users/single", response_model=CreateUserResponse)
-def create_single_user(
+async def create_single_user(
     user_data: CreateUserRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -162,7 +162,7 @@ def create_single_user(
         password = user_data.password
         generated_password = None
         if not password:
-            password = generate_password()
+            password = await generate_password()
             generated_password = password
         
         # Generate student ID for students if not provided
@@ -199,7 +199,7 @@ def create_single_user(
         raise HTTPException(status_code=500, detail=f"Failed to create user: {str(e)}")
 
 @router.post("/users/bulk", response_model=BulkCreateResponse)
-def create_bulk_users(
+async def create_bulk_users(
     request: BulkCreateUsersRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -223,7 +223,7 @@ def create_bulk_users(
             password = user_data.password
             generated_password = None
             if not password:
-                password = generate_password()
+                password = await generate_password()
                 generated_password = password
             
             # Generate student ID for students if not provided
@@ -270,7 +270,7 @@ def create_bulk_users(
     )
 
 @router.post("/create-admin", response_model=CreateAdminResponse)
-def create_admin(
+async def create_admin(
     admin_data: CreateAdminRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -286,7 +286,7 @@ def create_admin(
         password = admin_data.password
         generated_password = None
         if not password:
-            password = generate_password()
+            password = await generate_password()
             generated_password = password
         
         # Create admin user
@@ -314,7 +314,7 @@ def create_admin(
         raise HTTPException(status_code=500, detail=f"Failed to create admin: {str(e)}")
 
 @router.post("/create-admin-temp", response_model=CreateAdminResponse)
-def create_admin_temp(
+async def create_admin_temp(
     admin_data: CreateAdminRequest,
     db: Session = Depends(get_db)
 ):
@@ -329,7 +329,7 @@ def create_admin_temp(
         password = admin_data.password
         generated_password = None
         if not password:
-            password = generate_password()
+            password = await generate_password()
             generated_password = password
         
         # Create admin user
@@ -356,48 +356,8 @@ def create_admin_temp(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create admin: {str(e)}")
 
-@router.put("/users/{user_id}", response_model=UserSchema)
-def update_user(
-    user_id: int,
-    update_data: UpdateUserRequest,
-    db: Session = Depends(get_db),
-    current_user: UserInDB = Depends(require_admin())
-):
-    """Update user information (admin only)"""
-    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Update fields if provided
-    if update_data.name is not None:
-        user.name = update_data.name
-    if update_data.email is not None:
-        # Check if new email is unique
-        existing = db.query(UserInDB).filter(
-            UserInDB.email == update_data.email,
-            UserInDB.id != user_id
-        ).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Email already in use")
-        user.email = update_data.email
-    if update_data.role is not None:
-        user.role = update_data.role
-    if update_data.student_id is not None:
-        user.student_id = update_data.student_id
-
-    if update_data.is_active is not None:
-        user.is_active = update_data.is_active
-    if update_data.password is not None:
-        user.hashed_password = hash_password(update_data.password)
-    
-    user.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(user)
-    
-    return UserSchema.from_orm(user)
-
 @router.delete("/users/{user_id}")
-def delete_user(
+async def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -419,7 +379,7 @@ def delete_user(
     return {"detail": "User deleted successfully"}
 
 @router.get("/stats", response_model=AdminStatsResponse)
-def get_admin_stats(
+async def get_admin_stats(
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
 ):
@@ -447,7 +407,7 @@ def get_admin_stats(
     )
 
 @router.get("/students/progress", response_model=List[StudentProgressSummary])
-def get_students_progress_summary(
+async def get_students_progress_summary(
     skip: int = 0,
     limit: int = 50,
     group_id: Optional[int] = None,
@@ -521,7 +481,7 @@ def get_students_progress_summary(
     return summaries
 
 @router.post("/reset-password/{user_id}")
-def reset_user_password(
+async def reset_user_password(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -531,7 +491,7 @@ def reset_user_password(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    new_password = generate_password()
+    new_password = await generate_password()
     user.hashed_password = hash_password(new_password)
     user.refresh_token = None  # Invalidate all sessions
     user.updated_at = datetime.utcnow()
@@ -545,7 +505,7 @@ def reset_user_password(
     }
 
 @router.get("/groups", response_model=List[GroupSchema])
-def get_all_groups(
+async def get_all_groups(
     skip: int = 0,
     limit: int = 100,
     teacher_id: Optional[int] = None,
@@ -623,7 +583,7 @@ def get_all_groups(
 # =============================================================================
 
 @router.post("/groups", response_model=GroupSchema)
-def create_group(
+async def create_group(
     group_data: CreateGroupRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -682,7 +642,7 @@ def create_group(
     return group_response
 
 @router.put("/groups/{group_id}", response_model=GroupSchema)
-def update_group(
+async def update_group(
     group_id: int,
     group_data: UpdateGroupRequest,
     db: Session = Depends(get_db),
@@ -777,7 +737,7 @@ def update_group(
     return group_response
 
 @router.delete("/groups/{group_id}")
-def delete_group(
+async def delete_group(
     group_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -803,7 +763,7 @@ def delete_group(
     return {"detail": f"Group '{group.name}' deleted successfully"}
 
 @router.post("/groups/{group_id}/assign-teacher")
-def assign_teacher_to_group(
+async def assign_teacher_to_group(
     group_id: int,
     teacher_data: AssignTeacherRequest,
     db: Session = Depends(get_db),
@@ -833,7 +793,7 @@ def assign_teacher_to_group(
 # =============================================================================
 
 @router.get("/users", response_model=UserListResponse)
-def get_all_users(
+async def get_all_users(
     skip: int = 0,
     limit: int = 50,
     role: Optional[str] = None,
@@ -931,7 +891,7 @@ def get_all_users(
     )
 
 @router.put("/users/{user_id}", response_model=UserSchema)
-def update_user(
+async def update_user(
     user_id: int,
     user_data: UpdateUserRequest,
     db: Session = Depends(get_db),
@@ -976,7 +936,7 @@ def update_user(
     return user_response
 
 @router.delete("/users/{user_id}")
-def deactivate_user(
+async def deactivate_user(
     user_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -998,7 +958,7 @@ def deactivate_user(
     return {"detail": f"User '{user.name}' deactivated successfully"}
 
 @router.post("/users/{user_id}/assign-group")
-def assign_user_to_group(
+async def assign_user_to_group(
     user_id: int,
     group_data: AssignUserToGroupRequest,
     db: Session = Depends(get_db),
@@ -1032,7 +992,7 @@ def assign_user_to_group(
     return {"detail": f"User '{user.name}' assigned to group '{group.name}'"}
 
 @router.post("/users/bulk-assign-group")
-def bulk_assign_users_to_group(
+async def bulk_assign_users_to_group(
     bulk_data: BulkAssignUsersRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -1068,7 +1028,7 @@ def bulk_assign_users_to_group(
     return {"detail": f"{assigned_count} users assigned to group '{group.name}'"}
 
 @router.get("/dashboard", response_model=AdminDashboardResponse)
-def get_admin_dashboard(
+async def get_admin_dashboard(
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
 ):
@@ -1152,7 +1112,7 @@ def get_admin_dashboard(
 # =============================================================================
 
 @router.get("/groups/{group_id}/students", response_model=GroupStudentsResponse)
-def get_group_students(
+async def get_group_students(
     group_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
@@ -1188,7 +1148,7 @@ def get_group_students(
     )
 
 @router.post("/groups/{group_id}/students", response_model=dict)
-def add_student_to_group(
+async def add_student_to_group(
     group_id: int,
     student_data: AddStudentToGroupRequest,
     db: Session = Depends(get_db),
@@ -1232,7 +1192,7 @@ def add_student_to_group(
     return {"detail": f"Student '{student.name}' added to group '{group.name}'"}
 
 @router.delete("/groups/{group_id}/students/{student_id}", response_model=dict)
-def remove_student_from_group(
+async def remove_student_from_group(
     group_id: int,
     student_id: int,
     db: Session = Depends(get_db),
@@ -1271,7 +1231,7 @@ def remove_student_from_group(
     return {"detail": f"Student '{student.name}' removed from group '{group.name}'"}
 
 @router.post("/groups/{group_id}/students/bulk", response_model=dict)
-def bulk_add_students_to_group(
+async def bulk_add_students_to_group(
     group_id: int,
     student_ids: List[int],
     db: Session = Depends(get_db),
@@ -1320,7 +1280,7 @@ def bulk_add_students_to_group(
 # =============================================================================
 
 @router.get("/events", response_model=List[EventSchema])
-def get_all_events(
+async def get_all_events(
     skip: int = 0,
     limit: int = 100,
     event_type: Optional[str] = None,
@@ -1368,7 +1328,7 @@ def get_all_events(
     return result
 
 @router.post("/events", response_model=EventSchema)
-def create_event(
+async def create_event(
     event_data: CreateEventRequest,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -1417,7 +1377,7 @@ def create_event(
     
     # If recurring, create additional events
     if event_data.is_recurring and event_data.recurrence_pattern and event_data.recurrence_end_date:
-        create_recurring_events(db, event, event_data)
+        await create_recurring_events(db, event, event_data)
     
     db.commit()
     db.refresh(event)
@@ -1430,7 +1390,7 @@ def create_event(
     return result
 
 @router.put("/events/{event_id}", response_model=EventSchema)
-def update_event(
+async def update_event(
     event_id: int,
     event_data: UpdateEventRequest,
     db: Session = Depends(get_db),
@@ -1488,7 +1448,7 @@ def update_event(
     return result
 
 @router.delete("/events/{event_id}")
-def delete_event(
+async def delete_event(
     event_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -1508,7 +1468,7 @@ def delete_event(
     return {"detail": "Event deleted successfully"}
 
 @router.post("/events/bulk", response_model=List[EventSchema])
-def create_bulk_events(
+async def create_bulk_events(
     events_data: List[CreateEventRequest],
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin())
@@ -1567,7 +1527,7 @@ def create_bulk_events(
     
     return result
 
-def create_recurring_events(db: Session, base_event: Event, event_data: CreateEventRequest):
+async def create_recurring_events(db: Session, base_event: Event, event_data: CreateEventRequest):
     """Helper function to create recurring events"""
     from datetime import timedelta
     

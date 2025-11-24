@@ -22,7 +22,7 @@ router = APIRouter()
 # =============================================================================
 
 @router.get("/", response_model=List[AssignmentSchema])
-def get_assignments(
+async def get_assignments(
     lesson_id: Optional[str] = None,
     course_id: Optional[int] = None,
     group_id: Optional[int] = None,
@@ -104,7 +104,7 @@ def get_assignments(
     return [AssignmentSchema.from_orm(assignment) for assignment in assignments]
 
 @router.post("/", response_model=AssignmentSchema)
-def create_assignment(
+async def create_assignment(
     assignment_data: AssignmentCreateSchema,
     lesson_id: Optional[int] = None,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
@@ -139,7 +139,7 @@ def create_assignment(
             raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate assignment content based on type
-    validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
+    await validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
     
     # Validate due date
     if assignment_data.due_date and assignment_data.due_date < datetime.utcnow():
@@ -167,7 +167,7 @@ def create_assignment(
     return AssignmentSchema.from_orm(new_assignment)
 
 @router.get("/{assignment_id}", response_model=AssignmentSchema)
-def get_assignment(
+async def get_assignment(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -222,12 +222,12 @@ def get_assignment(
     
     # Hide correct answers from students
     if current_user.role == "student":
-        assignment_data.content = remove_correct_answers_from_content(assignment_data.content)
+        assignment_data.content = await remove_correct_answers_from_content(assignment_data.content)
     
     return assignment_data
 
 @router.put("/{assignment_id}", response_model=AssignmentSchema)
-def update_assignment(
+async def update_assignment(
     assignment_id: int,
     assignment_data: AssignmentCreateSchema,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
@@ -255,7 +255,7 @@ def update_assignment(
             raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate content
-    validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
+    await validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
     
     # Validate due date
     if assignment_data.due_date and assignment_data.due_date < datetime.utcnow():
@@ -280,7 +280,7 @@ def update_assignment(
     return AssignmentSchema.from_orm(assignment)
 
 @router.delete("/{assignment_id}")
-def delete_assignment(
+async def delete_assignment(
     assignment_id: int,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
     db: Session = Depends(get_db)
@@ -310,7 +310,7 @@ def delete_assignment(
 # =============================================================================
 
 @router.post("/{assignment_id}/submit", response_model=AssignmentSubmissionSchema)
-def submit_assignment(
+async def submit_assignment(
     assignment_id: int,
     submission_data: SubmitAssignmentSchema,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -414,13 +414,13 @@ def submit_assignment(
     
     # Update student progress (only if assignment is linked to a lesson)
     if assignment.lesson_id:
-        update_student_progress(assignment, current_user.id, score, db)
+        await update_student_progress(assignment, current_user.id, score, db)
     
     return AssignmentSubmissionSchema.from_orm(submission)
 
 
 @router.get("/{assignment_id}/debug-submissions")
-def debug_submissions(
+async def debug_submissions(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -449,7 +449,7 @@ def debug_submissions(
 
 
 @router.delete("/{assignment_id}/debug-delete-submission/{submission_id}")
-def debug_delete_submission(
+async def debug_delete_submission(
     assignment_id: int,
     submission_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -471,7 +471,7 @@ def debug_delete_submission(
     return {"message": f"Submission {submission_id} deleted successfully"}
 
 @router.get("/{assignment_id}/submissions", response_model=List[AssignmentSubmissionSchema])
-def get_assignment_submissions(
+async def get_assignment_submissions(
     assignment_id: int,
     user_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -528,7 +528,7 @@ def get_assignment_submissions(
     return result
 
 @router.get("/submissions/my", response_model=List[AssignmentSubmissionSchema])
-def get_my_submissions(
+async def get_my_submissions(
     course_id: Optional[int] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=1000),
@@ -552,7 +552,7 @@ def get_my_submissions(
     return [AssignmentSubmissionSchema.from_orm(submission) for submission in submissions]
 
 @router.put("/{assignment_id}/submissions/{submission_id}/grade", response_model=AssignmentSubmissionSchema)
-def grade_submission(
+async def grade_submission(
     assignment_id: int,
     submission_id: int,
     grade_data: GradeSubmissionSchema,
@@ -629,7 +629,7 @@ def grade_submission(
 # =============================================================================
 
 @router.get("/{assignment_id}/student-progress", response_model=Dict[str, Any])
-def get_assignment_student_progress(
+async def get_assignment_student_progress(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -810,7 +810,7 @@ def get_assignment_student_progress(
     }
 
 @router.get("/{assignment_id}/status", response_model=Dict[str, Any])
-def get_assignment_status_for_student(
+async def get_assignment_status_for_student(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -884,7 +884,7 @@ def get_assignment_status_for_student(
 # HELPER FUNCTIONS
 # =============================================================================
 
-def validate_assignment_content(assignment_type: str, content: Dict[str, Any]):
+async def validate_assignment_content(assignment_type: str, content: Dict[str, Any]):
     """Validate assignment content based on type"""
     required_fields = {
         "single_choice": ["question", "options"],
@@ -904,7 +904,7 @@ def validate_assignment_content(assignment_type: str, content: Dict[str, Any]):
         if field not in content:
             raise HTTPException(status_code=400, detail=f"Missing required field '{field}' for {assignment_type}")
 
-def remove_correct_answers_from_content(content: Dict[str, Any]) -> Dict[str, Any]:
+async def remove_correct_answers_from_content(content: Dict[str, Any]) -> Dict[str, Any]:
     """Remove correct answers from content when showing to students"""
     # Make a copy to avoid modifying original
     clean_content = content.copy()
@@ -917,7 +917,7 @@ def remove_correct_answers_from_content(content: Dict[str, Any]) -> Dict[str, An
     
     return clean_content
 
-def update_student_progress(assignment: Assignment, user_id: int, score: Optional[int], db: Session):
+async def update_student_progress(assignment: Assignment, user_id: int, score: Optional[int], db: Session):
     """Update student progress after assignment submission"""
     if not assignment.lesson_id:
         return
@@ -959,7 +959,7 @@ def update_student_progress(assignment: Assignment, user_id: int, score: Optiona
 # =============================================================================
 
 @router.get("/types")
-def get_assignment_types():
+async def get_assignment_types():
     """Get supported assignment types and their schemas"""
     return {
         "supported_types": [

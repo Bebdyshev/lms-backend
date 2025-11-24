@@ -33,7 +33,7 @@ sio = socketio.AsyncServer(
 
 USER_ROOM_PREFIX = "user:"
 
-def _get_user_id_from_environ(environ, auth=None) -> int | None:
+async def _get_user_id_from_environ(environ, auth=None) -> int | None:
     # Try Socket.IO auth payload first
     if auth and isinstance(auth, dict):
         token = auth.get('token')
@@ -83,7 +83,7 @@ def _get_user_id_from_environ(environ, auth=None) -> int | None:
     except (TypeError, ValueError):
         return None
 
-def _resolve_user_id(session_data, db: Session) -> int | None:
+async def _resolve_user_id(session_data, db: Session) -> int | None:
     raw = session_data.get('user_id') if session_data else None
     if isinstance(raw, int):
         return raw
@@ -109,7 +109,7 @@ async def _emit_unread_update(user_id: int):
 @sio.event
 async def connect(sid, environ, auth):
     # Use the proper function to get user_id from token
-    user_id = _get_user_id_from_environ(environ, auth)
+    user_id = await _get_user_id_from_environ(environ, auth)
     if not user_id:
         logger.debug(f"Connection rejected for sid {sid}: Invalid token")
         await sio.disconnect(sid)
@@ -131,7 +131,7 @@ async def disconnect(sid):
 async def handle_message_send(sid, data):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    from_user_id = _resolve_user_id(session, db)
+    from_user_id = await _resolve_user_id(session, db)
     to_user_id = int(data.get('to_user_id')) if data and data.get('to_user_id') is not None else None
     content = (data.get('content') or '').strip()
     if not from_user_id or not to_user_id or not content:
@@ -181,7 +181,7 @@ async def handle_message_send(sid, data):
         await _emit_unread_update(to_user_id)
         
         # Create notification
-        create_message_notification(new_message, db)
+        await create_message_notification(new_message, db)
         
     except Exception as e:
         logger.error(f"Error sending message: {e}")
@@ -193,7 +193,7 @@ async def handle_message_send(sid, data):
 async def handle_message_read(sid, data):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    user_id = _resolve_user_id(session, db)
+    user_id = await _resolve_user_id(session, db)
     message_id = int(data.get('message_id')) if data and data.get('message_id') is not None else None
     if not user_id or not message_id:
         return
@@ -228,7 +228,7 @@ async def handle_message_read(sid, data):
 async def handle_message_read_all(sid, data):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    user_id = _resolve_user_id(session, db)
+    user_id = await _resolve_user_id(session, db)
     partner_id = int(data.get('partner_id')) if data and data.get('partner_id') is not None else None
     if not user_id or not partner_id:
         return
@@ -263,7 +263,7 @@ async def handle_message_read_all(sid, data):
 async def handle_threads_get(sid):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    user_id = _resolve_user_id(session, db)
+    user_id = await _resolve_user_id(session, db)
     if not user_id:
         return []
     try:
@@ -332,7 +332,7 @@ async def handle_threads_get(sid):
 async def handle_messages_get(sid, data):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    current_user_id = _resolve_user_id(session, db)
+    current_user_id = await _resolve_user_id(session, db)
     partner_id = int(data.get('with_user_id')) if data and data.get('with_user_id') is not None else None
     if not current_user_id:
         return []
@@ -382,7 +382,7 @@ async def handle_messages_get(sid, data):
 async def handle_contacts_get(sid, data=None):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    current_user_id = _resolve_user_id(session, db)
+    current_user_id = await _resolve_user_id(session, db)
     if not current_user_id:
         return []
     try:
@@ -563,7 +563,7 @@ async def handle_contacts_get(sid, data=None):
 async def handle_unread_count(sid):
     session = await sio.get_session(sid)
     db: Session = next(get_db())
-    user_id = _resolve_user_id(session, db)
+    user_id = await _resolve_user_id(session, db)
     if not user_id:
         return {"unread_count": 0}
     try:

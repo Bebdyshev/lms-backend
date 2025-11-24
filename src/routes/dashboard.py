@@ -16,7 +16,7 @@ from src.schemas.models import GroupStudent
 router = APIRouter()
 
 @router.get("/stats", response_model=DashboardStatsSchema)
-def get_dashboard_stats(
+async def get_dashboard_stats(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -25,17 +25,17 @@ def get_dashboard_stats(
     Supports different views based on user role
     """
     if current_user.role == "student":
-        return get_student_dashboard_stats(current_user, db)
+        return await get_student_dashboard_stats(current_user, db)
     elif current_user.role == "teacher":
-        return get_teacher_dashboard_stats(current_user, db)
+        return await get_teacher_dashboard_stats(current_user, db)
     elif current_user.role == "curator":
-        return get_curator_dashboard_stats(current_user, db)
+        return await get_curator_dashboard_stats(current_user, db)
     elif current_user.role == "admin":
-        return get_admin_dashboard_stats(current_user, db)
+        return await get_admin_dashboard_stats(current_user, db)
     else:
         raise HTTPException(status_code=403, detail="Invalid user role")
 
-def get_student_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+async def get_student_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for student"""
     # Get student's active enrollments
     enrollments = db.query(Enrollment).filter(
@@ -152,7 +152,7 @@ def get_student_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         recent_courses=course_progresses[:6]  # Limit to 6 recent courses
     )
 
-def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+async def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for teacher"""
     # Get teacher's courses
     teacher_courses = db.query(Course).filter(
@@ -336,7 +336,7 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         recent_courses=course_stats[:6]
     )
 
-def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+async def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for curator"""
     # Get students assigned to curator (same group)
     assigned_students = []
@@ -398,7 +398,7 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         recent_courses=students_with_progress[:6]  # Show recent student activity instead of courses
     )
 
-def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+async def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for admin"""
     # Get platform-wide statistics
     total_users = db.query(UserInDB).filter(UserInDB.is_active == True).count()
@@ -454,7 +454,7 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
     )
 
 @router.get("/my-courses", response_model=List[CourseProgressSchema])
-def get_my_courses(
+async def get_my_courses(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -557,7 +557,7 @@ def get_my_courses(
     return courses_with_progress
 
 @router.get("/recent-activity")
-def get_recent_activity(
+async def get_recent_activity(
     limit: int = 10,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -592,7 +592,7 @@ def get_recent_activity(
     return {"recent_activities": activities}
 
 @router.post("/update-study-time")
-def update_study_time(
+async def update_study_time(
     minutes_studied: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -611,7 +611,7 @@ def update_study_time(
     }
 
 @router.get("/teacher/pending-submissions")
-def get_teacher_pending_submissions(
+async def get_teacher_pending_submissions(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -689,7 +689,7 @@ def get_teacher_pending_submissions(
     return {"pending_submissions": submissions_data}
 
 @router.get("/teacher/recent-submissions")
-def get_teacher_recent_submissions(
+async def get_teacher_recent_submissions(
     limit: int = 10,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)

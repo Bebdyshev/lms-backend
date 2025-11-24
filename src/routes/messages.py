@@ -20,7 +20,7 @@ router = APIRouter()
 # =============================================================================
 
 @router.get("/", response_model=List[MessageSchema])
-def get_messages(
+async def get_messages(
     with_user_id: Optional[int] = None,
     course_id: Optional[int] = None,
     skip: int = Query(0, ge=0),
@@ -88,7 +88,7 @@ def get_messages(
     return enriched_messages
 
 @router.post("/", response_model=MessageSchema)
-def send_message(
+async def send_message(
     message_data: SendMessageSchema,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -126,7 +126,7 @@ def send_message(
     return message_response
 
 @router.put("/{message_id}/read")
-def mark_message_as_read(
+async def mark_message_as_read(
     message_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -147,7 +147,7 @@ def mark_message_as_read(
     return {"detail": "Message marked as read"}
 
 @router.put("/mark-all-read/{partner_id}")
-def mark_all_messages_as_read(
+async def mark_all_messages_as_read(
     partner_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -173,7 +173,7 @@ def mark_all_messages_as_read(
     return {"detail": f"Marked {len(unread_messages)} messages as read"}
 
 @router.get("/conversations", response_model=List[dict])
-def get_conversations(
+async def get_conversations(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -242,7 +242,7 @@ def get_conversations(
     return conversations
 
 @router.get("/unread-count")
-def get_unread_message_count(
+async def get_unread_message_count(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -256,7 +256,7 @@ def get_unread_message_count(
     return {"unread_count": unread_count}
 
 @router.get("/available-contacts")
-def get_available_contacts(
+async def get_available_contacts(
     role_filter: Optional[str] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -461,7 +461,7 @@ def get_available_contacts(
 # HELPER FUNCTIONS
 # =============================================================================
 
-def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: Session) -> bool:
+async def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: Session) -> bool:
     """
     Проверить, может ли текущий пользователь общаться с целевым пользователем
     Основано на ролях и связях (курсы, группы)
@@ -529,7 +529,7 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
     
     return False
 
-def create_message_notification(message: Message, db: Session):
+async def create_message_notification(message: Message, db: Session):
     """Создать уведомление о новом сообщении"""
     from src.schemas.models import Notification
     
