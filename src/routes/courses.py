@@ -362,8 +362,9 @@ def delete_course(
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Soft delete - mark as inactive
-    course.is_active = False
+    # Hard delete - completely remove the course
+    # SQLAlchemy will handle cascade deletes for related records (modules, lessons, steps, etc.)
+    db.delete(course)
     db.commit()
     
     return {"detail": "Course deleted successfully"}
