@@ -13,3 +13,4 @@ uploads/
 !package.json
 !package-lock.json
 !tsconfig.json
+backups/
