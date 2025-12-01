@@ -1681,3 +1681,50 @@ async def analyze_sat_image(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error analyzing image: {str(e)}")
+
+@router.post("/{course_id}/add-summary-steps")
+def add_summary_steps_to_course(
+    course_id: int,
+    current_user: UserInDB = Depends(require_teacher_or_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Automatically add a summary step to all lessons in the course that don't have one.
+    """
+    # Verify course exists
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+        
+    # Get all lessons
+    lessons = db.query(Lesson).join(Module).filter(Module.course_id == course_id).all()
+    
+    added_count = 0
+    
+    for lesson in lessons:
+        # Check if summary step already exists
+        has_summary = db.query(Step).filter(
+            Step.lesson_id == lesson.id,
+            Step.content_type == 'summary'
+        ).first()
+        
+        if not has_summary:
+            # Get max order index
+            max_order = db.query(func.max(Step.order_index)).filter(
+                Step.lesson_id == lesson.id
+            ).scalar() or 0
+            
+            # Create summary step
+            summary_step = Step(
+                lesson_id=lesson.id,
+                title="Lesson Summary",
+                content_type="summary",
+                content_text="",
+                order_index=max_order + 1
+            )
+            db.add(summary_step)
+            added_count += 1
+            
+    db.commit()
+    
+    return {"message": f"Added summary steps to {added_count} lessons", "added_count": added_count}
