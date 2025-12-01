@@ -1660,9 +1660,89 @@ def get_student_quiz_analytics(
         if quiz_data["attempts"]:
             quiz_data["latest_score"] = quiz_data["attempts"][0]["score_percentage"]
     
-    return {
-        "student_id": student_id,
-        "student_name": student.name,
-        "total_attempts": len(attempts),
-        "quizzes": list(quiz_attempts.values())
+    return {\n        "student_id": student_id,\n        "student_name": student.name,\n        "total_attempts": len(attempts),\n        "quizzes": list(quiz_attempts.values())
     }
+
+
+@router.get("/lessons/{lesson_id}/quiz-summary")
+def get_lesson_quiz_summary(
+    lesson_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get quiz summary for a lesson showing all quizzes and latest attempt results"""
+    # Verify lesson exists
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    # Get module and course for access check
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    # Check course access
+    if not check_course_access(module.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    # Get all quiz steps in this lesson
+    quiz_steps = db.query(Step).filter(
+        Step.lesson_id == lesson_id,
+        Step.content_type == 'quiz'
+    ).order_by(Step.order_index).all()
+    
+    quizzes_summary = []
+    total_questions = 0
+    total_correct = 0
+    
+    for step in quiz_steps:
+        # Get the latest attempt for this quiz step
+        latest_attempt = db.query(QuizAttempt).filter(
+            QuizAttempt.user_id == current_user.id,
+            QuizAttempt.step_id == step.id
+        ).order_by(desc(QuizAttempt.completed_at)).first()
+        
+        # Parse quiz data to get title
+        quiz_title = step.title
+        if step.content_text:
+            try:
+                import json
+                quiz_data = json.loads(step.content_text)
+                if 'title' in quiz_data:
+                    quiz_title = quiz_data['title']
+            except:
+                pass
+        
+        quiz_item = {
+            "step_id": step.id,
+            "quiz_title": quiz_title,
+            "order_index": step.order_index,
+            "last_attempt": None
+        }
+        
+        if latest_attempt:
+            quiz_item["last_attempt"] = {
+                "score": latest_attempt.correct_answers,
+                "total": latest_attempt.total_questions,
+                "percentage": round(latest_attempt.score_percentage, 1),
+                "completed_at": latest_attempt.completed_at.isoformat() if latest_attempt.completed_at else None
+            }
+            total_questions += latest_attempt.total_questions
+            total_correct += latest_attempt.correct_answers
+        
+        quizzes_summary.append(quiz_item)
+    
+    # Calculate overall statistics
+    average_percentage = 0
+    if total_questions > 0:
+        average_percentage = round((total_correct / total_questions) * 100, 1)
+    
+    return {
+        "quizzes": quizzes_summary,
+        "overall_stats": {
+            "average_percentage": average_percentage,
+            "total_questions": total_questions,
+            "total_correct": total_correct
+        }
+    }
+

@@ -245,7 +245,7 @@ class Step(Base):
     id = Column(Integer, primary_key=True, index=True)
     lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
     title = Column(String, nullable=False)
-    content_type = Column(String, nullable=False, default="text")  # video_text, text, quiz, flashcard
+    content_type = Column(String, nullable=False, default="text")  # video_text, text, quiz, flashcard, summary
     video_url = Column(String, nullable=True)
     content_text = Column(Text, nullable=True)
     original_image_url = Column(String, nullable=True)  # For SAT question images
