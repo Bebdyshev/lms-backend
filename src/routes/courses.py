@@ -456,7 +456,7 @@ def get_course_modules(
             lessons = sorted(module.lessons, key=lambda x: x.order_index)
             
             lessons_data = []
-            for lesson in lessons:
+            for lesson_idx, lesson in enumerate(lessons):
                 # Get steps for this lesson
                 steps = sorted(lesson.steps, key=lambda x: x.order_index) if lesson.steps else []
                 
@@ -484,7 +484,44 @@ def get_course_modules(
                 else:
                     lesson_schema.is_completed = False
                 
-                lessons_data.append(lesson_schema.model_dump())
+                # Convert to dict early to add is_accessible field
+                lesson_dict = lesson_schema.model_dump()
+                
+                # SEQUENTIAL ACCESS LOGIC: Determine if lesson is accessible
+                # For students only - teachers and admins can access any lesson
+                if current_user.role == "student":
+                    # First lesson is always accessible
+                    if lesson_idx == 0:
+                        # Check if this is the first module
+                        is_first_module = module.order_index == min(m.order_index for m in modules)
+                        lesson_dict["is_accessible"] = is_first_module or len(lessons_data) > 0
+                        
+                        # If not first module, check if previous module is completed
+                        if not is_first_module:
+                            # Get previous module
+                            prev_modules = [m for m in modules if m.order_index < module.order_index]
+                            if prev_modules:
+                                prev_module = max(prev_modules, key=lambda m: m.order_index)
+                                prev_module_lessons = sorted(prev_module.lessons, key=lambda x: x.order_index)
+                                
+                                # Check if all lessons in previous module are completed
+                                prev_module_completed = all(
+                                    l.id in completed_lesson_ids or 
+                                    (l.steps and all(s.id in completed_step_ids for s in l.steps))
+                                    for l in prev_module_lessons
+                                )
+                                lesson_dict["is_accessible"] = prev_module_completed
+                            else:
+                                lesson_dict["is_accessible"] = True
+                    else:
+                        # For non-first lessons, check if previous lesson is completed
+                        previous_lesson_dict = lessons_data[lesson_idx - 1]
+                        lesson_dict["is_accessible"] = previous_lesson_dict.get("is_completed", False)
+                else:
+                    # Teachers and admins can access all lessons
+                    lesson_dict["is_accessible"] = True
+                
+                lessons_data.append(lesson_dict)
             
             # Add lessons to module data
             module_dict["lessons"] = lessons_data
@@ -753,6 +790,109 @@ def get_lesson(
     
     return lesson_schema
 
+
+
+@router.get("/lessons/{lesson_id}/check-access")
+def check_lesson_access(
+    lesson_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Check if current user can access a specific lesson (for students - sequential access)"""
+    
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    # Get module and course
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    course_id = module.course_id
+    
+    # Check basic course access
+    if not check_course_access(course_id, current_user, db):
+        return {
+            "accessible": False,
+            "reason": "You do not have access to this course"
+        }
+    
+    # Teachers and admins can access any lesson
+    if current_user.role != "student":
+        return {"accessible": True}
+    
+    # For students, check sequential access
+    from src.schemas.models import StepProgress
+    
+    # Get all completed steps for this student in this course
+    completed_steps = db.query(StepProgress.step_id).filter(
+        StepProgress.user_id == current_user.id,
+        StepProgress.course_id == course_id,
+        StepProgress.status == "completed"
+    ).all()
+    completed_step_ids = {s[0] for s in completed_steps}
+    
+    # Get all modules in this course
+    all_modules = db.query(Module).filter(
+        Module.course_id == course_id
+    ).order_by(Module.order_index).all()
+    
+    # Find current module and lesson position
+    current_module_idx = None
+    current_lesson_idx = None
+    
+    for mod_idx, mod in enumerate(all_modules):
+        module_lessons = sorted(mod.lessons, key=lambda x: x.order_index)
+        for les_idx, les in enumerate(module_lessons):
+            if les.id == lesson_id:
+                current_module_idx = mod_idx
+                current_lesson_idx = les_idx
+                break
+        if current_module_idx is not None:
+            break
+    
+    # First lesson in first module is always accessible
+    if current_module_idx == 0 and current_lesson_idx == 0:
+        return {"accessible": True}
+    
+    # Check if previous lesson is completed
+    if current_lesson_idx > 0:
+        # Previous lesson in same module
+        prev_lesson = sorted(module.lessons, key=lambda x: x.order_index)[current_lesson_idx - 1]
+        prev_lesson_steps = db.query(Step).filter(Step.lesson_id == prev_lesson.id).all()
+        
+        # Check if all steps in previous lesson are completed
+        if prev_lesson_steps:
+            all_prev_steps_completed = all(s.id in completed_step_ids for s in prev_lesson_steps)
+            if not all_prev_steps_completed:
+                return {
+                    "accessible": False,
+                    "reason": f"Please complete the previous lesson: {prev_lesson.title}"
+                }
+        
+        return {"accessible": True}
+    
+    # First lesson in non-first module - check if previous module is completed
+    if current_module_idx > 0:
+        prev_module = all_modules[current_module_idx - 1]
+        prev_module_lessons = sorted(prev_module.lessons, key=lambda x: x.order_index)
+        
+        # Check if all lessons in previous module are completed
+        for prev_lesson in prev_module_lessons:
+            prev_lesson_steps = db.query(Step).filter(Step.lesson_id == prev_lesson.id).all()
+            if prev_lesson_steps:
+                all_steps_completed = all(s.id in completed_step_ids for s in prev_lesson_steps)
+                if not all_steps_completed:
+                    return {
+                        "accessible": False,
+                        "reason": f"Please complete all lessons in module: {prev_module.title}"
+                    }
+        
+        return {"accessible": True}
+    
+    # Default to accessible (shouldn't reach here)
+    return {"accessible": True}
 
 
 @router.put("/lessons/{lesson_id}", response_model=LessonSchema)
