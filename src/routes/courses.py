@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, and_
 from typing import List, Optional
 import os
 import uuid
@@ -453,6 +453,22 @@ def get_course_modules(
         # Include lessons if requested
         if include_lessons:
             # Use already loaded lessons from joinedload
+            # Calculate lessons unlocked by explicit redirects from completed lessons
+            unlocked_by_redirect_ids = set()
+            if current_user.role == "student":
+                for mod in modules:
+                    for les in mod.lessons:
+                        if les.next_lesson_id:
+                            # Check if lesson is completed (either in DB OR all steps done)
+                            is_completed_db = les.id in completed_lesson_ids
+                            
+                            # Check steps completion (steps are already loaded via joinedload)
+                            lesson_steps = les.steps if hasattr(les, 'steps') else []
+                            all_steps_done = lesson_steps and all(s.id in completed_step_ids for s in lesson_steps)
+                            
+                            if is_completed_db or all_steps_done:
+                                unlocked_by_redirect_ids.add(les.next_lesson_id)
+
             lessons = sorted(module.lessons, key=lambda x: x.order_index)
             
             lessons_data = []
@@ -490,8 +506,11 @@ def get_course_modules(
                 # SEQUENTIAL ACCESS LOGIC: Determine if lesson is accessible
                 # For students only - teachers and admins can access any lesson
                 if current_user.role == "student":
+                    # Check if explicitly unlocked by redirect
+                    if lesson.id in unlocked_by_redirect_ids:
+                        lesson_dict["is_accessible"] = True
                     # First lesson is always accessible
-                    if lesson_idx == 0:
+                    elif lesson_idx == 0:
                         # Check if this is the first module
                         is_first_module = module.order_index == min(m.order_index for m in modules)
                         lesson_dict["is_accessible"] = is_first_module or len(lessons_data) > 0
@@ -822,6 +841,32 @@ def check_lesson_access(
     if current_user.role != "student":
         return {"accessible": True}
     
+    # Check if this lesson is unlocked by a redirect from a completed lesson
+    from src.schemas.models import StudentProgress
+    
+    # First, find any lesson that redirects to this one
+    redirect_source = db.query(Lesson).filter(Lesson.next_lesson_id == lesson_id).first()
+    
+    if redirect_source:
+        # Check if redirect source is completed (either via StudentProgress OR all steps done)
+        # Option 1: Check StudentProgress
+        sp = db.query(StudentProgress).filter(
+            StudentProgress.user_id == current_user.id,
+            StudentProgress.lesson_id == redirect_source.id,
+            StudentProgress.status == 'completed'
+        ).first()
+        
+        # Option 2: Check all steps completed (IMPORTANT: we need completed_step_ids first)
+        # We'll check this after getting completed_step_ids
+        
+        if sp:
+            print(f"DEBUG: Lesson {lesson_id} unlocked by redirect from completed lesson {redirect_source.id} ({redirect_source.title}) via StudentProgress")
+            return {"accessible": True}
+        else:
+            print(f"DEBUG: Redirect source found: {redirect_source.id} ({redirect_source.title}). StudentProgress status: {sp.status if sp else 'None'}. Will check steps completion...")
+    else:
+        print(f"DEBUG: No lesson explicitly redirects to {lesson_id}")
+    
     # For students, check sequential access
     from src.schemas.models import StepProgress
     
@@ -832,6 +877,36 @@ def check_lesson_access(
         StepProgress.status == "completed"
     ).all()
     completed_step_ids = {s[0] for s in completed_steps}
+    
+    # NOW check if redirect source is completed via steps (Option 2 from above)
+    if redirect_source:
+        redirect_steps = db.query(Step).filter(Step.lesson_id == redirect_source.id).all()
+        all_redirect_steps_completed = redirect_steps and all(s.id in completed_step_ids for s in redirect_steps)
+        
+        if all_redirect_steps_completed:
+            print(f"DEBUG: Lesson {lesson_id} unlocked by redirect from lesson {redirect_source.id} ({redirect_source.title}) - all steps completed")
+            return {"accessible": True}
+        else:
+            print(f"DEBUG: Redirect source {redirect_source.id} has {len(redirect_steps)} steps, completed: {sum(1 for s in redirect_steps if s.id in completed_step_ids)}")
+    
+    # Check if target lesson is already completed (allow re-visiting)
+    # Check 1: StudentProgress
+    is_already_completed = db.query(StudentProgress).filter(
+        StudentProgress.user_id == current_user.id,
+        StudentProgress.lesson_id == lesson_id,
+        StudentProgress.status == 'completed'
+    ).first()
+    
+    if is_already_completed:
+        return {"accessible": True}
+
+    # Check 2: All steps completed
+    target_lesson_steps = db.query(Step).filter(Step.lesson_id == lesson_id).all()
+    if target_lesson_steps and all(s.id in completed_step_ids for s in target_lesson_steps):
+         return {"accessible": True}
+
+    print(f"DEBUG: Checking access for lesson {lesson_id} ({lesson.title})")
+    print(f"DEBUG: Module {module.id} ({module.title})")
     
     # Get all modules in this course
     all_modules = db.query(Module).filter(
@@ -848,6 +923,7 @@ def check_lesson_access(
             if les.id == lesson_id:
                 current_module_idx = mod_idx
                 current_lesson_idx = les_idx
+                print(f"DEBUG: Found target lesson at module idx {mod_idx}, lesson idx {les_idx}")
                 break
         if current_module_idx is not None:
             break
@@ -866,9 +942,10 @@ def check_lesson_access(
         if prev_lesson_steps:
             all_prev_steps_completed = all(s.id in completed_step_ids for s in prev_lesson_steps)
             if not all_prev_steps_completed:
+                print(f"DEBUG: Blocking access. Prev lesson {prev_lesson.id} ({prev_lesson.title}) not completed")
                 return {
                     "accessible": False,
-                    "reason": f"Please complete the previous lesson: {prev_lesson.title}"
+                    "reason": f"Please complete the previous lesson: {prev_lesson.title} (Module {module.id}, Index {current_lesson_idx})"
                 }
         
         return {"accessible": True}
