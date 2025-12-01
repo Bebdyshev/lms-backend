@@ -1660,7 +1660,11 @@ def get_student_quiz_analytics(
         if quiz_data["attempts"]:
             quiz_data["latest_score"] = quiz_data["attempts"][0]["score_percentage"]
     
-    return {\n        "student_id": student_id,\n        "student_name": student.name,\n        "total_attempts": len(attempts),\n        "quizzes": list(quiz_attempts.values())
+    return {
+        "student_id": student_id,
+        "student_name": student.name,
+        "total_attempts": len(attempts),
+        "quizzes": list(quiz_attempts.values())
     }
 
 
