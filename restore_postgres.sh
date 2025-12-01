@@ -4,7 +4,15 @@
 # Восстанавливает базу данных из бэкапа
 
 # Конфигурация
-CONTAINER_NAME="postgres-lms"
+# Автоматическое определение контейнера
+if docker ps | grep -q "lms-postgres"; then
+    CONTAINER_NAME="lms-postgres"
+elif docker ps | grep -q "postgres-lms"; then
+    CONTAINER_NAME="postgres-lms"
+else
+    echo "Ошибка: Не найден контейнер PostgreSQL (искал lms-postgres или postgres-lms)"
+    exit 1
+fi
 DB_NAME="lms_db"
 DB_USER="myuser"
 BACKUP_DIR="./backups"
