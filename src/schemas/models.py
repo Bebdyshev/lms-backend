@@ -3,7 +3,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timezone
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List, Union
 from sqlalchemy.dialects.postgresql import UUID
@@ -836,7 +836,7 @@ class Message(Base):
     to_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     content = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     sender = relationship("UserInDB", foreign_keys=[from_user_id], back_populates="sent_messages")
