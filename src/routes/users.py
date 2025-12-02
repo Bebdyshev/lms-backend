@@ -14,7 +14,7 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserInDB:
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserInDB:
     payload = verify_token(token)
     if payload is None or "sub" not in payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -31,7 +31,7 @@ class UserUpdate(BaseModel):
 
 
 @router.get("/users/{user_id}", response_model=UserSchema)
-def get_user_by_id(user_id: int, db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)):
+async def get_user_by_id(user_id: int, db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)):
     payload = verify_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -45,7 +45,7 @@ def get_user_by_id(user_id: int, db: Session = Depends(get_db), token: str = Dep
 
 
 @router.put("/{user_id}", response_model=UserSchema)
-def update_profile(
+async def update_profile(
     user_id: int,
     update: UserUpdate,
     db: Session = Depends(get_db),
@@ -66,7 +66,7 @@ def update_profile(
 
 
 @router.post("/complete-onboarding", response_model=UserSchema)
-def complete_onboarding(
+async def complete_onboarding(
     db: Session = Depends(get_db),
     user: UserInDB = Depends(get_current_user),
 ):

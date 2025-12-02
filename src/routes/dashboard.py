@@ -16,7 +16,7 @@ from src.schemas.models import GroupStudent
 router = APIRouter()
 
 @router.get("/stats", response_model=DashboardStatsSchema)
-def get_dashboard_stats(
+async def get_dashboard_stats(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -475,7 +475,7 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
     )
 
 @router.get("/my-courses", response_model=List[CourseProgressSchema])
-def get_my_courses(
+async def get_my_courses(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -578,7 +578,7 @@ def get_my_courses(
     return courses_with_progress
 
 @router.get("/recent-activity")
-def get_recent_activity(
+async def get_recent_activity(
     limit: int = 10,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -613,7 +613,7 @@ def get_recent_activity(
     return {"recent_activities": activities}
 
 @router.post("/update-study-time")
-def update_study_time(
+async def update_study_time(
     minutes_studied: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -632,7 +632,7 @@ def update_study_time(
     }
 
 @router.get("/teacher/pending-submissions")
-def get_teacher_pending_submissions(
+async def get_teacher_pending_submissions(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -710,7 +710,7 @@ def get_teacher_pending_submissions(
     return {"pending_submissions": submissions_data}
 
 @router.get("/teacher/recent-submissions")
-def get_teacher_recent_submissions(
+async def get_teacher_recent_submissions(
     limit: int = 10,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -796,7 +796,7 @@ def get_teacher_recent_submissions(
     return {"recent_submissions": submissions_data}
 
 @router.get("/teacher/students-progress")
-def get_teacher_students_progress(
+async def get_teacher_students_progress(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):

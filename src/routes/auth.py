@@ -31,7 +31,7 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 @router.post("/login", response_model=Token)
-def login(user: UserLogin, db: Session = Depends(get_db)):
+async def login(user: UserLogin, db: Session = Depends(get_db)):
     """Simple login with email and password"""
     try:
         logger.info(f"Attempting login for email: {user.email}")
@@ -79,7 +79,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Login failed")
 
 @router.post("/refresh", response_model=Token)
-def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
+async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
     """Refresh access token using refresh token"""
     try:
         token = request.refresh_token
@@ -118,7 +118,7 @@ def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Could not refresh token")
 
 @router.get("/me", response_model=UserSchema)
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     """Get current user information"""
     payload = verify_token(token)
     if payload is None:
@@ -133,7 +133,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 @router.post("/logout")
-def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     """Logout user by invalidating refresh token"""
     payload = verify_token(token)
     if payload is None:
@@ -149,7 +149,7 @@ def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     return {"detail": "Logged out successfully"}
 
 # Dependency for getting current user
-def get_current_user_dependency(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserInDB:
+async def get_current_user_dependency(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> UserInDB:
     """Dependency to get current authenticated user"""
     payload = verify_token(token)
     if payload is None:
@@ -164,14 +164,14 @@ def get_current_user_dependency(token: str = Depends(oauth2_scheme), db: Session
     return user
 
 # Admin-only dependency  
-def require_admin(current_user: UserInDB = Depends(get_current_user_dependency)) -> UserInDB:
+async def require_admin(current_user: UserInDB = Depends(get_current_user_dependency)) -> UserInDB:
     """Dependency to require admin role"""
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
 # Teacher or admin dependency
-def require_teacher_or_admin(current_user: UserInDB = Depends(get_current_user_dependency)) -> UserInDB:
+async def require_teacher_or_admin(current_user: UserInDB = Depends(get_current_user_dependency)) -> UserInDB:
     """Dependency to require teacher or admin role"""
     if current_user.role not in ["teacher", "admin"]:
         raise HTTPException(status_code=403, detail="Teacher or admin access required")

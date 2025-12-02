@@ -20,7 +20,7 @@ from src.services.excel_export_service import get_excel_export_service
 router = APIRouter()
 
 @router.get("/student/{student_id}/detailed")
-def get_detailed_student_analytics(
+async def get_detailed_student_analytics(
     student_id: int,
     course_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -158,7 +158,7 @@ def get_detailed_student_analytics(
     return analytics_data
 
 @router.get("/course/{course_id}/overview")
-def get_course_analytics_overview(
+async def get_course_analytics_overview(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -294,7 +294,7 @@ def get_course_analytics_overview(
     }
 
 @router.get("/video-engagement/{course_id}")
-def get_video_engagement_analytics(
+async def get_video_engagement_analytics(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -349,7 +349,7 @@ def get_video_engagement_analytics(
     }
 
 @router.get("/quiz-performance/{course_id}")
-def get_quiz_performance_analytics(
+async def get_quiz_performance_analytics(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -438,7 +438,7 @@ def get_quiz_performance_analytics(
     }
 
 @router.get("/students/all")
-def get_all_students_analytics(
+async def get_all_students_analytics(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -616,7 +616,7 @@ def get_all_students_analytics(
     }
 
 @router.get("/groups")
-def get_groups_analytics(
+async def get_groups_analytics(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -753,7 +753,7 @@ def get_groups_analytics(
     }
 
 @router.get("/course/{course_id}/groups")
-def get_course_groups_analytics(
+async def get_course_groups_analytics(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -873,7 +873,7 @@ def get_course_groups_analytics(
     }
 
 @router.get("/group/{group_id}/students")
-def get_group_students_analytics(
+async def get_group_students_analytics(
     group_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1043,7 +1043,7 @@ def get_group_students_analytics(
     }
 
 @router.get("/student/{student_id}/progress-history")
-def get_student_progress_history(
+async def get_student_progress_history(
     student_id: int,
     course_id: Optional[int] = None,
     days: int = Query(30, description="Number of days to look back"),
@@ -1130,7 +1130,7 @@ def get_student_progress_history(
         "history": history_data
     }
 
-def generate_student_pdf_report(student_data: dict, progress_data: dict) -> bytes:
+async def generate_student_pdf_report(student_data: dict, progress_data: dict) -> bytes:
     """Генерация PDF отчета для студента"""
     try:
         from reportlab.lib.pagesizes import letter, A4
@@ -1258,7 +1258,7 @@ Email: {student_data.get('student_email', 'N/A')}
         return report_text.encode('utf-8')
 
 @router.post("/export/student/{student_id}")
-def export_student_report(
+async def export_student_report(
     student_id: int,
     course_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -1303,7 +1303,7 @@ def export_student_report(
         raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
 
 @router.post("/export/group/{group_id}")
-def export_group_report(
+async def export_group_report(
     group_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1428,7 +1428,7 @@ def export_group_report(
         raise HTTPException(status_code=500, detail=f"Failed to generate group report: {str(e)}")
 
 @router.post("/export/all-students")
-def export_all_students_report(
+async def export_all_students_report(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -1743,7 +1743,7 @@ STUDENTS:
 # =============================================================================
 
 @router.get("/student/{student_id}/detailed-progress")
-def get_student_detailed_progress(
+async def get_student_detailed_progress(
     student_id: int,
     course_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -1915,7 +1915,7 @@ def get_student_detailed_progress(
         raise HTTPException(status_code=500, detail=f"Failed to get detailed progress: {str(e)}")
 
 @router.get("/student/{student_id}/learning-path")
-def get_student_learning_path(
+async def get_student_learning_path(
     student_id: int,
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -1995,7 +1995,7 @@ def get_student_learning_path(
         raise HTTPException(status_code=500, detail=f"Failed to get learning path: {str(e)}")
 
 @router.get("/export-excel")
-def export_analytics_to_excel(
+async def export_analytics_to_excel(
     course_id: int,
     group_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),

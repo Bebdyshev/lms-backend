@@ -15,7 +15,7 @@ from src.utils.permissions import require_role
 router = APIRouter()
 
 @router.get("/my", response_model=List[EventSchema])
-def get_my_events(
+async def get_my_events(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=1000),
     event_type: Optional[str] = Query(None),
@@ -86,7 +86,7 @@ def get_my_events(
     return result
 
 @router.get("/calendar", response_model=List[EventSchema])
-def get_calendar_events(
+async def get_calendar_events(
     year: int = Query(..., ge=2020, le=2030),
     month: int = Query(..., ge=1, le=12),
     db: Session = Depends(get_db),
@@ -143,7 +143,7 @@ def get_calendar_events(
     return result
 
 @router.get("/upcoming", response_model=List[EventSchema])
-def get_upcoming_events(
+async def get_upcoming_events(
     limit: int = Query(10, le=50),
     days_ahead: int = Query(7, ge=1, le=30),
     db: Session = Depends(get_db),
@@ -197,7 +197,7 @@ def get_upcoming_events(
     return result
 
 @router.get("/{event_id}", response_model=EventSchema)
-def get_event_details(
+async def get_event_details(
     event_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_user_dependency)
@@ -249,7 +249,7 @@ def get_event_details(
     return event_data
 
 @router.post("/{event_id}/register")
-def register_for_event(
+async def register_for_event(
     event_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_user_dependency)
@@ -306,7 +306,7 @@ def register_for_event(
     return {"detail": "Successfully registered for event"}
 
 @router.delete("/{event_id}/register")
-def unregister_from_event(
+async def unregister_from_event(
     event_id: int,
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(get_current_user_dependency)

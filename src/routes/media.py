@@ -292,7 +292,7 @@ async def delete_step_attachment(
     
     return {"detail": "Attachment deleted successfully"}
 @router.put("/courses/{course_id}/thumbnail-url")
-def set_course_thumbnail_url(
+async def set_course_thumbnail_url(
     course_id: int,
     data: ThumbnailUrlSchema,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
@@ -322,7 +322,7 @@ def set_course_thumbnail_url(
 # =============================================================================
 
 @router.post("/videos/youtube", response_model=VideoUploadResponse)
-def add_youtube_video(
+async def add_youtube_video(
     video_data: YouTubeVideoSchema,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
     db: Session = Depends(get_db)
@@ -351,7 +351,7 @@ def add_youtube_video(
     return response
 
 @router.get("/videos/youtube/validate")
-def validate_youtube_url(url: str):
+async def validate_youtube_url(url: str):
     """Валидировать YouTube ссылку и получить информацию о видео"""
     
     video_info = validate_and_extract_youtube_info(url)
@@ -369,7 +369,7 @@ def validate_youtube_url(url: str):
     }
 
 @router.put("/lessons/{lesson_id}/video")
-def update_lesson_video(
+async def update_lesson_video(
     lesson_id: int,
     video_data: YouTubeVideoSchema,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
@@ -498,7 +498,7 @@ async def upload_lesson_material(
     )
 
 @router.get("/materials/{material_id}")
-def get_material_info(
+async def get_material_info(
     material_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -530,7 +530,7 @@ def get_material_info(
     }
 
 @router.delete("/materials/{material_id}")
-def delete_material(
+async def delete_material(
     material_id: int,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
     db: Session = Depends(get_db)
@@ -568,7 +568,7 @@ def delete_material(
 # =============================================================================
 
 @router.get("/library")
-def get_media_library(
+async def get_media_library(
     lesson_id: Optional[int] = None,
     file_type: Optional[str] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -813,7 +813,7 @@ async def upload_submission_file(
     }
 
 @router.get("/files/{file_type}/{filename:path}")
-def download_file(
+async def download_file(
     file_type: str,
     filename: str,
     current_user: UserInDB = Depends(get_current_user_dependency),

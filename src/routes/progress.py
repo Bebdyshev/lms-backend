@@ -205,7 +205,7 @@ def create_progress_snapshot(user_id: int, course_id: int, db: Session):
 # =============================================================================
 
 @router.get("/my", response_model=List[ProgressSchema])
-def get_my_progress(
+async def get_my_progress(
     course_id: Optional[int] = None,
     lesson_id: Optional[int] = None,
     skip: int = Query(0, ge=0),
@@ -228,7 +228,7 @@ def get_my_progress(
     return [ProgressSchema.from_orm(record) for record in progress_records]
 
 @router.get("/course/{course_id}")
-def get_course_progress(
+async def get_course_progress(
     course_id: int,
     student_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -346,7 +346,7 @@ def get_course_progress(
     return course_progress
 
 @router.post("/lesson/{lesson_id}/complete")
-def mark_lesson_complete(
+async def mark_lesson_complete(
     lesson_id: int,
     time_spent: int = 0,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -401,7 +401,7 @@ def mark_lesson_complete(
     return {"detail": "Lesson marked as complete", "time_spent": time_spent}
 
 @router.post("/lesson/{lesson_id}/start")
-def start_lesson(
+async def start_lesson(
     lesson_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -448,7 +448,7 @@ def start_lesson(
     return {"detail": "Lesson started"}
 
 @router.get("/students", response_model=List[Dict[str, Any]])
-def get_students_progress(
+async def get_students_progress(
     course_id: Optional[int] = None,
     group_id: Optional[int] = None,
     skip: int = Query(0, ge=0),
@@ -565,7 +565,7 @@ def get_students_progress(
     return students_progress
 
 @router.get("/analytics")
-def get_progress_analytics(
+async def get_progress_analytics(
     course_id: Optional[int] = None,
     time_range: int = Query(30, description="Days to analyze"),
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -685,7 +685,7 @@ def get_progress_analytics(
     return analytics
 
 @router.get("/student/overview")
-def get_student_progress_overview(
+async def get_student_progress_overview(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -828,7 +828,7 @@ def get_student_progress_overview(
     }
 
 @router.get("/student/{student_id}/overview")
-def get_student_progress_overview_by_id(
+async def get_student_progress_overview_by_id(
     student_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -993,7 +993,7 @@ def get_student_progress_overview_by_id(
 # =============================================================================
 
 @router.post("/step/{step_id}/start", response_model=StepProgressSchema)
-def mark_step_started(
+async def mark_step_started(
     step_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1052,7 +1052,7 @@ def mark_step_started(
     return StepProgressSchema.from_orm(step_progress)
 
 @router.post("/step/{step_id}/visit", response_model=StepProgressSchema)
-def mark_step_visited(
+async def mark_step_visited(
     step_id: int,
     step_data: StepProgressCreateSchema,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -1130,7 +1130,7 @@ def mark_step_visited(
     return StepProgressSchema.from_orm(step_progress)
 
 @router.get("/step/{step_id}", response_model=StepProgressSchema)
-def get_step_progress(
+async def get_step_progress(
     step_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1180,7 +1180,7 @@ def get_step_progress(
     return StepProgressSchema.from_orm(step_progress)
 
 @router.get("/lesson/{lesson_id}/steps", response_model=List[StepProgressSchema])
-def get_lesson_steps_progress(
+async def get_lesson_steps_progress(
     lesson_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1232,7 +1232,7 @@ def get_lesson_steps_progress(
     return steps_progress
 
 @router.get("/course/{course_id}/students/steps")
-def get_course_students_steps_progress(
+async def get_course_students_steps_progress(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1332,7 +1332,7 @@ def get_course_students_steps_progress(
     return course_progress
 
 @router.get("/my-streak")
-def get_my_daily_streak(
+async def get_my_daily_streak(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -1367,7 +1367,7 @@ def get_my_daily_streak(
 # =============================================================================
 
 @router.post("/initialize-progress")
-def initialize_progress(
+async def initialize_progress(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -1419,7 +1419,7 @@ def initialize_progress(
         raise HTTPException(status_code=500, detail=f"Failed to initialize progress: {str(e)}")
 
 @router.post("/recalculate-progress/{course_id}")
-def recalculate_course_progress(
+async def recalculate_course_progress(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1468,7 +1468,7 @@ def recalculate_course_progress(
 # =============================================================================
 
 @router.post("/quiz-attempt", response_model=QuizAttemptSchema)
-def create_quiz_attempt(
+async def create_quiz_attempt(
     attempt_data: QuizAttemptCreateSchema,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1503,7 +1503,7 @@ def create_quiz_attempt(
 
 
 @router.get("/quiz-attempts/step/{step_id}", response_model=List[QuizAttemptSchema])
-def get_step_quiz_attempts(
+async def get_step_quiz_attempts(
     step_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1518,7 +1518,7 @@ def get_step_quiz_attempts(
 
 
 @router.get("/quiz-attempts/course/{course_id}", response_model=List[QuizAttemptSchema])
-def get_course_quiz_attempts(
+async def get_course_quiz_attempts(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1536,7 +1536,7 @@ def get_course_quiz_attempts(
 
 
 @router.get("/quiz-attempts/analytics/course/{course_id}")
-def get_course_quiz_analytics(
+async def get_course_quiz_analytics(
     course_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -1603,7 +1603,7 @@ def get_course_quiz_analytics(
 
 
 @router.get("/quiz-attempts/analytics/student/{student_id}")
-def get_student_quiz_analytics(
+async def get_student_quiz_analytics(
     student_id: int,
     course_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -1669,7 +1669,7 @@ def get_student_quiz_analytics(
 
 
 @router.get("/lessons/{lesson_id}/quiz-summary")
-def get_lesson_quiz_summary(
+async def get_lesson_quiz_summary(
     lesson_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)

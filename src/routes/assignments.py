@@ -22,7 +22,7 @@ router = APIRouter()
 # =============================================================================
 
 @router.get("/", response_model=List[AssignmentSchema])
-def get_assignments(
+async def get_assignments(
     lesson_id: Optional[str] = None,
     course_id: Optional[int] = None,
     group_id: Optional[int] = None,
@@ -104,7 +104,7 @@ def get_assignments(
     return [AssignmentSchema.from_orm(assignment) for assignment in assignments]
 
 @router.post("/", response_model=AssignmentSchema)
-def create_assignment(
+async def create_assignment(
     assignment_data: AssignmentCreateSchema,
     lesson_id: Optional[int] = None,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
@@ -167,7 +167,7 @@ def create_assignment(
     return AssignmentSchema.from_orm(new_assignment)
 
 @router.get("/{assignment_id}", response_model=AssignmentSchema)
-def get_assignment(
+async def get_assignment(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -227,7 +227,7 @@ def get_assignment(
     return assignment_data
 
 @router.put("/{assignment_id}", response_model=AssignmentSchema)
-def update_assignment(
+async def update_assignment(
     assignment_id: int,
     assignment_data: AssignmentCreateSchema,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
@@ -280,7 +280,7 @@ def update_assignment(
     return AssignmentSchema.from_orm(assignment)
 
 @router.delete("/{assignment_id}")
-def delete_assignment(
+async def delete_assignment(
     assignment_id: int,
     current_user: UserInDB = Depends(require_teacher_or_admin()),
     db: Session = Depends(get_db)
@@ -310,7 +310,7 @@ def delete_assignment(
 # =============================================================================
 
 @router.post("/{assignment_id}/submit", response_model=AssignmentSubmissionSchema)
-def submit_assignment(
+async def submit_assignment(
     assignment_id: int,
     submission_data: SubmitAssignmentSchema,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -420,7 +420,7 @@ def submit_assignment(
 
 
 @router.get("/{assignment_id}/debug-submissions")
-def debug_submissions(
+async def debug_submissions(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -449,7 +449,7 @@ def debug_submissions(
 
 
 @router.delete("/{assignment_id}/debug-delete-submission/{submission_id}")
-def debug_delete_submission(
+async def debug_delete_submission(
     assignment_id: int,
     submission_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -471,7 +471,7 @@ def debug_delete_submission(
     return {"message": f"Submission {submission_id} deleted successfully"}
 
 @router.get("/{assignment_id}/submissions", response_model=List[AssignmentSubmissionSchema])
-def get_assignment_submissions(
+async def get_assignment_submissions(
     assignment_id: int,
     user_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -528,7 +528,7 @@ def get_assignment_submissions(
     return result
 
 @router.get("/submissions/my", response_model=List[AssignmentSubmissionSchema])
-def get_my_submissions(
+async def get_my_submissions(
     course_id: Optional[int] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=1000),
@@ -552,7 +552,7 @@ def get_my_submissions(
     return [AssignmentSubmissionSchema.from_orm(submission) for submission in submissions]
 
 @router.put("/{assignment_id}/submissions/{submission_id}/grade", response_model=AssignmentSubmissionSchema)
-def grade_submission(
+async def grade_submission(
     assignment_id: int,
     submission_id: int,
     grade_data: GradeSubmissionSchema,
@@ -629,7 +629,7 @@ def grade_submission(
 # =============================================================================
 
 @router.get("/{assignment_id}/student-progress", response_model=Dict[str, Any])
-def get_assignment_student_progress(
+async def get_assignment_student_progress(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -810,7 +810,7 @@ def get_assignment_student_progress(
     }
 
 @router.get("/{assignment_id}/status", response_model=Dict[str, Any])
-def get_assignment_status_for_student(
+async def get_assignment_status_for_student(
     assignment_id: int,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -855,7 +855,7 @@ def get_assignment_status_for_student(
     
     # Determine status
     status = "not_started"
-    attempts_left = 1  # Default to 1 attempt
+    attempts_left = 1  # async default to 1 attempt
     late = False
     
     if submission:
@@ -959,7 +959,7 @@ def update_student_progress(assignment: Assignment, user_id: int, score: Optiona
 # =============================================================================
 
 @router.get("/types")
-def get_assignment_types():
+async def get_assignment_types():
     """Get supported assignment types and their schemas"""
     return {
         "supported_types": [
@@ -1017,7 +1017,7 @@ def get_assignment_types():
                 "name": "Matching Text",
                 "description": "Сопоставление текстовых элементов",
                 "schema": {
-                    "items_to_match": [{"term": "str", "definition": "str"}],
+                    "items_to_match": [{"term": "str", "async definition": "str"}],
                     "shuffle": "bool"
                 }
             },
