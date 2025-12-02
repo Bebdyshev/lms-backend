@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_
+from sqlalchemy import desc, and_, select
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 import json
@@ -72,7 +72,7 @@ async def get_assignments(
         
         # Get lesson IDs from enrolled courses
         lesson_ids = db.query(Lesson.id).join(Module).filter(
-            Module.course_id.in_(enrolled_course_ids)
+            Module.course_id.in_(select(enrolled_course_ids))
         ).subquery()
         
         # Get group IDs where student is a member
@@ -82,7 +82,7 @@ async def get_assignments(
         
         # Filter assignments by lessons OR groups
         query = query.filter(
-            (Assignment.lesson_id.in_(lesson_ids)) | (Assignment.group_id.in_(group_ids))
+            (Assignment.lesson_id.in_(select(lesson_ids))) | (Assignment.group_id.in_(select(group_ids)))
         )
     elif current_user.role == "teacher":
         # Teachers see only assignments from their courses and groups

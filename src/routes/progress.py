@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, and_
+from sqlalchemy import func, desc, and_, select
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, date
 
@@ -722,12 +722,12 @@ async def get_student_progress_overview(
             group_course_ids.select()
         ).alias('course_id')).subquery()
         courses = db.query(Course).filter(
-            Course.id.in_(combined_course_ids), 
+            Course.id.in_(select(combined_course_ids)), 
             Course.is_active == True
         ).all()
     else:
         courses = db.query(Course).filter(
-            Course.id.in_(enrolled_course_ids), 
+            Course.id.in_(select(enrolled_course_ids)), 
             Course.is_active == True
         ).all()
     
@@ -884,12 +884,12 @@ async def get_student_progress_overview_by_id(
             group_course_ids.select()
         ).alias('course_id')).subquery()
         courses = db.query(Course).filter(
-            Course.id.in_(combined_course_ids), 
+            Course.id.in_(select(combined_course_ids)), 
             Course.is_active == True
         ).all()
     else:
         courses = db.query(Course).filter(
-            Course.id.in_(enrolled_course_ids), 
+            Course.id.in_(select(enrolled_course_ids)), 
             Course.is_active == True
         ).all()
     

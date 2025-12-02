@@ -836,7 +836,7 @@ class Message(Base):
     to_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     content = Column(Text, nullable=False)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     sender = relationship("UserInDB", foreign_keys=[from_user_id], back_populates="sent_messages")
