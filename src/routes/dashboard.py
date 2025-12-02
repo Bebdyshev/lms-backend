@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, Course, Module, Lesson, Enrollment, StudentProgress,
-    DashboardStatsSchema, CourseProgressSchema, UserSchema
+    DashboardStatsSchema, CourseProgressSchema, UserSchema, Step, StepProgress
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role
@@ -161,92 +161,137 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     ).all()
     
     total_courses = len(teacher_courses) if teacher_courses else 0
-    total_students = 0
-    total_assignments = 0
-    pending_submissions = 0
-    recent_enrollments = 0
-    total_completion_rate = 0
-    upcoming_deadlines = 0
-    avg_student_score = 0
-    total_submissions = 0
-    graded_submissions = 0
     
-    # Get teacher's assignments
-    from src.schemas.models import Assignment
-    teacher_assignments = db.query(Assignment).filter(
-        Assignment.lesson_id.in_(
-            db.query(Lesson.id).filter(
-                Lesson.module_id.in_(
-                    db.query(Module.id).filter(
-                        Module.course_id.in_([c.id for c in teacher_courses])
-                    )
-                )
-            )
-        ),
-        Assignment.is_active == True
-    ).all()
-    total_assignments = len(teacher_assignments) if teacher_assignments else 0
+    # Collect all student IDs from enrollments and group access
+    from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess
+    
+    student_ids_set = set()
+    
+    if teacher_courses:
+        # Get students from enrollments
+        enrollments = db.query(Enrollment).filter(
+            Enrollment.course_id.in_([c.id for c in teacher_courses]),
+            Enrollment.is_active == True
+        ).all()
+        
+        for enrollment in enrollments:
+            student_ids_set.add(enrollment.user_id)
+        
+        # Get students from group access
+        for course in teacher_courses:
+            group_accesses = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.course_id == course.id,
+                CourseGroupAccess.is_active == True
+            ).all()
+            
+            for access in group_accesses:
+                group_students = db.query(GroupStudent).filter(
+                    GroupStudent.group_id == access.group_id
+                ).all()
+                
+                for gs in group_students:
+                    student_ids_set.add(gs.student_id)
+    
+    total_students = len(student_ids_set)
+    
+    # Get active students (accessed lessons in last 7 days)
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    active_students = 0
+    
+    if teacher_courses and student_ids_set:
+        active_students = db.query(func.count(func.distinct(StudentProgress.user_id))).filter(
+            StudentProgress.course_id.in_([c.id for c in teacher_courses]),
+            StudentProgress.user_id.in_(student_ids_set),
+            StudentProgress.last_accessed >= seven_days_ago
+        ).scalar() or 0
+    
+    # Calculate average student progress across all students
+    avg_student_progress = 0
+    if teacher_courses and student_ids_set:
+        progress_records = db.query(StudentProgress).filter(
+            StudentProgress.course_id.in_([c.id for c in teacher_courses]),
+            StudentProgress.user_id.in_(student_ids_set)
+        ).all()
+        
+        if progress_records:
+            total_progress = sum(p.completion_percentage for p in progress_records)
+            avg_student_progress = round(total_progress / len(progress_records))
     
     # Get pending submissions (ungraded)
-    from src.schemas.models import AssignmentSubmission
-    pending_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]) if teacher_assignments else [],
-        AssignmentSubmission.is_graded == False
-    ).count() if teacher_assignments else 0
+    pending_submissions = 0
+    total_submissions = 0
+    graded_submissions_list = []
+    avg_student_score = 0
     
-    # Get total submissions and graded submissions for score calculation
-    total_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]) if teacher_assignments else []
-    ).count() if teacher_assignments else 0
-    
-    graded_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]) if teacher_assignments else [],
-        AssignmentSubmission.is_graded == True,
-        AssignmentSubmission.score.isnot(None)
-    ).all() if teacher_assignments else []
-    
-    # Calculate average student score
-    if graded_submissions and len(graded_submissions) > 0:
-        total_score = sum(sub.score for sub in graded_submissions if sub.score is not None)
-        avg_student_score = round(total_score / len(graded_submissions)) if len(graded_submissions) > 0 else 0
-    else:
-        avg_student_score = 0
-    
-    # Get recent enrollments (last 7 days)
-    seven_days_ago = datetime.utcnow() - timedelta(days=7)
-    recent_enrollments = db.query(Enrollment).filter(
-        Enrollment.course_id.in_([c.id for c in teacher_courses]) if teacher_courses else [],
-        Enrollment.enrolled_at >= seven_days_ago,
-        Enrollment.is_active == True
-    ).count() if teacher_courses else 0
-    
-    # Get upcoming deadlines (next 7 days)
-    seven_days_from_now = datetime.utcnow() + timedelta(days=7)
-    upcoming_deadlines = db.query(Assignment).filter(
-        Assignment.lesson_id.in_(
-            db.query(Lesson.id).filter(
-                Lesson.module_id.in_(
-                    db.query(Module.id).filter(
-                        Module.course_id.in_([c.id for c in teacher_courses]) if teacher_courses else []
+    if teacher_courses:
+        teacher_assignments = db.query(Assignment).filter(
+            Assignment.lesson_id.in_(
+                db.query(Lesson.id).filter(
+                    Lesson.module_id.in_(
+                        db.query(Module.id).filter(
+                            Module.course_id.in_([c.id for c in teacher_courses])
+                        )
                     )
                 )
-            )
-        ),
-        Assignment.is_active == True,
-        Assignment.due_date.isnot(None),
-        Assignment.due_date >= datetime.utcnow(),
-        Assignment.due_date <= seven_days_from_now
-    ).count() if teacher_courses else 0
+            ),
+            Assignment.is_active == True
+        ).all()
+        
+        if teacher_assignments:
+            pending_submissions = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]),
+                AssignmentSubmission.is_graded == False
+            ).count()
+            
+            total_submissions = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments])
+            ).count()
+            
+            graded_submissions_list = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id.in_([a.id for a in teacher_assignments]),
+                AssignmentSubmission.is_graded == True,
+                AssignmentSubmission.score.isnot(None)
+            ).all()
+            
+            # Calculate average student score
+            if graded_submissions_list:
+                total_score = sum(sub.score for sub in graded_submissions_list if sub.score is not None)
+                avg_student_score = round(total_score / len(graded_submissions_list))
+    
+    # Get recent enrollments (last 7 days)
+    recent_enrollments = 0
+    if teacher_courses:
+        recent_enrollments = db.query(Enrollment).filter(
+            Enrollment.course_id.in_([c.id for c in teacher_courses]),
+            Enrollment.enrolled_at >= seven_days_ago,
+            Enrollment.is_active == True
+        ).count()
+    
+    # Calculate average completion rate
+    total_completion_rate = 0
     
     course_stats = []
     
     for course in teacher_courses:
-        # Count enrolled students
+        # Count enrolled students for this course (for course_stats only, not total_students)
         enrolled_students = db.query(Enrollment).filter(
             Enrollment.course_id == course.id,
             Enrollment.is_active == True
         ).count()
-        total_students += enrolled_students
+        
+        # Also add students from group access for this course
+        group_accesses = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.course_id == course.id,
+            CourseGroupAccess.is_active == True
+        ).all()
+        
+        course_group_students = 0
+        for access in group_accesses:
+            course_group_students += db.query(GroupStudent).filter(
+                GroupStudent.group_id == access.group_id
+            ).count()
+        
+        total_course_students = enrolled_students + course_group_students
         
         # Count modules
         total_modules = db.query(Module).filter(Module.course_id == course.id).count()
@@ -262,27 +307,12 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         else:
             avg_progress = 0
         
-        # Get course assignments
-        course_assignments = db.query(Assignment).filter(
-            Assignment.lesson_id.in_(
-                db.query(Lesson.id).filter(
-                    Lesson.module_id.in_(
-                        db.query(Module.id).filter(Module.course_id == course.id)
-                    )
-                )
-            ),
-            Assignment.is_active == True
-        ).count()
-        
         # Get course completion rate
         course_completion_rate = 0
-        if enrolled_students > 0:
-            completed_enrollments = db.query(Enrollment).filter(
-                Enrollment.course_id == course.id,
-                Enrollment.is_active == True,
-                Enrollment.completed_at.isnot(None)
-            ).count()
-            course_completion_rate = round((completed_enrollments / enrolled_students) * 100)
+        if total_course_students > 0 and progress_records:
+            # Calculate percentage of students who completed the course
+            completed_count = sum(1 for p in progress_records if p.completion_percentage >= 100)
+            course_completion_rate = round((completed_count / total_course_students) * 100)
         
         course_stats.append({
             "id": course.id,
@@ -290,8 +320,7 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "cover_image": course.cover_image_url,
             "teacher": user.name,
             "total_modules": total_modules,
-            "enrolled_students": enrolled_students,
-            "total_assignments": course_assignments,
+            "enrolled_students": total_course_students,
             "completion_rate": course_completion_rate,
             "progress": round(avg_progress),
             "status": "active",
@@ -300,18 +329,10 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     
     # Calculate average completion rate
     avg_completion_rate = round(total_completion_rate / total_courses) if total_courses > 0 else 0
-    # Гарантируем, что все значения числовые
-    total_courses = total_courses or 0
-    total_students = total_students or 0
-    total_assignments = total_assignments or 0
-    pending_submissions = pending_submissions or 0
-    recent_enrollments = recent_enrollments or 0
-    avg_completion_rate = avg_completion_rate or 0
-    upcoming_deadlines = upcoming_deadlines or 0
-    avg_student_score = avg_student_score or 0
-    total_submissions = total_submissions or 0
-    graded_submissions = len(graded_submissions) if graded_submissions else 0
-    grading_progress = round((graded_submissions / total_submissions) * 100) if total_submissions > 0 else 0
+    
+    # Ensure all values are numeric
+    graded_submissions_count = len(graded_submissions_list) if graded_submissions_list else 0
+    grading_progress = round((graded_submissions_count / total_submissions) * 100) if total_submissions > 0 else 0
     
     return DashboardStatsSchema(
         user={
@@ -323,14 +344,14 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         stats={
             "total_courses": total_courses,
             "total_students": total_students,
-            "total_assignments": total_assignments,
+            "active_students": active_students,
+            "avg_student_progress": avg_student_progress,
             "pending_submissions": pending_submissions,
             "recent_enrollments": recent_enrollments,
             "avg_completion_rate": avg_completion_rate,
-            "upcoming_deadlines": upcoming_deadlines,
             "avg_student_score": avg_student_score,
             "total_submissions": total_submissions,
-            "graded_submissions": graded_submissions,
+            "graded_submissions": graded_submissions_count,
             "grading_progress": grading_progress
         },
         recent_courses=course_stats[:6]
@@ -773,3 +794,201 @@ def get_teacher_recent_submissions(
         })
     
     return {"recent_submissions": submissions_data}
+
+@router.get("/teacher/students-progress")
+def get_teacher_students_progress(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get list of students with their current lesson progress for teacher's courses"""
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Only teachers can access this endpoint")
+    
+    # Get teacher's courses
+    teacher_courses = db.query(Course).filter(
+        Course.teacher_id == current_user.id,
+        Course.is_active == True
+    ).all()
+    
+    if not teacher_courses:
+        return {"students_progress": []}
+    
+    # Collect all students from enrollments and group access
+    from src.schemas.models import CourseGroupAccess
+    
+    students_data = []
+    student_ids_seen = set()
+    
+    for course in teacher_courses:
+        # Get students from direct enrollments
+        enrollments = db.query(Enrollment).filter(
+            Enrollment.course_id == course.id,
+            Enrollment.is_active == True
+        ).all()
+        
+        for enrollment in enrollments:
+            if enrollment.user_id not in student_ids_seen:
+                student = db.query(UserInDB).filter(UserInDB.id == enrollment.user_id).first()
+                if student:
+                    # Find last accessed lesson through StepProgress (since progress is tracked at step level)
+                    
+                    last_step_progress = db.query(StepProgress).filter(
+                        StepProgress.user_id == student.id,
+                        StepProgress.course_id == course.id
+                    ).order_by(desc(StepProgress.visited_at)).first()
+                    
+                    current_lesson_title = None
+                    current_lesson_id = None
+                    lesson_progress_percentage = 0
+                    
+                    if last_step_progress:
+                        # Get the lesson from the step
+                        step = db.query(Step).filter(Step.id == last_step_progress.step_id).first()
+                        if step:
+                            lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+                            if lesson:
+                                current_lesson_title = lesson.title
+                                current_lesson_id = lesson.id
+                                
+                                # Calculate lesson progress (completed steps / total steps in lesson)
+                                lesson_steps = db.query(Step).filter(Step.lesson_id == lesson.id).count()
+                                completed_lesson_steps = db.query(StepProgress).filter(
+                                    StepProgress.user_id == student.id,
+                                    StepProgress.step_id.in_(
+                                        db.query(Step.id).filter(Step.lesson_id == lesson.id)
+                                    ),
+                                    StepProgress.status == 'completed'
+                                ).count()
+                                
+                                lesson_progress_percentage = round((completed_lesson_steps / lesson_steps) * 100) if lesson_steps > 0 else 0
+                    
+                    # Calculate overall course progress and get last activity from ANY progress record
+                    all_progress = db.query(StudentProgress).filter(
+                        StudentProgress.user_id == student.id,
+                        StudentProgress.course_id == course.id
+                    ).all()
+                    
+                    overall_progress = 0
+                    last_activity = None
+                    
+                    if all_progress:
+                        overall_progress = round(sum(p.completion_percentage for p in all_progress) / len(all_progress))
+                        # Get the most recent activity from all progress records
+                        last_activity = max(p.last_accessed for p in all_progress if p.last_accessed)
+                    
+                    # Get student group
+                    group_name = None
+                    group_student = db.query(GroupStudent).filter(GroupStudent.student_id == student.id).first()
+                    if group_student:
+                        from src.schemas.models import Group
+                        group = db.query(Group).filter(Group.id == group_student.group_id).first()
+                        if group:
+                            group_name = group.name
+
+                    students_data.append({
+                        "student_id": student.id,
+                        "student_name": student.name,
+                        "student_email": student.email,
+                        "student_avatar": student.avatar_url,
+                        "group_name": group_name,
+                        "course_id": course.id,
+                        "course_title": course.title,
+                        "current_lesson_id": current_lesson_id,
+                        "current_lesson_title": current_lesson_title or "Not started",
+                        "lesson_progress": lesson_progress_percentage,
+                        "overall_progress": overall_progress,
+                        "last_activity": last_activity
+                    })
+                    
+                    student_ids_seen.add(enrollment.user_id)
+        
+        # Get students from group access
+        group_accesses = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.course_id == course.id,
+            CourseGroupAccess.is_active == True
+        ).all()
+        
+        for access in group_accesses:
+            group_students = db.query(GroupStudent).filter(
+                GroupStudent.group_id == access.group_id
+            ).all()
+            
+            for gs in group_students:
+                if gs.student_id not in student_ids_seen:
+                    student = db.query(UserInDB).filter(UserInDB.id == gs.student_id).first()
+                    if student:
+                        # Find last accessed lesson through StepProgress (since progress is tracked at step level)
+                        last_step_progress = db.query(StepProgress).filter(
+                            StepProgress.user_id == student.id,
+                            StepProgress.course_id == course.id
+                        ).order_by(desc(StepProgress.visited_at)).first()
+                        
+                        current_lesson_title = None
+                        current_lesson_id = None
+                        lesson_progress_percentage = 0
+                        
+                        if last_step_progress:
+                            # Get the lesson from the step
+                            step = db.query(Step).filter(Step.id == last_step_progress.step_id).first()
+                            if step:
+                                lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+                                if lesson:
+                                    current_lesson_title = lesson.title
+                                    current_lesson_id = lesson.id
+                                    
+                                    # Calculate lesson progress (completed steps / total steps in lesson)
+                                    lesson_steps = db.query(Step).filter(Step.lesson_id == lesson.id).count()
+                                    completed_lesson_steps = db.query(StepProgress).filter(
+                                        StepProgress.user_id == student.id,
+                                        StepProgress.step_id.in_(
+                                            db.query(Step.id).filter(Step.lesson_id == lesson.id)
+                                        ),
+                                        StepProgress.status == 'completed'
+                                    ).count()
+                                    
+                                    lesson_progress_percentage = round((completed_lesson_steps / lesson_steps) * 100) if lesson_steps > 0 else 0
+                        
+                        # Calculate overall course progress and get last activity from ANY progress record
+                        all_progress = db.query(StudentProgress).filter(
+                            StudentProgress.user_id == student.id,
+                            StudentProgress.course_id == course.id
+                        ).all()
+                        
+                        overall_progress = 0
+                        last_activity = None
+                        
+                        if all_progress:
+                            overall_progress = round(sum(p.completion_percentage for p in all_progress) / len(all_progress))
+                            # Get the most recent activity from all progress records
+                            last_activity = max(p.last_accessed for p in all_progress if p.last_accessed)
+                        
+                        # Get student group
+                        group_name = None
+                        group_student = db.query(GroupStudent).filter(GroupStudent.student_id == student.id).first()
+                        if group_student:
+                            from src.schemas.models import Group
+                            group = db.query(Group).filter(Group.id == group_student.group_id).first()
+                            if group:
+                                group_name = group.name
+
+                        students_data.append({
+                            "student_id": student.id,
+                            "student_name": student.name,
+                            "student_email": student.email,
+                            "student_avatar": student.avatar_url,
+                            "group_name": group_name,
+                            "course_id": course.id,
+                            "course_title": course.title,
+                            "current_lesson_id": current_lesson_id,
+                            "current_lesson_title": current_lesson_title or "Not started",
+                            "lesson_progress": lesson_progress_percentage,
+                            "overall_progress": overall_progress,
+                            "last_activity": last_activity
+                        })
+                        
+                        student_ids_seen.add(gs.student_id)
+    
+    # Sort by last activity (most recent first), then by student name
+    students_data.sort(key=lambda x: (x["last_activity"] or datetime.min, x["student_name"]), reverse=True)
+    
+    return {"students_progress": students_data}
