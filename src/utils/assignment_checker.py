@@ -35,7 +35,8 @@ def check_assignment_answers(
         "matching": check_matching,
         "matching_text": check_matching_text,
         "free_text": check_free_text,
-        "file_upload": check_file_upload
+        "file_upload": check_file_upload,
+        "multi_task": check_multi_task
     }
     
     if assignment_type not in checkers:
@@ -226,6 +227,14 @@ def check_file_upload(student_answers: Dict, correct_answers: Dict) -> float:
     if file_uploaded and file_url:
         return 100.0
     
+    return 0.0
+
+
+def check_multi_task(student_answers: Dict, correct_answers: Dict) -> float:
+    """
+    Проверка multi_task (многокомпонентное задание)
+    Пока возвращаем 0, так как требуется ручная проверка или сложная логика
+    """
     return 0.0
 
 

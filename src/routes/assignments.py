@@ -144,27 +144,72 @@ async def create_assignment(
     # Validate due date
     if assignment_data.due_date and assignment_data.due_date < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Due date cannot be in the past")
+        
+    # Determine target groups
+    target_group_ids = []
+    if assignment_data.group_ids:
+        target_group_ids = assignment_data.group_ids
+    elif assignment_data.group_id:
+        target_group_ids = [assignment_data.group_id]
+        
+    created_assignments = []
     
-    new_assignment = Assignment(
-        lesson_id=target_lesson_id,
-        group_id=assignment_data.group_id,
-        title=assignment_data.title,
-        description=assignment_data.description,
-        assignment_type=assignment_data.assignment_type,
-        content=json.dumps(assignment_data.content),
-        correct_answers=json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None,
-        max_score=assignment_data.max_score,
-        time_limit_minutes=assignment_data.time_limit_minutes if hasattr(assignment_data, 'time_limit_minutes') else None,
-        due_date=assignment_data.due_date,
-        allowed_file_types=assignment_data.allowed_file_types,
-        max_file_size_mb=assignment_data.max_file_size_mb
-    )
+    # If we have target groups, create an assignment for each group
+    if target_group_ids:
+        for gid in target_group_ids:
+            # Check permissions for each group
+            from src.schemas.models import Group
+            group = db.query(Group).filter(Group.id == gid).first()
+            if not group:
+                continue # Skip invalid groups or raise error?
+            
+            if current_user.role != "admin" and group.teacher_id != current_user.id:
+                raise HTTPException(status_code=403, detail=f"Access denied to group {gid}")
+                
+            new_assignment = Assignment(
+                lesson_id=target_lesson_id,
+                group_id=gid,
+                title=assignment_data.title,
+                description=assignment_data.description,
+                assignment_type=assignment_data.assignment_type,
+                content=json.dumps(assignment_data.content),
+                correct_answers=json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None,
+                max_score=assignment_data.max_score,
+                time_limit_minutes=assignment_data.time_limit_minutes if hasattr(assignment_data, 'time_limit_minutes') else None,
+                due_date=assignment_data.due_date,
+                allowed_file_types=assignment_data.allowed_file_types,
+                max_file_size_mb=assignment_data.max_file_size_mb
+            )
+            db.add(new_assignment)
+            created_assignments.append(new_assignment)
+            
+    else:
+        # Create single assignment (e.g. lesson-only or no group)
+        new_assignment = Assignment(
+            lesson_id=target_lesson_id,
+            group_id=None,
+            title=assignment_data.title,
+            description=assignment_data.description,
+            assignment_type=assignment_data.assignment_type,
+            content=json.dumps(assignment_data.content),
+            correct_answers=json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None,
+            max_score=assignment_data.max_score,
+            time_limit_minutes=assignment_data.time_limit_minutes if hasattr(assignment_data, 'time_limit_minutes') else None,
+            due_date=assignment_data.due_date,
+            allowed_file_types=assignment_data.allowed_file_types,
+            max_file_size_mb=assignment_data.max_file_size_mb
+        )
+        db.add(new_assignment)
+        created_assignments.append(new_assignment)
     
-    db.add(new_assignment)
     db.commit()
-    db.refresh(new_assignment)
     
-    return AssignmentSchema.from_orm(new_assignment)
+    # Refresh all created assignments
+    for a in created_assignments:
+        db.refresh(a)
+    
+    # Return the first one to satisfy response model
+    return AssignmentSchema.from_orm(created_assignments[0])
 
 @router.get("/{assignment_id}", response_model=AssignmentSchema)
 async def get_assignment(
@@ -378,7 +423,7 @@ async def submit_assignment(
     print(f"Submission submitted_file_name: {submission_data.submitted_file_name}")
     
     # Auto-grade the assignment
-    score = 0
+    score = None
     if assignment.correct_answers:
         try:
             correct_answers = json.loads(assignment.correct_answers)
@@ -894,15 +939,71 @@ def validate_assignment_content(assignment_type: str, content: Dict[str, Any]):
         "matching": ["left_items", "right_items"],
         "matching_text": ["items_to_match"],
         "free_text": ["question"],
-        "file_upload": ["question", "allowed_file_types"]
+        "file_upload": ["question", "allowed_file_types"],
+        "multi_task": ["tasks"]  # Multi-task assignment
     }
     
     if assignment_type not in required_fields:
         raise HTTPException(status_code=400, detail=f"Unsupported assignment type: {assignment_type}")
     
+    # Validate required fields for the assignment type
     for field in required_fields[assignment_type]:
         if field not in content:
             raise HTTPException(status_code=400, detail=f"Missing required field '{field}' for {assignment_type}")
+    
+    # Additional validation for multi-task assignments
+    if assignment_type == "multi_task":
+        tasks = content.get("tasks", [])
+        if not isinstance(tasks, list) or len(tasks) == 0:
+            raise HTTPException(status_code=400, detail="multi_task assignment must have at least one task")
+        
+        # Validate each task
+        valid_task_types = ["course_unit", "file_task", "text_task", "link_task"]
+        for i, task in enumerate(tasks):
+            # Check required task fields
+            if not isinstance(task, dict):
+                raise HTTPException(status_code=400, detail=f"Task {i+1} must be an object")
+            
+            required_task_fields = ["id", "task_type", "title", "order_index", "points", "content"]
+            for field in required_task_fields:
+                if field not in task:
+                    raise HTTPException(status_code=400, detail=f"Task {i+1} missing required field '{field}'")
+            
+            # Validate task type
+            task_type = task.get("task_type")
+            if task_type not in valid_task_types:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Task {i+1} has invalid task_type '{task_type}'. Must be one of: {', '.join(valid_task_types)}"
+                )
+            
+            # Validate task-specific content
+            task_content = task.get("content", {})
+            if task_type == "course_unit":
+                if "course_id" not in task_content or "lesson_ids" not in task_content:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Task {i+1} (course_unit) must have 'course_id' and 'lesson_ids' in content"
+                    )
+            elif task_type == "file_task":
+                if "question" not in task_content:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Task {i+1} (file_task) must have 'question' in content"
+                    )
+            elif task_type == "text_task":
+                if "question" not in task_content:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Task {i+1} (text_task) must have 'question' in content"
+                    )
+            elif task_type == "link_task":
+                if "url" not in task_content:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Task {i+1} (link_task) must have 'url' in content"
+                    )
+
 
 def remove_correct_answers_from_content(content: Dict[str, Any]) -> Dict[str, Any]:
     """Remove correct answers from content when showing to students"""
@@ -914,6 +1015,24 @@ def remove_correct_answers_from_content(content: Dict[str, Any]) -> Dict[str, An
     for field in fields_to_remove:
         if field in clean_content:
             del clean_content[field]
+    
+    # Handle multi-task assignments - remove answers from each task
+    if "tasks" in clean_content and isinstance(clean_content["tasks"], list):
+        clean_tasks = []
+        for task in clean_content["tasks"]:
+            if isinstance(task, dict):
+                clean_task = task.copy()
+                # Remove answer fields from task content
+                if "content" in clean_task and isinstance(clean_task["content"], dict):
+                    task_content = clean_task["content"].copy()
+                    for field in fields_to_remove:
+                        if field in task_content:
+                            del task_content[field]
+                    clean_task["content"] = task_content
+                clean_tasks.append(clean_task)
+            else:
+                clean_tasks.append(task)
+        clean_content["tasks"] = clean_tasks
     
     return clean_content
 
@@ -1039,6 +1158,24 @@ async def get_assignment_types():
                     "question": "str",
                     "allowed_file_types": ["str"],
                     "max_file_size_mb": "int"
+                }
+            },
+            {
+                "type": "multi_task",
+                "name": "Multi-Task Homework",
+                "description": "Домашнее задание с несколькими задачами разных типов",
+                "schema": {
+                    "tasks": [{
+                        "id": "str",
+                        "task_type": "str (course_unit, file_task, text_task, link_task)",
+                        "title": "str",
+                        "description": "str (optional)",
+                        "order_index": "int",
+                        "points": "int",
+                        "content": "dict (task-specific)"
+                    }],
+                    "total_points": "int",
+                    "instructions": "str (optional)"
                 }
             }
         ]

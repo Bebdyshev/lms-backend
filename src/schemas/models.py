@@ -43,6 +43,32 @@ class QuizData(BaseModel):
     max_score: Optional[int] = None
 
 # =============================================================================
+# MULTI-TASK ASSIGNMENT MODELS
+# =============================================================================
+
+class TaskItem(BaseModel):
+    """Individual task within a multi-task assignment"""
+    id: str  # Unique ID for this task
+    task_type: str  # 'course_unit', 'file_task', 'text_task', 'link_task'
+    title: str
+    description: Optional[str] = None
+    order_index: int
+    points: int = 10
+    content: dict  # Task-specific content based on task_type
+    
+    # Task type specific fields (stored in content dict):
+    # course_unit: { course_id: int, lesson_ids: List[int] }
+    # file_task: { question: str, allowed_file_types: List[str], max_file_size_mb: int, teacher_file_url: str, teacher_file_name: str }
+    # text_task: { question: str, max_length: int, keywords: List[str] }
+    # link_task: { url: str, link_description: str, completion_criteria: str }
+
+class MultiTaskContent(BaseModel):
+    """Content structure for multi-task assignments"""
+    tasks: List[TaskItem]
+    total_points: int
+    instructions: Optional[str] = None  # Overall instructions for the assignment
+
+# =============================================================================
 # FLASHCARD MODELS
 # =============================================================================
 
@@ -576,8 +602,20 @@ class AssignmentCreateSchema(BaseModel):
     time_limit_minutes: Optional[int] = None
     due_date: Optional[datetime] = None
     group_id: Optional[int] = None
+    group_ids: Optional[List[int]] = None
     allowed_file_types: Optional[List[str]] = None
     max_file_size_mb: int = 10
+    
+    @field_validator('content')
+    @classmethod
+    def validate_multi_task_content(cls, v, info):
+        """Validate content structure for multi_task assignments"""
+        if info.data.get('assignment_type') == 'multi_task':
+            if 'tasks' not in v:
+                raise ValueError("multi_task assignment must have 'tasks' array in content")
+            if not isinstance(v['tasks'], list) or len(v['tasks']) == 0:
+                raise ValueError("multi_task assignment must have at least one task")
+        return v
 
 class AssignmentSubmissionSchema(BaseModel):
     id: int
