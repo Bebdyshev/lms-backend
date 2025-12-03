@@ -424,7 +424,8 @@ async def submit_assignment(
     
     # Auto-grade the assignment
     score = None
-    if assignment.correct_answers:
+    # Skip auto-grading for multi_task assignments to allow manual grading
+    if assignment.correct_answers and assignment.assignment_type != 'multi_task':
         try:
             correct_answers = json.loads(assignment.correct_answers)
             score = check_assignment_answers(

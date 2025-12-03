@@ -535,7 +535,15 @@ async def get_course_modules(
                     else:
                         # For non-first lessons, check if previous lesson is completed
                         previous_lesson_dict = lessons_data[lesson_idx - 1]
-                        lesson_dict["is_accessible"] = previous_lesson_dict.get("is_completed", False)
+                        is_prev_completed = previous_lesson_dict.get("is_completed", False)
+                        
+                        # CRITICAL FIX: If previous lesson has a next_lesson_id that points elsewhere,
+                        # DO NOT unlock this lesson linearly.
+                        prev_next_id = previous_lesson_dict.get("next_lesson_id")
+                        if prev_next_id and prev_next_id != lesson.id:
+                            lesson_dict["is_accessible"] = False
+                        else:
+                            lesson_dict["is_accessible"] = is_prev_completed
                 else:
                     # Teachers and admins can access all lessons
                     lesson_dict["is_accessible"] = True
@@ -842,33 +850,40 @@ async def check_lesson_access(
         return {"accessible": True}
     
     # Check if this lesson is unlocked by a redirect from a completed lesson
-    from src.schemas.models import StudentProgress
+    from src.schemas.models import StudentProgress, StepProgress
     
-    # First, find any lesson that redirects to this one
-    redirect_source = db.query(Lesson).filter(Lesson.next_lesson_id == lesson_id).first()
+    # First, find ALL lessons that redirect to this one
+    redirect_sources = db.query(Lesson).filter(Lesson.next_lesson_id == lesson_id).all()
     
-    if redirect_source:
-        # Check if redirect source is completed (either via StudentProgress OR all steps done)
-        # Option 1: Check StudentProgress
-        sp = db.query(StudentProgress).filter(
-            StudentProgress.user_id == current_user.id,
-            StudentProgress.lesson_id == redirect_source.id,
-            StudentProgress.status == 'completed'
-        ).first()
-        
-        # Option 2: Check all steps completed (IMPORTANT: we need completed_step_ids first)
-        # We'll check this after getting completed_step_ids
-        
-        if sp:
-            print(f"DEBUG: Lesson {lesson_id} unlocked by redirect from completed lesson {redirect_source.id} ({redirect_source.title}) via StudentProgress")
-            return {"accessible": True}
-        else:
-            print(f"DEBUG: Redirect source found: {redirect_source.id} ({redirect_source.title}). StudentProgress status: {sp.status if sp else 'None'}. Will check steps completion...")
+    if redirect_sources:
+        # Check if ANY redirect source is completed
+        for source in redirect_sources:
+            # Check StudentProgress
+            sp = db.query(StudentProgress).filter(
+                StudentProgress.user_id == current_user.id,
+                StudentProgress.lesson_id == source.id,
+                StudentProgress.status == 'completed'
+            ).first()
+            
+            if sp:
+                print(f"DEBUG: Lesson {lesson_id} unlocked by redirect from completed lesson {source.id} ({source.title}) via StudentProgress")
+                return {"accessible": True}
+                
+            # Check steps completion
+            source_steps = db.query(Step).filter(Step.lesson_id == source.id).all()
+            
+            # Get completed steps for this student
+            completed_steps_count = db.query(StepProgress).filter(
+                StepProgress.user_id == current_user.id,
+                StepProgress.step_id.in_([s.id for s in source_steps]),
+                StepProgress.status == "completed"
+            ).count()
+            
+            if source_steps and completed_steps_count == len(source_steps):
+                print(f"DEBUG: Lesson {lesson_id} unlocked by redirect from lesson {source.id} ({source.title}) - all steps completed")
+                return {"accessible": True}
     else:
         print(f"DEBUG: No lesson explicitly redirects to {lesson_id}")
-    
-    # For students, check sequential access
-    from src.schemas.models import StepProgress
     
     # Get all completed steps for this student in this course
     completed_steps = db.query(StepProgress.step_id).filter(
@@ -877,17 +892,6 @@ async def check_lesson_access(
         StepProgress.status == "completed"
     ).all()
     completed_step_ids = {s[0] for s in completed_steps}
-    
-    # NOW check if redirect source is completed via steps (Option 2 from above)
-    if redirect_source:
-        redirect_steps = db.query(Step).filter(Step.lesson_id == redirect_source.id).all()
-        all_redirect_steps_completed = redirect_steps and all(s.id in completed_step_ids for s in redirect_steps)
-        
-        if all_redirect_steps_completed:
-            print(f"DEBUG: Lesson {lesson_id} unlocked by redirect from lesson {redirect_source.id} ({redirect_source.title}) - all steps completed")
-            return {"accessible": True}
-        else:
-            print(f"DEBUG: Redirect source {redirect_source.id} has {len(redirect_steps)} steps, completed: {sum(1 for s in redirect_steps if s.id in completed_step_ids)}")
     
     # Check if target lesson is already completed (allow re-visiting)
     # Check 1: StudentProgress
@@ -938,7 +942,7 @@ async def check_lesson_access(
         prev_lesson = sorted(module.lessons, key=lambda x: x.order_index)[current_lesson_idx - 1]
         prev_lesson_steps = db.query(Step).filter(Step.lesson_id == prev_lesson.id).all()
         
-        # Check if all steps in previous lesson are completed
+        # Check if previous lesson is completed
         if prev_lesson_steps:
             all_prev_steps_completed = all(s.id in completed_step_ids for s in prev_lesson_steps)
             if not all_prev_steps_completed:
@@ -947,6 +951,15 @@ async def check_lesson_access(
                     "accessible": False,
                     "reason": f"Please complete the previous lesson: {prev_lesson.title} (Module {module.id}, Index {current_lesson_idx})"
                 }
+        
+        # CRITICAL FIX: If previous lesson has a next_lesson_id that points elsewhere,
+        # DO NOT unlock this lesson linearly.
+        if prev_lesson.next_lesson_id and prev_lesson.next_lesson_id != lesson_id:
+            print(f"DEBUG: Blocking access. Prev lesson {prev_lesson.id} redirects to {prev_lesson.next_lesson_id}, not {lesson_id}")
+            return {
+                "accessible": False,
+                "reason": "This lesson is not in the sequential path."
+            }
         
         return {"accessible": True}
     
