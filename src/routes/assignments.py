@@ -844,7 +844,7 @@ async def get_assignment_student_progress(
             "lesson_id": assignment.lesson_id,
             "group_id": assignment.group_id,
             "assignment_type": assignment.assignment_type,
-            "content": assignment.content
+            "content": json.loads(assignment.content) if isinstance(assignment.content, str) else assignment.content
         },
         "students": student_progress,
         "summary": {
