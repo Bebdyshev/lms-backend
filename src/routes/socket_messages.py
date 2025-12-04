@@ -41,7 +41,6 @@ def _get_user_id_from_environ(environ, auth=None) -> int | None:
             payload = verify_token(token)
             if payload:
                 uid = payload.get('user_id')
-                logger.debug(f"UID: {uid} from token: {token}")
                 if uid:
                     try:
                         return int(uid)
@@ -115,7 +114,6 @@ async def connect(sid, environ, auth):
         await sio.disconnect(sid)
         return
     
-    logger.debug(f"User {user_id} connected with sid {sid}")
     await sio.save_session(sid, { 'user_id': user_id })
     await sio.enter_room(sid, f"{USER_ROOM_PREFIX}{user_id}")
 
@@ -123,7 +121,6 @@ async def connect(sid, environ, auth):
 async def disconnect(sid):
     session = await sio.get_session(sid)
     user_id = session.get('user_id') if session else None
-    logger.debug(f"User {user_id} disconnected with sid {sid}")
     # Rooms get auto-cleaned on disconnect
     return
 

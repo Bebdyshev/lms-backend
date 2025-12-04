@@ -359,12 +359,19 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
 
 def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for curator"""
-    # Get students assigned to curator (same group)
+    # Get groups where current user is curator
+    from src.schemas.models import Group
+    curator_groups = db.query(Group).filter(
+        Group.curator_id == user.id
+    ).all()
+    
+    # Get students assigned to curator (from curator's groups)
     assigned_students = []
-    if user.group_id:
-        # Get students in curator's group using GroupStudent association table
+    if curator_groups:
+        group_ids = [group.id for group in curator_groups]
+        # Get students in curator's groups using GroupStudent association table
         group_student_ids = db.query(GroupStudent.student_id).filter(
-            GroupStudent.group_id == user.group_id
+            GroupStudent.group_id.in_(group_ids)
         ).subquery()
         assigned_students = db.query(UserInDB).filter(
             UserInDB.role == "student",

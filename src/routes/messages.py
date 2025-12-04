@@ -405,13 +405,14 @@ async def get_available_contacts(
     
     elif current_user.role == "curator":
         # Кураторы могут писать ученикам из своей группы
-        # First get the curator's group(s)
-        curator_groups = db.query(GroupStudent.group_id).filter(
-            GroupStudent.student_id == current_user.id
+        # Get groups where current_user is curator
+        from src.schemas.models import Group, GroupStudent
+        curator_groups = db.query(Group).filter(
+            Group.curator_id == current_user.id
         ).all()
         
         if curator_groups:
-            group_ids = [group[0] for group in curator_groups]
+            group_ids = [group.id for group in curator_groups]
             
             # Get students in curator's groups
             group_student_ids = db.query(GroupStudent.student_id).filter(
@@ -540,7 +541,7 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
     elif current_user.role == "curator":
         # Кураторы могут общаться с учениками из своей группы и с администраторами
         if target_user.role == "student":
-            from src.schemas.models import Group
+            from src.schemas.models import Group, GroupStudent
             # Get groups where current_user is curator
             curator_groups = db.query(Group).filter(
                 Group.curator_id == current_user.id
