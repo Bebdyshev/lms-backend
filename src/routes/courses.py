@@ -377,6 +377,7 @@ async def delete_course(
 async def get_course_modules(
     course_id: int,
     include_lessons: bool = Query(False, description="Include lessons for each module"),
+    student_id: Optional[int] = Query(None, description="Get progress for specific student (teacher/admin only)"),
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -400,15 +401,33 @@ async def get_course_modules(
     # Create a map of module_id to lesson_count
     lesson_count_map = {module_id: count for module_id, count in lesson_counts}
     
-    # Fetch progress if user is a student
+    # Fetch progress
     completed_step_ids = set()
     completed_lesson_ids = set()
     
+    # Determine target user for progress
+    target_user_id = current_user.id
+    if student_id:
+        if current_user.role not in ["teacher", "admin"]:
+            raise HTTPException(status_code=403, detail="Only teachers and admins can view other students' progress")
+        target_user_id = student_id
+    
+    # Only fetch progress if target user is a student (or we are viewing as student)
+    # We check if target_user_id corresponds to a student role, or just fetch if requested
+    # For simplicity, if student_id is passed, we assume we want progress.
+    # If current_user is student, we always fetch their progress.
+    
+    should_fetch_progress = False
     if current_user.role == "student":
+        should_fetch_progress = True
+    elif student_id:
+        should_fetch_progress = True
+        
+    if should_fetch_progress:
         # Get completed steps
         from src.schemas.models import StepProgress
         completed_steps = db.query(StepProgress.step_id).filter(
-            StepProgress.user_id == current_user.id,
+            StepProgress.user_id == target_user_id,
             StepProgress.course_id == course_id,
             StepProgress.status == "completed"
         ).all()
@@ -416,7 +435,7 @@ async def get_course_modules(
         
         # Get completed lessons (from StudentProgress)
         completed_lessons = db.query(StudentProgress.lesson_id).filter(
-            StudentProgress.user_id == current_user.id,
+            StudentProgress.user_id == target_user_id,
             StudentProgress.course_id == course_id,
             StudentProgress.status == "completed",
             StudentProgress.lesson_id.isnot(None)
