@@ -353,8 +353,8 @@ async def mark_lesson_complete(
     db: Session = Depends(get_db)
 ):
     """Отметить урок как завершенный"""
-    if current_user.role != "student":
-        raise HTTPException(status_code=403, detail="Only students can mark lessons as complete")
+    if current_user.role not in ["student", "teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
     if not lesson:
@@ -407,8 +407,8 @@ async def start_lesson(
     db: Session = Depends(get_db)
 ):
     """Начать изучение урока"""
-    if current_user.role != "student":
-        raise HTTPException(status_code=403, detail="Only students can start lessons")
+    if current_user.role not in ["student", "teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
     if not lesson:
@@ -1186,8 +1186,8 @@ async def get_lesson_steps_progress(
     db: Session = Depends(get_db)
 ):
     """Получить прогресс по всем шагам урока"""
-    if current_user.role != "student":
-        raise HTTPException(status_code=403, detail="Only students can access lesson steps progress")
+    if current_user.role not in ["student", "teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     # Получаем информацию об уроке
     lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
