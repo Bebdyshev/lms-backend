@@ -62,7 +62,7 @@ async def get_messages(
         student_ids = db.query(Enrollment.user_id).filter(
             Enrollment.course_id == course_id,
             Enrollment.is_active == True
-        ).subquery()
+        )
         
         query = query.filter(
             or_(
@@ -320,15 +320,19 @@ async def get_available_contacts(
             group_ids = [group[0] for group in student_groups]
             
             # Get curators from the same groups
-            curator_ids_in_groups = db.query(GroupStudent.student_id).filter(
-                GroupStudent.group_id.in_(group_ids)
-            ).subquery()
+            # Get curators from the same groups
+            curator_ids_query = db.query(Group.curator_id).filter(
+                Group.id.in_(group_ids),
+                Group.curator_id.isnot(None)
+            )
             
             curators = db.query(UserInDB).filter(
                 UserInDB.role == "curator",
-                UserInDB.id.in_(curator_ids_in_groups),
+                UserInDB.id.in_(curator_ids_query),
                 UserInDB.is_active == True
             ).all()
+            
+
             
             for curator in curators:
                 if not any(contact["user_id"] == curator.id for contact in available_contacts):
@@ -412,7 +416,7 @@ async def get_available_contacts(
             # Get students in curator's groups
             group_student_ids = db.query(GroupStudent.student_id).filter(
                 GroupStudent.group_id.in_(group_ids)
-            ).subquery()
+            )
             
             students = db.query(UserInDB).filter(
                 UserInDB.role == "student",

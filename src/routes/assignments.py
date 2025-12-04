@@ -842,7 +842,9 @@ async def get_assignment_student_progress(
             "due_date": assignment.due_date,
             "max_score": assignment.max_score,
             "lesson_id": assignment.lesson_id,
-            "group_id": assignment.group_id
+            "group_id": assignment.group_id,
+            "assignment_type": assignment.assignment_type,
+            "content": assignment.content
         },
         "students": student_progress,
         "summary": {
@@ -923,7 +925,13 @@ async def get_assignment_status_for_student(
         "due_date": assignment.due_date,
         "submitted_at": submission.submitted_at if submission else None,
         "score": submission.score if submission else None,
-        "max_score": assignment.max_score
+        "max_score": assignment.max_score,
+        # Include submission details for displaying student's answers
+        "submission_id": submission.id if submission else None,
+        "answers": json.loads(submission.answers) if submission and submission.answers else None,
+        "file_url": submission.file_url if submission else None,
+        "submitted_file_name": submission.submitted_file_name if submission else None,
+        "feedback": submission.feedback if submission else None
     }
 
 # =============================================================================

@@ -61,7 +61,27 @@ async def get_my_events(
     if upcoming_only:
         query = query.filter(Event.start_datetime >= datetime.utcnow())
     
+    # Eager load relationships
+    query = query.options(
+        joinedload(Event.creator),
+        joinedload(Event.event_groups).joinedload(EventGroup.group)
+    )
+    
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
+    
+    if not events:
+        return []
+
+    # Batch fetch participant counts
+    event_ids = [e.id for e in events]
+    participant_counts = db.query(
+        EventParticipant.event_id, 
+        func.count(EventParticipant.id)
+    ).filter(
+        EventParticipant.event_id.in_(event_ids)
+    ).group_by(EventParticipant.event_id).all()
+    
+    count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
@@ -69,17 +89,13 @@ async def get_my_events(
         event_data = EventSchema.from_orm(event)
         
         # Add creator name
-        creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
-        event_data.creator_name = creator.name if creator else "Unknown"
+        event_data.creator_name = event.creator.name if event.creator else "Unknown"
         
         # Add group names
-        event_groups = db.query(EventGroup).join(Group).filter(EventGroup.event_id == event.id).all()
-        group_names = [eg.group.name for eg in event_groups if eg.group]
-        event_data.groups = group_names
+        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
         
         # Add participant count
-        participant_count = db.query(EventParticipant).filter(EventParticipant.event_id == event.id).count()
-        event_data.participant_count = participant_count
+        event_data.participant_count = count_map.get(event.id, 0)
         
         result.append(event_data)
     
@@ -116,13 +132,30 @@ async def get_calendar_events(
     if not user_group_ids:
         return []
     
-    # Get events for the month
+    # Get events for the month with eager loading
     events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id.in_(user_group_ids),
         Event.is_active == True,
         Event.start_datetime >= start_date,
         Event.start_datetime <= end_date
+    ).options(
+        joinedload(Event.creator),
+        joinedload(Event.event_groups).joinedload(EventGroup.group)
     ).order_by(Event.start_datetime).all()
+    
+    if not events:
+        return []
+
+    # Batch fetch participant counts
+    event_ids = [e.id for e in events]
+    participant_counts = db.query(
+        EventParticipant.event_id, 
+        func.count(EventParticipant.id)
+    ).filter(
+        EventParticipant.event_id.in_(event_ids)
+    ).group_by(EventParticipant.event_id).all()
+    
+    count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
@@ -130,13 +163,13 @@ async def get_calendar_events(
         event_data = EventSchema.from_orm(event)
         
         # Add creator name
-        creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
-        event_data.creator_name = creator.name if creator else "Unknown"
+        event_data.creator_name = event.creator.name if event.creator else "Unknown"
         
         # Add group names
-        event_groups = db.query(EventGroup).join(Group).filter(EventGroup.event_id == event.id).all()
-        group_names = [eg.group.name for eg in event_groups if eg.group]
-        event_data.groups = group_names
+        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+        
+        # Add participant count
+        event_data.participant_count = count_map.get(event.id, 0)
         
         result.append(event_data)
     
@@ -170,13 +203,30 @@ async def get_upcoming_events(
     if not user_group_ids:
         return []
     
-    # Get upcoming events
+    # Get upcoming events with eager loading
     events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id.in_(user_group_ids),
         Event.is_active == True,
         Event.start_datetime >= start_date,
         Event.start_datetime <= end_date
+    ).options(
+        joinedload(Event.creator),
+        joinedload(Event.event_groups).joinedload(EventGroup.group)
     ).order_by(Event.start_datetime).limit(limit).all()
+    
+    if not events:
+        return []
+
+    # Batch fetch participant counts
+    event_ids = [e.id for e in events]
+    participant_counts = db.query(
+        EventParticipant.event_id, 
+        func.count(EventParticipant.id)
+    ).filter(
+        EventParticipant.event_id.in_(event_ids)
+    ).group_by(EventParticipant.event_id).all()
+    
+    count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
@@ -184,13 +234,13 @@ async def get_upcoming_events(
         event_data = EventSchema.from_orm(event)
         
         # Add creator name
-        creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
-        event_data.creator_name = creator.name if creator else "Unknown"
+        event_data.creator_name = event.creator.name if event.creator else "Unknown"
         
         # Add group names
-        event_groups = db.query(EventGroup).join(Group).filter(EventGroup.event_id == event.id).all()
-        group_names = [eg.group.name for eg in event_groups if eg.group]
-        event_data.groups = group_names
+        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+        
+        # Add participant count
+        event_data.participant_count = count_map.get(event.id, 0)
         
         result.append(event_data)
     

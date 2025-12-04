@@ -1343,22 +1343,32 @@ async def get_my_daily_streak(
     today = date.today()
     yesterday = today - timedelta(days=1)
     
-    # Определяем статус streak
+    # Определяем статус streak и актуальное значение счетчика
+    streak_count = current_user.daily_streak or 0
     streak_status = "active"
+    is_active_today = current_user.last_activity_date == today
+    
     if current_user.last_activity_date is None:
         streak_status = "not_started"
+        streak_count = 0
     elif current_user.last_activity_date < yesterday:
+        # Streak is broken - reset counter to 0
         streak_status = "broken"
+        streak_count = 0
     elif current_user.last_activity_date == yesterday:
-        streak_status = "at_risk"  # Нужна активность сегодня
+        # Нужна активность сегодня чтобы сохранить streak
+        streak_status = "at_risk"
+    elif current_user.last_activity_date == today:
+        # Active today
+        streak_status = "active"
     
     return {
         "student_id": current_user.id,
         "student_name": current_user.name,
-        "daily_streak": current_user.daily_streak or 0,
+        "daily_streak": streak_count,
         "last_activity_date": current_user.last_activity_date,
         "streak_status": streak_status,
-        "is_active_today": current_user.last_activity_date == today,
+        "is_active_today": is_active_today,
         "total_study_time_minutes": current_user.total_study_time_minutes
     }
 

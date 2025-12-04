@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr
@@ -1343,25 +1343,42 @@ async def get_all_events(
     if group_id:
         query = query.join(EventGroup).filter(EventGroup.group_id == group_id)
     
+    # Eager load relationships to avoid N+1
+    query = query.options(
+        joinedload(Event.creator),
+        joinedload(Event.event_groups).joinedload(EventGroup.group)
+    )
+    
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
+    
+    if not events:
+        return []
+
+    # Batch fetch participant counts
+    event_ids = [e.id for e in events]
+    participant_counts = db.query(
+        EventParticipant.event_id, 
+        func.count(EventParticipant.id)
+    ).filter(
+        EventParticipant.event_id.in_(event_ids)
+    ).group_by(EventParticipant.event_id).all()
+    
+    count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
     for event in events:
         event_data = EventSchema.from_orm(event)
         
-        # Add creator name
-        creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
-        event_data.creator_name = creator.name if creator else "Unknown"
+        # Add creator name from eager loaded relationship
+        event_data.creator_name = event.creator.name if event.creator else "Unknown"
         
-        # Add group names
-        event_groups = db.query(EventGroup).join(Group).filter(EventGroup.event_id == event.id).all()
-        group_names = [eg.group.name for eg in event_groups if eg.group]
+        # Add group names from eager loaded relationship
+        group_names = [eg.group.name for eg in event.event_groups if eg.group]
         event_data.groups = group_names
         
-        # Add participant count
-        participant_count = db.query(EventParticipant).filter(EventParticipant.event_id == event.id).count()
-        event_data.participant_count = participant_count
+        # Add participant count from batch map
+        event_data.participant_count = count_map.get(event.id, 0)
         
         result.append(event_data)
     
