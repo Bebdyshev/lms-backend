@@ -38,8 +38,9 @@ async def get_assignments(
     query = db.query(Assignment)
     
     # Filter hidden assignments (only teachers/admins can see hidden)
+    # Note: is_hidden can be NULL for old records, so we check for both NULL and False
     if not include_hidden or current_user.role == "student":
-        query = query.filter(Assignment.is_hidden == False)
+        query = query.filter((Assignment.is_hidden == False) | (Assignment.is_hidden == None))
     
     # Apply filters
     if lesson_id:

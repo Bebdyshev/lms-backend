@@ -631,7 +631,7 @@ class AssignmentSubmissionSchema(BaseModel):
     score: Optional[int] = None
     max_score: int
     is_graded: bool
-    is_hidden: bool = False
+    is_hidden: Optional[bool] = False
     feedback: Optional[str] = None
     graded_by: Optional[int] = None
     grader_name: Optional[str] = None
