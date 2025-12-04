@@ -28,6 +28,7 @@ async def get_assignments(
     group_id: Optional[int] = None,
     assignment_type: Optional[str] = None,
     is_active: Optional[bool] = True,
+    include_hidden: Optional[bool] = False,  # Teachers can see hidden assignments
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=1000),
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -35,6 +36,10 @@ async def get_assignments(
 ):
     """Get assignments based on filters and user permissions"""
     query = db.query(Assignment)
+    
+    # Filter hidden assignments (only teachers/admins can see hidden)
+    if not include_hidden or current_user.role == "student":
+        query = query.filter(Assignment.is_hidden == False)
     
     # Apply filters
     if lesson_id:
@@ -102,6 +107,44 @@ async def get_assignments(
     
     assignments = query.offset(skip).limit(limit).all()
     return [AssignmentSchema.from_orm(assignment) for assignment in assignments]
+
+@router.patch("/{assignment_id}/toggle-visibility", response_model=AssignmentSchema)
+async def toggle_assignment_visibility(
+    assignment_id: int,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """Toggle assignment visibility (hide/show for all users)"""
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    # Check permissions
+    has_access = False
+    
+    if current_user.role == "admin":
+        has_access = True
+    elif assignment.lesson_id:
+        lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
+        if lesson:
+            module = db.query(Module).filter(Module.id == lesson.module_id).first()
+            if module and check_course_access(module.course_id, current_user, db):
+                has_access = True
+    elif assignment.group_id:
+        from src.schemas.models import Group
+        group = db.query(Group).filter(Group.id == assignment.group_id).first()
+        if group and group.teacher_id == current_user.id:
+            has_access = True
+    
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Toggle visibility
+    assignment.is_hidden = not assignment.is_hidden
+    db.commit()
+    db.refresh(assignment)
+    
+    return AssignmentSchema.from_orm(assignment)
 
 @router.post("/", response_model=AssignmentSchema)
 async def create_assignment(
@@ -403,10 +446,11 @@ async def submit_assignment(
     if assignment.due_date and assignment.due_date < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Assignment deadline has passed")
     
-    # Check if already submitted
+    # Check if already submitted (non-hidden submission exists)
     existing_submission = db.query(AssignmentSubmission).filter(
         AssignmentSubmission.assignment_id == assignment_id,
-        AssignmentSubmission.user_id == current_user.id
+        AssignmentSubmission.user_id == current_user.id,
+        AssignmentSubmission.is_hidden == False  # Hidden submissions don't count - student can resubmit
     ).first()
     
     print(f"Checking for existing submissions: assignment_id={assignment_id}, user_id={current_user.id}")
@@ -670,6 +714,70 @@ async def grade_submission(
     
     return submission_data
 
+@router.patch("/{assignment_id}/submissions/{submission_id}/toggle-visibility", response_model=AssignmentSubmissionSchema)
+async def toggle_submission_visibility(
+    assignment_id: int,
+    submission_id: int,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """Toggle submission visibility (hide/unhide from students)"""
+    # Check if assignment exists
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    # Check if submission exists
+    submission = db.query(AssignmentSubmission).filter(
+        AssignmentSubmission.id == submission_id,
+        AssignmentSubmission.assignment_id == assignment_id
+    ).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    
+    # Check permissions
+    has_access = False
+    
+    # Check course access if assignment is linked to lesson
+    if assignment.lesson_id:
+        lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
+        if lesson:
+            module = db.query(Module).filter(Module.id == lesson.module_id).first()
+            if module and check_course_access(module.course_id, current_user, db):
+                has_access = True
+    
+    # Check group access if assignment is linked to group
+    if assignment.group_id:
+        from src.schemas.models import Group
+        group = db.query(Group).filter(Group.id == assignment.group_id).first()
+        if current_user.role == "admin" or (group and group.teacher_id == current_user.id):
+            has_access = True
+    
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied to this assignment")
+    
+    # Toggle visibility
+    submission.is_hidden = not submission.is_hidden
+    
+    db.commit()
+    db.refresh(submission)
+    
+    # Enhance submission with names
+    submission_data = AssignmentSubmissionSchema.from_orm(submission)
+    
+    # Get user name
+    user = db.query(UserInDB).filter(UserInDB.id == submission.user_id).first()
+    if user:
+        submission_data.user_name = user.name
+    
+    # Get grader name
+    if submission.graded_by:
+        grader = db.query(UserInDB).filter(UserInDB.id == submission.graded_by).first()
+        if grader:
+            submission_data.grader_name = grader.name
+    
+    return submission_data
+
 # =============================================================================
 # ASSIGNMENT STATUS
 # =============================================================================
@@ -814,6 +922,7 @@ async def get_assignment_student_progress(
             "submitted_at": submitted_at,
             "graded_at": graded_at,
             "is_overdue": is_overdue,
+            "is_hidden": submission.is_hidden if submission else False,
             "assignment_source": assignment_source,
             "source_display": source_display
         })
@@ -895,10 +1004,11 @@ async def get_assignment_status_for_student(
     if not has_access:
         raise HTTPException(status_code=403, detail="Access denied to this assignment")
     
-    # Get existing submission
+    # Get existing submission (exclude hidden submissions - student should not see them)
     submission = db.query(AssignmentSubmission).filter(
         AssignmentSubmission.assignment_id == assignment_id,
-        AssignmentSubmission.user_id == current_user.id
+        AssignmentSubmission.user_id == current_user.id,
+        AssignmentSubmission.is_hidden == False  # Don't show hidden submissions to students
     ).first()
     
     # Determine status

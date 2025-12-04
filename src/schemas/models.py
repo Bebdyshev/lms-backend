@@ -533,6 +533,7 @@ class Assignment(Base):
     allowed_file_types = Column(ARRAY(String), nullable=True)  # Allowed file types for submissions
     max_file_size_mb = Column(Integer, default=10)  # Max file size in MB
     is_active = Column(Boolean, default=True)
+    is_hidden = Column(Boolean, default=False)  # Hide old assignments from all users
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -551,6 +552,7 @@ class AssignmentSubmission(Base):
     score = Column(Integer, nullable=True)
     max_score = Column(Integer, nullable=False)
     is_graded = Column(Boolean, default=False)
+    is_hidden = Column(Boolean, default=False)  # Teacher can hide incorrect/outdated submissions from students
     feedback = Column(Text, nullable=True)  # Teacher feedback
     graded_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # Teacher who graded
     submitted_at = Column(DateTime, default=datetime.utcnow)
@@ -577,6 +579,7 @@ class AssignmentSchema(BaseModel):
     allowed_file_types: Optional[List[str]] = None
     max_file_size_mb: int = 10
     is_active: bool
+    is_hidden: Optional[bool] = False
     created_at: datetime
     
     @field_validator('content', mode='before')
@@ -628,6 +631,7 @@ class AssignmentSubmissionSchema(BaseModel):
     score: Optional[int] = None
     max_score: int
     is_graded: bool
+    is_hidden: bool = False
     feedback: Optional[str] = None
     graded_by: Optional[int] = None
     grader_name: Optional[str] = None
