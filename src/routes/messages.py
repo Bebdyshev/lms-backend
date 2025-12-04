@@ -511,8 +511,22 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
             
             # Проверяем, в одной ли группе с куратором
             if target_user.role == "curator":
-                return (current_user.group_id is not None and 
-                       current_user.group_id == target_user.group_id)
+                from src.schemas.models import Group, GroupStudent
+                # Get student's group
+                student_group = db.query(GroupStudent).filter(
+                    GroupStudent.student_id == current_user.id
+                ).first()
+                
+                if not student_group:
+                    return False
+                
+                # Get curator's group(s)
+                curator_group = db.query(Group).filter(
+                    Group.id == student_group.group_id,
+                    Group.curator_id == target_user_id
+                ).first()
+                
+                return curator_group is not None
         
         return False
     
@@ -526,8 +540,24 @@ def can_communicate_with_user(current_user: UserInDB, target_user_id: int, db: S
     elif current_user.role == "curator":
         # Кураторы могут общаться с учениками из своей группы и с администраторами
         if target_user.role == "student":
-            return (current_user.group_id is not None and 
-                   current_user.group_id == target_user.group_id)
+            from src.schemas.models import Group
+            # Get groups where current_user is curator
+            curator_groups = db.query(Group).filter(
+                Group.curator_id == current_user.id
+            ).all()
+            
+            if not curator_groups:
+                return False
+            
+            curator_group_ids = [g.id for g in curator_groups]
+            
+            # Check if target student is in any of curator's groups
+            student_in_group = db.query(GroupStudent).filter(
+                GroupStudent.student_id == target_user_id,
+                GroupStudent.group_id.in_(curator_group_ids)
+            ).first()
+            
+            return student_in_group is not None
         
         return False
     
