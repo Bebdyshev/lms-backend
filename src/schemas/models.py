@@ -981,6 +981,7 @@ class Event(Base):
     # Relationships
     creator = relationship("UserInDB", foreign_keys=[created_by])
     event_groups = relationship("EventGroup", back_populates="event", cascade="all, delete-orphan")
+    event_courses = relationship("EventCourse", back_populates="event", cascade="all, delete-orphan")
     event_participants = relationship("EventParticipant", back_populates="event", cascade="all, delete-orphan")
 
 class EventGroup(Base):
@@ -998,6 +999,23 @@ class EventGroup(Base):
     # Unique constraint to prevent duplicate associations
     __table_args__ = (
         UniqueConstraint('event_id', 'group_id', name='uq_event_group'),
+    )
+
+class EventCourse(Base):
+    __tablename__ = "event_courses"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    event = relationship("Event", back_populates="event_courses")
+    course = relationship("Course")
+    
+    # Unique constraint to prevent duplicate associations
+    __table_args__ = (
+        UniqueConstraint('event_id', 'course_id', name='uq_event_course'),
     )
 
 class EventParticipant(Base):
@@ -1039,6 +1057,9 @@ class EventSchema(BaseModel):
     max_participants: Optional[int] = None
     participant_count: int = 0
     groups: Optional[List[str]] = None  # List of group names
+    courses: Optional[List[str]] = None # List of course names
+    group_ids: Optional[List[int]] = None # List of group IDs
+    course_ids: Optional[List[int]] = None # List of course IDs
     created_at: datetime
     updated_at: datetime
     
@@ -1059,6 +1080,7 @@ class CreateEventRequest(BaseModel):
     recurrence_end_date: Optional[date] = None
     max_participants: Optional[int] = None
     group_ids: List[int] = []  # List of group IDs to assign event to
+    course_ids: List[int] = [] # List of course IDs to assign event to
 
 class UpdateEventRequest(BaseModel):
     title: Optional[str] = None
@@ -1075,6 +1097,7 @@ class UpdateEventRequest(BaseModel):
     recurrence_end_date: Optional[date] = None
     max_participants: Optional[int] = None
     group_ids: Optional[List[int]] = None
+    course_ids: Optional[List[int]] = None
 
 class EventGroupSchema(BaseModel):
     id: int

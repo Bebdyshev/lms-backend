@@ -1465,6 +1465,12 @@ async def create_event(
         groups = db.query(Group).filter(Group.id.in_(event_data.group_ids)).all()
         if len(groups) != len(event_data.group_ids):
             raise HTTPException(status_code=400, detail="One or more groups not found")
+
+    # Validate courses exist
+    if event_data.course_ids:
+        courses = db.query(Course).filter(Course.id.in_(event_data.course_ids)).all()
+        if len(courses) != len(event_data.course_ids):
+            raise HTTPException(status_code=400, detail="One or more courses not found")
     
     # Create event
     event = Event(
@@ -1490,6 +1496,12 @@ async def create_event(
     for group_id in event_data.group_ids:
         event_group = EventGroup(event_id=event.id, group_id=group_id)
         db.add(event_group)
+
+    # Create event-course associations
+    from src.schemas.models import EventCourse
+    for course_id in event_data.course_ids:
+        event_course = EventCourse(event_id=event.id, course_id=course_id)
+        db.add(event_course)
     
     # If recurring, create additional events
     # Only create physical copies if an end date is specified.
@@ -1504,6 +1516,8 @@ async def create_event(
     result = EventSchema.from_orm(event)
     creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
     result.creator_name = creator.name if creator else "Unknown"
+    result.groups = [eg.group.name for eg in event.event_groups if eg.group]
+    result.courses = [ec.course.title for ec in event.event_courses if ec.course]
     
     return result
 
@@ -1549,6 +1563,25 @@ async def update_event(
             db.add(event_group)
         
         del update_data["group_ids"]
+
+    # Update course associations if provided
+    if "course_ids" in update_data:
+        # Validate courses exist
+        if update_data["course_ids"]:
+            courses = db.query(Course).filter(Course.id.in_(update_data["course_ids"])).all()
+            if len(courses) != len(update_data["course_ids"]):
+                raise HTTPException(status_code=400, detail="One or more courses not found")
+        
+        # Remove existing associations
+        from src.schemas.models import EventCourse
+        db.query(EventCourse).filter(EventCourse.event_id == event_id).delete()
+        
+        # Create new associations
+        for course_id in update_data["course_ids"]:
+            event_course = EventCourse(event_id=event_id, course_id=course_id)
+            db.add(event_course)
+        
+        del update_data["course_ids"]
     
     # Update event fields
     for field, value in update_data.items():
@@ -1710,6 +1743,12 @@ async def create_recurring_events(db: Session, base_event: Event, event_data: Cr
         for group_id in event_data.group_ids:
             event_group = EventGroup(event_id=recurring_event.id, group_id=group_id)
             db.add(event_group)
+
+        # Copy course associations
+        from src.schemas.models import EventCourse
+        for course_id in event_data.course_ids:
+            event_course = EventCourse(event_id=recurring_event.id, course_id=course_id)
+            db.add(event_course)
         
         # Increment for next iteration
         if event_data.recurrence_pattern == "monthly":

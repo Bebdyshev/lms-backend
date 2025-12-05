@@ -7,7 +7,7 @@ from datetime import datetime, date, timedelta
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, Event, EventGroup, EventParticipant, Group, GroupStudent,
-    EventSchema, EventParticipantSchema
+    EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role
@@ -27,29 +27,76 @@ async def get_my_events(
 ):
     """Get events for current user based on their groups"""
     
-    # Get user's groups
+    # Get user's groups and courses
     user_group_ids = []
+    user_course_ids = []
+    
     if current_user.role == "student":
         # Get groups where user is a student
         user_groups = db.query(GroupStudent).filter(GroupStudent.student_id == current_user.id).all()
         user_group_ids = [ug.group_id for ug in user_groups]
+        
+        # Get courses where user is enrolled
+        enrollments = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.is_active == True
+        ).all()
+        user_course_ids = [e.course_id for e in enrollments]
+        
+        # Get courses accessible via user's groups
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            group_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            group_course_ids = [ga.course_id for ga in group_access]
+            user_course_ids.extend(group_course_ids)
+            # Deduplicate
+            user_course_ids = list(set(user_course_ids))
+        
+        # Get courses accessible via user's groups
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            group_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            group_course_ids = [ga.course_id for ga in group_access]
+            user_course_ids.extend(group_course_ids)
+            # Deduplicate
+            user_course_ids = list(set(user_course_ids))
+        
     elif current_user.role in ["teacher", "curator"]:
         # Get groups where user is teacher or curator
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
         user_group_ids = [g.id for g in teacher_groups + curator_groups]
+        
+        # Teachers/Curators see events for courses they teach? 
+        # For now, let's assume they see events for groups they manage.
+        # If we want them to see course events, we'd need to know which courses they teach.
+        # Assuming they see all events for now if they are admin, but here restricted.
+        pass
+        
     elif current_user.role == "admin":
         # Admins see all events
         user_group_ids = [g.id for g in db.query(Group).all()]
+        user_course_ids = [c.id for c in db.query(Course).all()]
     
-    if not user_group_ids:
+    if not user_group_ids and not user_course_ids:
         return []
     
     # Build query
-    query = db.query(Event).join(EventGroup).filter(
-        EventGroup.group_id.in_(user_group_ids),
+    # Events that are in user's groups OR in user's courses
+    
+    query = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
+        or_(
+            EventGroup.group_id.in_(user_group_ids),
+            EventCourse.course_id.in_(user_course_ids)
+        ),
         Event.is_active == True
-    )
+    ).distinct()
     
     # Apply filters
     if event_type:
@@ -64,7 +111,8 @@ async def get_my_events(
     # Eager load relationships
     query = query.options(
         joinedload(Event.creator),
-        joinedload(Event.event_groups).joinedload(EventGroup.group)
+        joinedload(Event.event_groups).joinedload(EventGroup.group),
+        joinedload(Event.event_courses).joinedload(EventCourse.course)
     )
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
@@ -117,39 +165,86 @@ async def get_calendar_events(
     else:
         end_date = datetime(year, month + 1, 1) - timedelta(seconds=1)
     
-    # Get user's groups
+    # Get user's groups and courses
     user_group_ids = []
+    user_course_ids = []
+    
     if current_user.role == "student":
         user_groups = db.query(GroupStudent).filter(GroupStudent.student_id == current_user.id).all()
         user_group_ids = [ug.group_id for ug in user_groups]
+        
+        enrollments = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.is_active == True
+        ).all()
+        user_course_ids = [e.course_id for e in enrollments]
+        
+        # Get courses accessible via user's groups
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            group_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            group_course_ids = [ga.course_id for ga in group_access]
+            user_course_ids.extend(group_course_ids)
+            # Deduplicate
+            user_course_ids = list(set(user_course_ids))
+        
+        # Get courses accessible via user's groups
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            group_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            group_course_ids = [ga.course_id for ga in group_access]
+            user_course_ids.extend(group_course_ids)
+            # Deduplicate
+            user_course_ids = list(set(user_course_ids))
+        
     elif current_user.role in ["teacher", "curator"]:
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
         user_group_ids = [g.id for g in teacher_groups + curator_groups]
+        
     elif current_user.role == "admin":
         user_group_ids = [g.id for g in db.query(Group).all()]
+        user_course_ids = [c.id for c in db.query(Course).all()]
     
-    if not user_group_ids:
+    if not user_group_ids and not user_course_ids:
+        print(f"DEBUG: No groups or courses for user {current_user.id}")
         return []
     
+    print(f"DEBUG: Calendar request - User: {current_user.id}, Role: {current_user.role}")
+    print(f"DEBUG: Groups: {user_group_ids}")
+    print(f"DEBUG: Courses: {user_course_ids}")
+    print(f"DEBUG: Date Range: {start_date} to {end_date}")
+
     # Get events for the month with eager loading
     # 1. Get standard events in range
-    standard_events = db.query(Event).join(EventGroup).filter(
-        EventGroup.group_id.in_(user_group_ids),
+    
+    standard_events = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
+        or_(
+            EventGroup.group_id.in_(user_group_ids),
+            EventCourse.course_id.in_(user_course_ids)
+        ),
         Event.is_active == True,
         Event.start_datetime >= start_date,
         Event.start_datetime <= end_date,
         Event.is_recurring == False # Only non-recurring instances
-    ).options(
+    ).distinct().options(
         joinedload(Event.creator),
-        joinedload(Event.event_groups).joinedload(EventGroup.group)
+        joinedload(Event.event_groups).joinedload(EventGroup.group),
+        joinedload(Event.event_courses).joinedload(EventCourse.course)
     ).all()
 
     # 2. Get recurring parent events that might overlap
-    # We look for events that started before the end of our range
-    # and either have no end date OR have an end date after the start of our range
-    recurring_parents = db.query(Event).join(EventGroup).filter(
-        EventGroup.group_id.in_(user_group_ids),
+    recurring_parents = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
+        or_(
+            EventGroup.group_id.in_(user_group_ids),
+            EventCourse.course_id.in_(user_course_ids)
+        ),
         Event.is_active == True,
         Event.is_recurring == True,
         Event.start_datetime <= end_date,
@@ -157,9 +252,10 @@ async def get_calendar_events(
             Event.recurrence_end_date == None,
             Event.recurrence_end_date >= start_date.date()
         )
-    ).options(
+    ).distinct().options(
         joinedload(Event.creator),
-        joinedload(Event.event_groups).joinedload(EventGroup.group)
+        joinedload(Event.event_groups).joinedload(EventGroup.group),
+        joinedload(Event.event_courses).joinedload(EventCourse.course)
     ).all()
 
     generated_events = []
@@ -296,30 +392,70 @@ async def get_upcoming_events(
     start_date = datetime.utcnow()
     end_date = start_date + timedelta(days=days_ahead)
     
-    # Get user's groups
+    # Get user's groups and courses
     user_group_ids = []
+    user_course_ids = []
+    
     if current_user.role == "student":
         user_groups = db.query(GroupStudent).filter(GroupStudent.student_id == current_user.id).all()
         user_group_ids = [ug.group_id for ug in user_groups]
+        
+        enrollments = db.query(Enrollment).filter(
+            Enrollment.user_id == current_user.id,
+            Enrollment.is_active == True
+        ).all()
+        user_course_ids = [e.course_id for e in enrollments]
+        
+        # Get courses accessible via user's groups
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            group_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            group_course_ids = [ga.course_id for ga in group_access]
+            user_course_ids.extend(group_course_ids)
+            # Deduplicate
+            user_course_ids = list(set(user_course_ids))
+        
+        # Get courses accessible via user's groups
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            group_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            group_course_ids = [ga.course_id for ga in group_access]
+            user_course_ids.extend(group_course_ids)
+            # Deduplicate
+            user_course_ids = list(set(user_course_ids))
+        
     elif current_user.role in ["teacher", "curator"]:
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
         user_group_ids = [g.id for g in teacher_groups + curator_groups]
+        
     elif current_user.role == "admin":
         user_group_ids = [g.id for g in db.query(Group).all()]
+        user_course_ids = [c.id for c in db.query(Course).all()]
     
-    if not user_group_ids:
+    if not user_group_ids and not user_course_ids:
         return []
     
     # Get upcoming events with eager loading
-    events = db.query(Event).join(EventGroup).filter(
-        EventGroup.group_id.in_(user_group_ids),
+    
+    events = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
+        or_(
+            EventGroup.group_id.in_(user_group_ids),
+            EventCourse.course_id.in_(user_course_ids)
+        ),
         Event.is_active == True,
         Event.start_datetime >= start_date,
         Event.start_datetime <= end_date
-    ).options(
+    ).distinct().options(
         joinedload(Event.creator),
-        joinedload(Event.event_groups).joinedload(EventGroup.group)
+        joinedload(Event.event_groups).joinedload(EventGroup.group),
+        joinedload(Event.event_courses).joinedload(EventCourse.course)
     ).order_by(Event.start_datetime).limit(limit).all()
     
     if not events:
@@ -367,23 +503,47 @@ async def get_event_details(
         raise HTTPException(status_code=404, detail="Event not found")
     
     # Check if user has access to this event
-    user_group_ids = []
-    if current_user.role == "student":
-        user_groups = db.query(GroupStudent).filter(GroupStudent.student_id == current_user.id).all()
-        user_group_ids = [ug.group_id for ug in user_groups]
-    elif current_user.role in ["teacher", "curator"]:
-        teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
-        curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
-        user_group_ids = [g.id for g in teacher_groups + curator_groups]
-    elif current_user.role == "admin":
-        user_group_ids = [g.id for g in db.query(Group).all()]
-    
-    # Check if event is associated with user's groups
-    event_groups = db.query(EventGroup).filter(EventGroup.event_id == event_id).all()
-    event_group_ids = [eg.group_id for eg in event_groups]
-    
-    if not any(group_id in user_group_ids for group_id in event_group_ids):
-        raise HTTPException(status_code=403, detail="Access denied to this event")
+    if current_user.role == "admin":
+        # Admins have full access
+        pass
+    else:
+        user_group_ids = []
+        user_course_ids = []
+        
+        if current_user.role == "student":
+            user_groups = db.query(GroupStudent).filter(GroupStudent.student_id == current_user.id).all()
+            user_group_ids = [ug.group_id for ug in user_groups]
+            
+            enrollments = db.query(Enrollment).filter(
+                Enrollment.user_id == current_user.id,
+                Enrollment.is_active == True
+            ).all()
+            user_course_ids = [e.course_id for e in enrollments]
+            
+        elif current_user.role in ["teacher", "curator"]:
+            teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
+            curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+            user_group_ids = [g.id for g in teacher_groups + curator_groups]
+            
+            # For teachers/curators, we might want to check courses they teach
+            # For now, assuming if they are not admin, they are restricted to their groups
+            # If we want to support course teachers seeing events:
+            courses_taught = db.query(Course).filter(Course.teacher_id == current_user.id).all()
+            user_course_ids = [c.id for c in courses_taught]
+        
+        # Check if event is associated with user's groups or courses
+        
+        event_groups = db.query(EventGroup).filter(EventGroup.event_id == event_id).all()
+        event_group_ids = [eg.group_id for eg in event_groups]
+        
+        event_courses = db.query(EventCourse).filter(EventCourse.event_id == event_id).all()
+        event_course_ids = [ec.course_id for ec in event_courses]
+        
+        has_group_access = any(group_id in user_group_ids for group_id in event_group_ids)
+        has_course_access = any(course_id in user_course_ids for course_id in event_course_ids)
+        
+        if not (has_group_access or has_course_access):
+            raise HTTPException(status_code=403, detail="Access denied to this event")
     
     # Enrich event data
     event_data = EventSchema.from_orm(event)
@@ -393,12 +553,16 @@ async def get_event_details(
     event_data.creator_name = creator.name if creator else "Unknown"
     
     # Add group names
-    group_names = []
-    for eg in event_groups:
-        group = db.query(Group).filter(Group.id == eg.group_id).first()
-        if group:
-            group_names.append(group.name)
-    event_data.groups = group_names
+    event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+    
+    # Add course names
+    event_data.courses = [ec.course.title for ec in event.event_courses if ec.course]
+    
+    # Add group IDs
+    event_data.group_ids = [eg.group_id for eg in event.event_groups]
+    
+    # Add course IDs
+    event_data.course_ids = [ec.course_id for ec in event.event_courses]
     
     # Add participant count
     participant_count = db.query(EventParticipant).filter(EventParticipant.event_id == event.id).count()
