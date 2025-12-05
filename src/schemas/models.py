@@ -554,6 +554,7 @@ class AssignmentSubmission(Base):
     max_score = Column(Integer, nullable=False)
     is_graded = Column(Boolean, default=False)
     is_hidden = Column(Boolean, default=False)  # Teacher can hide incorrect/outdated submissions from students
+    seen_by_student = Column(Boolean, default=False)  # Has student seen the graded result
     feedback = Column(Text, nullable=True)  # Teacher feedback
     graded_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # Teacher who graded
     submitted_at = Column(DateTime, default=datetime.utcnow)

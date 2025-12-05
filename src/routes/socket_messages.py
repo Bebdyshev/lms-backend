@@ -104,6 +104,10 @@ async def _emit_unread_update(user_id: int):
     """Emit unread count update to user's room"""
     await sio.emit('unread:update', to=f"{USER_ROOM_PREFIX}{user_id}")
 
+async def emit_unseen_graded_update(user_id: int):
+    """Emit unseen graded count update to user's room"""
+    await sio.emit('unseen_graded:update', to=f"{USER_ROOM_PREFIX}{user_id}")
+
 # Socket.IO Events
 @sio.event
 async def connect(sid, environ, auth):

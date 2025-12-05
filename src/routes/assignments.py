@@ -650,6 +650,50 @@ async def get_my_submissions(
     submissions = query.order_by(desc(AssignmentSubmission.submitted_at)).offset(skip).limit(limit).all()
     return [AssignmentSubmissionSchema.from_orm(submission) for submission in submissions]
 
+@router.get("/submissions/unseen-graded-count")
+async def get_unseen_graded_count(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get count of graded submissions that student hasn't seen yet"""
+    if current_user.role != "student":
+        return {"count": 0}
+    
+    count = db.query(AssignmentSubmission).filter(
+        AssignmentSubmission.user_id == current_user.id,
+        AssignmentSubmission.is_graded == True,
+        AssignmentSubmission.seen_by_student == False
+    ).count()
+    
+    return {"count": count}
+
+@router.put("/submissions/{submission_id}/mark-seen")
+async def mark_submission_seen(
+    submission_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Mark a graded submission as seen by student"""
+    submission = db.query(AssignmentSubmission).filter(
+        AssignmentSubmission.id == submission_id,
+        AssignmentSubmission.user_id == current_user.id
+    ).first()
+    
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    
+    submission.seen_by_student = True
+    db.commit()
+    
+    # Notify student (self) to update badge
+    try:
+        from src.routes.socket_messages import emit_unseen_graded_update
+        await emit_unseen_graded_update(current_user.id)
+    except Exception as e:
+        print(f"Failed to emit socket update: {e}")
+    
+    return {"success": True}
+
 @router.put("/{assignment_id}/submissions/{submission_id}/grade", response_model=AssignmentSubmissionSchema)
 async def grade_submission(
     assignment_id: int,
@@ -709,6 +753,13 @@ async def grade_submission(
     
     db.commit()
     db.refresh(submission)
+    
+    # Notify student about graded submission
+    try:
+        from src.routes.socket_messages import emit_unseen_graded_update
+        await emit_unseen_graded_update(submission.user_id)
+    except Exception as e:
+        print(f"Failed to emit socket update: {e}")
     
     # Enhance submission with names
     submission_data = AssignmentSubmissionSchema.from_orm(submission)
