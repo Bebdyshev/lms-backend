@@ -30,10 +30,12 @@ class CreateUserRequest(BaseModel):
     role: str = "student"  # student, teacher, curator, admin
     student_id: Optional[str] = None
     is_active: bool = True
+    group_ids: Optional[List[int]] = None  # Multiple groups for students
 
 class BulkCreateUsersRequest(BaseModel):
     users: List[CreateUserRequest]
     notify_users: bool = False  # For future email notifications
+    # Note: group_ids are in each CreateUserRequest
 
 class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
@@ -42,6 +44,7 @@ class UpdateUserRequest(BaseModel):
     student_id: Optional[str] = None
     is_active: Optional[bool] = None
     password: Optional[str] = None
+    group_ids: Optional[List[int]] = None  # Update user's groups
 
 class CreateUserResponse(BaseModel):
     user: UserSchema
@@ -95,6 +98,7 @@ class UpdateGroupRequest(BaseModel):
     teacher_id: Optional[int] = None
     curator_id: Optional[int] = None
     is_active: Optional[bool] = None
+    student_ids: Optional[List[int]] = None  # Update student list
 
 class AssignTeacherRequest(BaseModel):
     teacher_id: int
@@ -187,6 +191,25 @@ async def create_single_user(
         db.commit()
         db.refresh(new_user)
         
+        # Assign user to groups if group_ids provided and user is a student
+        if user_data.group_ids and user_data.role == "student":
+            for group_id in user_data.group_ids:
+                # Verify group exists
+                group = db.query(Group).filter(Group.id == group_id).first()
+                if group:
+                    # Check if association already exists
+                    existing = db.query(GroupStudent).filter(
+                        GroupStudent.group_id == group_id,
+                        GroupStudent.student_id == new_user.id
+                    ).first()
+                    if not existing:
+                        group_student = GroupStudent(
+                            group_id=group_id,
+                            student_id=new_user.id
+                        )
+                        db.add(group_student)
+            db.commit()
+        
         return CreateUserResponse(
             user=UserSchema.from_orm(new_user),
             generated_password=generated_password
@@ -246,6 +269,24 @@ async def create_bulk_users(
             
             db.add(new_user)
             db.flush()  # Get ID without committing
+            
+            # Assign user to groups if group_ids provided and user is a student
+            if user_data.group_ids and user_data.role == "student":
+                for group_id in user_data.group_ids:
+                    # Verify group exists
+                    group = db.query(Group).filter(Group.id == group_id).first()
+                    if group:
+                        # Check if association already exists
+                        existing = db.query(GroupStudent).filter(
+                            GroupStudent.group_id == group_id,
+                            GroupStudent.student_id == new_user.id
+                        ).first()
+                        if not existing:
+                            group_student = GroupStudent(
+                                group_id=group_id,
+                                student_id=new_user.id
+                            )
+                            db.add(group_student)
             
             created_users.append(CreateUserResponse(
                 user=UserSchema.from_orm(new_user),
@@ -355,46 +396,6 @@ async def create_admin_temp(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create admin: {str(e)}")
-
-@router.put("/users/{user_id}", response_model=UserSchema)
-async def update_user(
-    user_id: int,
-    update_data: UpdateUserRequest,
-    db: Session = Depends(get_db),
-    current_user: UserInDB = Depends(require_admin())
-):
-    """Update user information (admin only)"""
-    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # Update fields if provided
-    if update_data.name is not None:
-        user.name = update_data.name
-    if update_data.email is not None:
-        # Check if new email is unique
-        existing = db.query(UserInDB).filter(
-            UserInDB.email == update_data.email,
-            UserInDB.id != user_id
-        ).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Email already in use")
-        user.email = update_data.email
-    if update_data.role is not None:
-        user.role = update_data.role
-    if update_data.student_id is not None:
-        user.student_id = update_data.student_id
-
-    if update_data.is_active is not None:
-        user.is_active = update_data.is_active
-    if update_data.password is not None:
-        user.hashed_password = hash_password(update_data.password)
-    
-    user.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(user)
-    
-    return UserSchema.from_orm(user)
 
 @router.delete("/users/{user_id}")
 async def delete_user(
@@ -735,6 +736,26 @@ async def update_group(
     if group_data.is_active is not None:
         group.is_active = group_data.is_active
     
+    # Update student list if provided
+    if group_data.student_ids is not None:
+        # Remove all existing students from this group
+        db.query(GroupStudent).filter(GroupStudent.group_id == group_id).delete()
+        
+        # Add new students
+        for student_id in group_data.student_ids:
+            # Verify student exists and is active
+            student = db.query(UserInDB).filter(
+                UserInDB.id == student_id,
+                UserInDB.role == "student",
+                UserInDB.is_active == True
+            ).first()
+            if student:
+                group_student = GroupStudent(
+                    group_id=group_id,
+                    student_id=student_id
+                )
+                db.add(group_student)
+    
     db.commit()
     db.refresh(group)
     
@@ -938,6 +959,7 @@ async def update_user(
     current_user: UserInDB = Depends(require_admin())
 ):
     """Update a user (admin only)"""
+    
     user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -970,10 +992,44 @@ async def update_user(
     db.commit()
     db.refresh(user)
     
+    # Update user's groups - check the FINAL role after updates
+    final_role = user_data.role if user_data.role is not None else user.role
+    
+    # Always update groups if group_ids is provided (even if empty array to clear groups)
+    if user_data.group_ids is not None and final_role == "student":
+        # Remove all existing groups
+        db.query(GroupStudent).filter(GroupStudent.student_id == user_id).delete()
+        db.flush()
+        
+        # Add new groups
+        for group_id in user_data.group_ids:
+            group = db.query(Group).filter(Group.id == group_id).first()
+            if group:
+                db.add(GroupStudent(group_id=group_id, student_id=user_id))
+        
+        db.commit()
+    
     # Create response
     user_response = UserSchema.from_orm(user)
     
     return user_response
+
+@router.get("/users/{user_id}/groups")
+async def get_user_groups(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Get group IDs for a user (admin only)"""
+    user = db.query(UserInDB).filter(UserInDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get all groups for this user
+    group_students = db.query(GroupStudent).filter(GroupStudent.student_id == user_id).all()
+    group_ids = [gs.group_id for gs in group_students]
+    
+    return {"user_id": user_id, "group_ids": group_ids}
 
 @router.delete("/users/{user_id}")
 async def deactivate_user(
