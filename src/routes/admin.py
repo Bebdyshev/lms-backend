@@ -1492,6 +1492,8 @@ async def create_event(
         db.add(event_group)
     
     # If recurring, create additional events
+    # Only create physical copies if an end date is specified.
+    # If no end date, we rely on dynamic generation in retrieval endpoints.
     if event_data.is_recurring and event_data.recurrence_pattern and event_data.recurrence_end_date:
         create_recurring_events(db, event, event_data)
     
@@ -1646,16 +1648,45 @@ async def create_bulk_events(
 async def create_recurring_events(db: Session, base_event: Event, event_data: CreateEventRequest):
     """Helper function to create recurring events"""
     from datetime import timedelta
+    import calendar
     
+    current_start = base_event.start_datetime
+    current_end = base_event.end_datetime
+    original_start_day = base_event.start_datetime.day
+    original_end_day = base_event.end_datetime.day
+    
+    # Initial increment based on pattern
     if event_data.recurrence_pattern == "weekly":
         delta = timedelta(weeks=1)
+        current_start += delta
+        current_end += delta
+    elif event_data.recurrence_pattern == "biweekly":
+        delta = timedelta(weeks=2)
+        current_start += delta
+        current_end += delta
     elif event_data.recurrence_pattern == "daily":
         delta = timedelta(days=1)
+        current_start += delta
+        current_end += delta
+    elif event_data.recurrence_pattern == "monthly":
+        # For monthly, we don't use a fixed delta
+        pass
     else:
         return  # Unsupported pattern
     
-    current_start = base_event.start_datetime + delta
-    current_end = base_event.end_datetime + delta
+    # For monthly, we need to handle the first increment manually if we haven't already
+    if event_data.recurrence_pattern == "monthly":
+        # Add one month to start
+        year = current_start.year + (current_start.month // 12)
+        month = (current_start.month % 12) + 1
+        day = min(original_start_day, calendar.monthrange(year, month)[1])
+        current_start = current_start.replace(year=year, month=month, day=day)
+        
+        # Add one month to end
+        year_end = current_end.year + (current_end.month // 12)
+        month_end = (current_end.month % 12) + 1
+        day_end = min(original_end_day, calendar.monthrange(year_end, month_end)[1])
+        current_end = current_end.replace(year=year_end, month=month_end, day=day_end)
     
     while current_start.date() <= event_data.recurrence_end_date:
         recurring_event = Event(
@@ -1680,5 +1711,19 @@ async def create_recurring_events(db: Session, base_event: Event, event_data: Cr
             event_group = EventGroup(event_id=recurring_event.id, group_id=group_id)
             db.add(event_group)
         
-        current_start += delta
-        current_end += delta
+        # Increment for next iteration
+        if event_data.recurrence_pattern == "monthly":
+            # Increment start
+            year = current_start.year + (current_start.month // 12)
+            month = (current_start.month % 12) + 1
+            day = min(original_start_day, calendar.monthrange(year, month)[1])
+            current_start = current_start.replace(year=year, month=month, day=day)
+            
+            # Increment end
+            year_end = current_end.year + (current_end.month // 12)
+            month_end = (current_end.month % 12) + 1
+            day_end = min(original_end_day, calendar.monthrange(year_end, month_end)[1])
+            current_end = current_end.replace(year=year_end, month=month_end, day=day_end)
+        else:
+            current_start += delta
+            current_end += delta
