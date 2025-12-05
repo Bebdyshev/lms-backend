@@ -896,6 +896,7 @@ async def get_all_users(
         # Get groups for this user first
         teacher_name = None
         curator_name = None
+        group_ids = []
         
         if user.role == "student":
             
@@ -908,6 +909,7 @@ async def get_all_users(
                 curator_names = []
                 
                 for group_student in group_students:
+                    group_ids.append(group_student.group_id)
                     
                     group = db.query(Group).filter(Group.id == group_student.group_id).first()
                     
@@ -938,6 +940,7 @@ async def get_all_users(
             student_id=user.student_id,
             teacher_name=teacher_name,
             curator_name=curator_name,
+            group_ids=group_ids if group_ids else None,
             total_study_time_minutes=user.total_study_time_minutes,
             created_at=user.created_at
         )

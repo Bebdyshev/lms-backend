@@ -186,6 +186,7 @@ class UserSchema(BaseModel):
     student_id: Optional[str] = None
     teacher_name: Optional[str] = None
     curator_name: Optional[str] = None
+    group_ids: Optional[List[int]] = None  # List of group IDs for students
     total_study_time_minutes: Optional[int] = 0
     daily_streak: Optional[int] = 0
     last_activity_date: Optional[date] = None

@@ -228,11 +228,9 @@ class RabbitMQConsumer:
             )
             
             self._running = True
-            logger.info("🚀 Starting to consume messages from RabbitMQ...")
             self.channel.start_consuming()
             
         except KeyboardInterrupt:
-            logger.info("⏹️  Stopping consumer...")
             self.stop()
         except Exception as e:
             logger.error(f"❌ Consumer error: {e}")
