@@ -445,8 +445,10 @@ async def get_course_modules(
     # Use joinedload to control lesson loading
     
     if include_lessons:
+        # Optimization: Don't join steps here to avoid fetching heavy content (text, video_url)
+        # We will fetch lightweight step data separately
         modules = db.query(Module).options(
-            joinedload(Module.lessons).joinedload(Lesson.steps)
+            joinedload(Module.lessons)
         ).filter(
             Module.course_id == course_id
         ).order_by(Module.order_index).all()
@@ -455,6 +457,45 @@ async def get_course_modules(
             Module.course_id == course_id
         ).order_by(Module.order_index).all()
     
+    # Optimization: Pre-fetch steps and calculate redirects if needed
+    steps_by_lesson = {}
+    unlocked_by_redirect_ids = set()
+
+    if include_lessons and modules:
+        # Fetch all steps for these lessons in one lightweight query
+        all_lesson_ids = [l.id for m in modules for l in m.lessons]
+        
+        if all_lesson_ids:
+            lightweight_steps = db.query(
+                Step.id, 
+                Step.lesson_id, 
+                Step.title, 
+                Step.content_type, 
+                Step.order_index,
+                Step.created_at
+            ).filter(
+                Step.lesson_id.in_(all_lesson_ids)
+            ).all()
+            
+            for s in lightweight_steps:
+                if s.lesson_id not in steps_by_lesson:
+                    steps_by_lesson[s.lesson_id] = []
+                steps_by_lesson[s.lesson_id].append(s)
+
+        # Calculate lessons unlocked by explicit redirects
+        if current_user.role == "student":
+            for mod in modules:
+                for les in mod.lessons:
+                    if les.next_lesson_id:
+                        is_completed_db = les.id in completed_lesson_ids
+                        
+                        # Check steps completion using our lightweight map
+                        lesson_steps = steps_by_lesson.get(les.id, [])
+                        all_steps_done = lesson_steps and all(s.id in completed_step_ids for s in lesson_steps)
+                        
+                        if is_completed_db or all_steps_done:
+                            unlocked_by_redirect_ids.add(les.next_lesson_id)
+
     # Enrich with lesson counts
     modules_data = []
     for module in modules:
@@ -472,28 +513,14 @@ async def get_course_modules(
         # Include lessons if requested
         if include_lessons:
             # Use already loaded lessons from joinedload
-            # Calculate lessons unlocked by explicit redirects from completed lessons
-            unlocked_by_redirect_ids = set()
-            if current_user.role == "student":
-                for mod in modules:
-                    for les in mod.lessons:
-                        if les.next_lesson_id:
-                            # Check if lesson is completed (either in DB OR all steps done)
-                            is_completed_db = les.id in completed_lesson_ids
-                            
-                            # Check steps completion (steps are already loaded via joinedload)
-                            lesson_steps = les.steps if hasattr(les, 'steps') else []
-                            all_steps_done = lesson_steps and all(s.id in completed_step_ids for s in lesson_steps)
-                            
-                            if is_completed_db or all_steps_done:
-                                unlocked_by_redirect_ids.add(les.next_lesson_id)
-
             lessons = sorted(module.lessons, key=lambda x: x.order_index)
             
             lessons_data = []
             for lesson_idx, lesson in enumerate(lessons):
-                # Get steps for this lesson
-                steps = sorted(lesson.steps, key=lambda x: x.order_index) if lesson.steps else []
+                # Get steps for this lesson from our lightweight map
+                # Note: s is a Row/KeyedTuple, not an ORM object, so we access by index or name
+                raw_steps = steps_by_lesson.get(lesson.id, [])
+                steps = sorted(raw_steps, key=lambda x: x.order_index)
                 
                 lesson_schema = LessonSchema.from_orm(lesson)
                 lesson_schema.steps = []
@@ -502,8 +529,22 @@ async def get_course_modules(
                 all_steps_completed = True if steps else False
                 
                 for step in steps:
-                    step_schema = StepSchema.from_orm(step)
-                    step_schema.is_completed = step.id in completed_step_ids
+                    # Manually construct StepSchema from lightweight data
+                    # We set heavy fields to None
+                    step_schema = StepSchema(
+                        id=step.id,
+                        lesson_id=step.lesson_id,
+                        title=step.title,
+                        content_type=step.content_type,
+                        order_index=step.order_index,
+                        created_at=step.created_at,
+                        video_url=None,
+                        content_text=None,
+                        original_image_url=None,
+                        attachments=None,
+                        is_completed=step.id in completed_step_ids
+                    )
+                    
                     lesson_schema.steps.append(step_schema)
                     
                     if not step_schema.is_completed:
