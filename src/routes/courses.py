@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, noload
 from sqlalchemy import func, desc, and_
 from typing import List, Optional
 import os
@@ -854,7 +854,7 @@ async def get_lesson(
     """Get lesson details with course access check"""
     
     lesson = db.query(Lesson).options(
-        joinedload(Lesson.steps)
+        noload(Lesson.steps)
     ).filter(Lesson.id == lesson_id).first()
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -868,12 +868,12 @@ async def get_lesson(
     if not check_course_access(module.course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this lesson")
     
-    # Get steps for this lesson
-    steps = sorted(lesson.steps, key=lambda x: x.order_index) if lesson.steps else []
+    # Efficiently count steps without loading them
+    total_steps = db.query(Step).filter(Step.lesson_id == lesson_id).count()
     
     lesson_schema = LessonSchema.from_orm(lesson)
-    lesson_schema.steps = [StepSchema.from_orm(step) for step in steps]
-    lesson_schema.total_steps = len(steps)
+    lesson_schema.steps = []
+    lesson_schema.total_steps = total_steps
     
     return lesson_schema
 
@@ -1120,6 +1120,7 @@ async def delete_lesson(
 @router.get("/lessons/{lesson_id}/steps", response_model=List[StepSchema])
 async def get_lesson_steps(
     lesson_id: int,
+    include_content: bool = Query(True, description="Include full step content (text, video, attachments)"),
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -1133,11 +1134,40 @@ async def get_lesson_steps(
     if not check_course_access(module.course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this lesson")
     
-    steps = db.query(Step).filter(
-        Step.lesson_id == lesson_id
-    ).order_by(Step.order_index).all()
-    
-    return [StepSchema.from_orm(step) for step in steps]
+    if include_content:
+        steps = db.query(Step).filter(
+            Step.lesson_id == lesson_id
+        ).order_by(Step.order_index).all()
+        return [StepSchema.from_orm(step) for step in steps]
+    else:
+        # Lightweight query - exclude heavy text fields
+        steps_data = db.query(
+            Step.id,
+            Step.lesson_id,
+            Step.title,
+            Step.content_type,
+            Step.order_index,
+            Step.created_at
+        ).filter(
+            Step.lesson_id == lesson_id
+        ).order_by(Step.order_index).all()
+        
+        # Manually construct StepSchema with None for heavy fields
+        return [
+            StepSchema(
+                id=s.id,
+                lesson_id=s.lesson_id,
+                title=s.title,
+                content_type=s.content_type,
+                order_index=s.order_index,
+                created_at=s.created_at,
+                video_url=None,
+                content_text=None,
+                original_image_url=None,
+                attachments=None,
+                is_completed=False # Will be populated by frontend if needed, or separate call
+            ) for s in steps_data
+        ]
 
 @router.post("/lessons/{lesson_id}/steps", response_model=StepSchema)
 async def create_step(
