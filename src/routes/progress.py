@@ -9,10 +9,11 @@ from src.schemas.models import (
     StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
     UserInDB, AssignmentSubmission, ProgressSchema, StepProgress,
     StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent,
-    ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema
+    ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema,
+    QuizAttemptGradeSchema
 )
 from src.routes.auth import get_current_user_dependency
-from src.utils.permissions import check_course_access, check_student_access
+from src.utils.permissions import check_course_access, check_student_access, require_teacher_or_admin
 from src.schemas.models import GroupStudent
 
 router = APIRouter()
@@ -1497,6 +1498,7 @@ async def create_quiz_attempt(
             score_percentage=attempt_data.score_percentage,
             answers=attempt_data.answers,
             time_spent_seconds=attempt_data.time_spent_seconds,
+            is_graded=attempt_data.is_graded,
             completed_at=datetime.utcnow(),
             created_at=datetime.utcnow()
         )
@@ -1510,6 +1512,72 @@ async def create_quiz_attempt(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save quiz attempt: {str(e)}")
+
+
+@router.put("/quiz-attempts/{attempt_id}/grade", response_model=QuizAttemptSchema)
+async def grade_quiz_attempt(
+    attempt_id: int,
+    grade_data: QuizAttemptGradeSchema,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Grade a quiz attempt (for manual grading)"""
+    if current_user.role not in ["teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    attempt = db.query(QuizAttempt).filter(QuizAttempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Quiz attempt not found")
+        
+    # Check course access
+    if current_user.role == "teacher":
+        course = db.query(Course).filter(Course.id == attempt.course_id).first()
+        if not course or course.teacher_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this course")
+            
+    try:
+        attempt.score_percentage = grade_data.score_percentage
+        attempt.correct_answers = grade_data.correct_answers
+        attempt.feedback = grade_data.feedback
+        attempt.is_graded = True
+        attempt.graded_by = current_user.id
+        attempt.graded_at = datetime.utcnow()
+        
+        db.commit()
+        db.refresh(attempt)
+        return attempt
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to grade quiz attempt: {str(e)}")
+
+
+@router.delete("/quiz-attempts/{attempt_id}")
+async def delete_quiz_attempt(
+    attempt_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Delete a quiz attempt (allow resubmission)"""
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    attempt = db.query(QuizAttempt).filter(QuizAttempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Quiz attempt not found")
+        
+    # Check course access
+    if current_user.role == "teacher":
+        course = db.query(Course).filter(Course.id == attempt.course_id).first()
+        if not course or course.teacher_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this course")
+            
+    try:
+        db.delete(attempt)
+        db.commit()
+        return {"detail": "Quiz attempt deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete quiz attempt: {str(e)}")
 
 
 @router.get("/quiz-attempts/step/{step_id}", response_model=List[QuizAttemptSchema])
@@ -1759,4 +1827,103 @@ async def get_lesson_quiz_summary(
             "total_correct": total_correct
         }
     }
+
+
+@router.get("/quiz-attempts/ungraded")
+async def get_ungraded_attempts(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db),
+    graded: Optional[bool] = None  # None = ungraded only (default), True = graded only, False = ungraded only
+):
+    """Get quiz attempts for teachers/admins. By default returns ungraded only."""
+    if current_user.role not in ["teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = db.query(QuizAttempt)
+    
+    # Filter by graded status
+    if graded is None or graded == False:
+        query = query.filter(QuizAttempt.is_graded == False)
+    else:
+        query = query.filter(QuizAttempt.is_graded == True)
+    
+    if current_user.role == "teacher":
+        # Filter by teacher's courses
+        teacher_course_ids = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
+        query = query.filter(QuizAttempt.course_id.in_(teacher_course_ids))
+    
+    attempts = query.order_by(QuizAttempt.created_at.desc()).all()
+    
+    # Enrich response with user and step info
+    results = []
+    for attempt in attempts:
+        user = db.query(UserInDB).filter(UserInDB.id == attempt.user_id).first()
+        step = db.query(Step).filter(Step.id == attempt.step_id).first()
+        
+        # Try to get lesson - fallback to getting it from the step
+        lesson = None
+        if attempt.lesson_id:
+            lesson = db.query(Lesson).filter(Lesson.id == attempt.lesson_id).first()
+        if not lesson and step:
+            lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+        
+        course = db.query(Course).filter(Course.id == attempt.course_id).first()
+        
+        # Get quiz questions from step content
+        long_text_answers = []
+        
+        if step and step.content_text:
+            import json
+            try:
+                content = json.loads(step.content_text) if isinstance(step.content_text, str) else step.content_text
+                questions = content.get('questions', [])
+                
+                # Parse saved answers
+                answers_map = {}
+                if attempt.answers:
+                    try:
+                        parsed_answers = json.loads(attempt.answers) if isinstance(attempt.answers, str) else attempt.answers
+                        # Handle both array [[id, value], ...] and object {id: value} formats
+                        if isinstance(parsed_answers, list):
+                            answers_map = {str(item[0]): item[1] for item in parsed_answers if isinstance(item, list) and len(item) >= 2}
+                        elif isinstance(parsed_answers, dict):
+                            answers_map = {str(k): v for k, v in parsed_answers.items()}
+                    except Exception as e:
+                        print(f"Error parsing answers: {e}")
+                
+                # Filter only long_text questions
+                for q in questions:
+                    if q.get('question_type') == 'long_text':
+                        q_id = str(q.get('id', ''))
+                        long_text_answers.append({
+                            "question_id": q_id,
+                            "question_text": q.get('question_text', 'No question text'),
+                            "content_text": q.get('content_text', ''),  # Passage if exists
+                            "student_answer": answers_map.get(q_id, '')
+                        })
+            except Exception as e:
+                print(f"Error parsing quiz content: {e}")
+        
+        # Always include ungraded attempts (is_graded=False means needs grading)
+        results.append({
+            "id": attempt.id,
+            "user_id": attempt.user_id,
+            "user_name": user.name if user else "Unknown",
+            "user_email": user.email if user else "Unknown",
+            "step_id": attempt.step_id,
+            "step_title": step.title if step else "Unknown Step",
+            "lesson_id": attempt.lesson_id,
+            "lesson_title": lesson.title if lesson else "Unknown Lesson",
+            "course_id": attempt.course_id,
+            "course_title": course.title if course else "Unknown Course",
+            "created_at": attempt.created_at,
+            "quiz_title": attempt.quiz_title,
+            "score_percentage": attempt.score_percentage,
+            "is_graded": attempt.is_graded if attempt.is_graded is not None else False,
+            "feedback": attempt.feedback,
+            "long_text_answers": long_text_answers,
+            "type": "quiz"  # To distinguish from assignment submissions
+        })
+        
+    return results
 

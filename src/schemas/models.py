@@ -771,11 +771,18 @@ class QuizAttempt(Base):
     completed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     
+    # Grading fields
+    is_graded = Column(Boolean, default=True)  # True for auto-graded, False for manual grading required
+    feedback = Column(Text, nullable=True)
+    graded_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    graded_at = Column(DateTime, nullable=True)
+    
     # Relationships
-    user = relationship("UserInDB")
+    user = relationship("UserInDB", foreign_keys=[user_id])
     step = relationship("Step")
     course = relationship("Course")
     lesson = relationship("Lesson")
+    grader = relationship("UserInDB", foreign_keys=[graded_by])
 
 # Progress Schemas
 class EnrollmentSchema(BaseModel):
@@ -840,6 +847,17 @@ class QuizAttemptSchema(BaseModel):
     completed_at: datetime
     created_at: datetime
     
+    # Grading fields
+    is_graded: Optional[bool] = True
+    feedback: Optional[str] = None
+    graded_by: Optional[int] = None
+    graded_at: Optional[datetime] = None
+    
+    @field_validator('is_graded', mode='before')
+    @classmethod
+    def default_is_graded(cls, v):
+        return v if v is not None else True
+    
     class Config:
         from_attributes = True
 
@@ -853,6 +871,12 @@ class QuizAttemptCreateSchema(BaseModel):
     score_percentage: float
     answers: Optional[str] = None
     time_spent_seconds: Optional[int] = None
+    is_graded: bool = True  # Default to True (auto-graded)
+
+class QuizAttemptGradeSchema(BaseModel):
+    score_percentage: float
+    correct_answers: int
+    feedback: Optional[str] = None
 
 class ProgressSchema(BaseModel):
     id: int
