@@ -76,20 +76,40 @@ class GeminiParser:
             - content_text: If the question refers to a reading passage, include the passage text here.
             - is_sat_question: Set to true.
             
-            IMPORTANT - LaTeX Formatting Rules:
-            - ALL mathematical expressions MUST be wrapped in $...$ (inline) or $$...$$ (display)
-            - Fractions: use $\\frac{numerator}{denominator}$ (e.g., $\\frac{1}{2}$)
-            - Exponents: use $x^2$, $x^{10}$
-            - Subscripts: use $x_1$, $x_{10}$
-            - Square roots: use $\\sqrt{x}$ or $\\sqrt[n]{x}$
-            - Systems of equations: use $\\begin{cases} equation1 \\\\ equation2 \\end{cases}$
-            - Greek letters: use $\\alpha$, $\\beta$, $\\pi$, etc.
-            - Summation: use $\\sum_{i=1}^{n}$
-            - Integration: use $\\int_{a}^{b}$
-            - Examples:
-              * "The value of $\\frac{3}{4}$ is greater than $\\frac{1}{2}$"
-              * "Solve for $x$: $x^2 + 5x + 6 = 0$"
-              * "System: $\\begin{cases} x + y = 5 \\\\ x - y = 1 \\end{cases}$"
+            CRITICAL - LaTeX Formatting Rules (MUST FOLLOW STRICTLY):
+            - **EVERY** mathematical expression, number in mathematical context, variable, or formula MUST be wrapped in $...$
+            - Variables and functions: $x$, $y$, $f(x)$, $g(t)$, etc.
+            - All numbers in equations or formulas: $5$, $-3$, $0.5$, etc.
+            - Constants: $\\pi$, $e$, $c$, etc.
+            - Operations: $+$, $-$, $\\times$, $\\div$, $=$, etc. in mathematical context
+            - Fractions: ALWAYS use $\\frac{numerator}{denominator}$ (e.g., $\\frac{1}{2}$, $\\frac{3x+1}{2y-5}$)
+            - Exponents: $x^2$, $x^{10}$, $2^n$, $e^{-x}$
+            - Subscripts: $x_1$, $x_{10}$, $a_n$
+            - Square roots: $\\sqrt{x}$, $\\sqrt{2}$, $\\sqrt[n]{x}$
+            - Absolute values: $|x|$, $|-5|$
+            - Inequalities: $x > 5$, $y \\leq 10$, $x \\neq 0$
+            - Systems of equations: $\\begin{cases} equation1 \\\\ equation2 \\end{cases}$
+            - Greek letters: $\\alpha$, $\\beta$, $\\gamma$, $\\pi$, $\\theta$, etc.
+            - Special functions: $\\sin(x)$, $\\cos(x)$, $\\tan(x)$, $\\log(x)$, $\\ln(x)$
+            - Summation: $\\sum_{i=1}^{n}$, $\\sum_{k=0}^{\\infty}$
+            - Integration: $\\int_{a}^{b}$, $\\int_{-\\infty}^{\\infty}$
+            - Limits: $\\lim_{x \\to 0}$, $\\lim_{n \\to \\infty}$
+            - Derivatives: $\\frac{dy}{dx}$, $f'(x)$, $\\frac{d^2y}{dx^2}$
+            - Sets: $\\{1, 2, 3\\}$, $\\mathbb{R}$, $\\mathbb{N}$
+            
+            Examples of CORRECT usage:
+            - "The function $f(x) = 2x + 3$ has a slope of $2$"
+            - "Solve for $x$ in the equation $x^2 + 5x + 6 = 0$"
+            - "The value of $\\frac{3}{4}$ is greater than $\\frac{1}{2}$"
+            - "System: $\\begin{cases} x + y = 5 \\\\ x - y = 1 \\end{cases}$"
+            - "If $a = 3$ and $b = 4$, then $c = \\sqrt{a^2 + b^2} = 5$"
+            - "The derivative of $f(x) = x^2$ is $f'(x) = 2x$"
+            
+            DO NOT write mathematical expressions without LaTeX:
+            - ❌ "x^2 + 5x + 6 = 0" 
+            - ✅ "$x^2 + 5x + 6 = 0$"
+            - ❌ "f(x) = 2x + 3"
+            - ✅ "$f(x) = 2x + 3$"
             
             Format the output as a valid JSON string. Do not include markdown formatting like ```json ... ```.
             If an image is required to answer a question, add a field "needs_image": true.
