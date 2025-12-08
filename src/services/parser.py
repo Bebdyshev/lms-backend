@@ -79,10 +79,12 @@ class GeminiParser:
             CRITICAL - LaTeX Formatting Rules (MUST FOLLOW STRICTLY):
             - **EVERY** mathematical expression, number in mathematical context, variable, or formula MUST be wrapped in $...$
             - **NEVER** split a mathematical expression into multiple $...$ blocks - wrap the ENTIRE expression in ONE block
-            - For regular text (words, labels) inside math mode, use $\\text{your text}$
+            - For regular text (words, labels) inside math mode, use $\\text{your text}$ with proper spacing
+            - **IMPORTANT**: When using \\text{}, ALWAYS add a space before the text: $15.5\\text{ inches}$ NOT $15.5\\text{inches}$
+            - For non-mathematical numbers (years, dates, IDs), use $\\text{number}$: $\\text{2005}$, $\\text{2011}$
             - Variables and functions: $x$, $y$, $f(x)$, $g(t)$, etc.
             - All numbers in equations or formulas: $5$, $-3$, $0.5$, etc.
-            - Single numbers with units or labels: $5\\text{ meters}$, $3\\text{ seconds}$
+            - Single numbers with units or labels: $5\\text{ meters}$, $3\\text{ seconds}$, $15.5\\text{ inches}$
             - Constants: $\\pi$, $e$, $c$, etc.
             - Operations: $+$, $-$, $\\times$, $\\div$, $=$, etc. in mathematical context
             - Fractions: ALWAYS use $\\frac{numerator}{denominator}$ (e.g., $\\frac{1}{2}$, $\\frac{3x+1}{2y-5}$)
@@ -107,7 +109,9 @@ class GeminiParser:
             - "System: $\\begin{cases} x + y = 5 \\\\ x - y = 1 \\end{cases}$"
             - "If $a = 3$ and $b = 4$, then $c = \\sqrt{a^2 + b^2} = 5$"
             - "The derivative of $f(x) = x^2$ is $f'(x) = 2x$"
-            - "The distance is $5\\text{ meters}$"
+            - "The distance is $5\\text{ meters}$" (note the space before meters)
+            - "In $\\text{2005}$, the screen size was $15.5\\text{ inches}$"
+            - "Between $\\text{2005}$ and $\\text{2011}$" (years as text)
             - "Let $x_{\\text{max}}$ be the maximum value"
             
             DO NOT write mathematical expressions without LaTeX:
@@ -117,6 +121,10 @@ class GeminiParser:
             - ✅ "$f(x) = 2x + 3$"
             - ❌ "5 meters"
             - ✅ "$5\\text{ meters}$"
+            - ❌ "$15.5\\text{inches}$" (missing space)
+            - ✅ "$15.5\\text{ inches}$" (correct with space)
+            - ❌ "In 2005" (year without LaTeX)
+            - ✅ "In $\\text{2005}$" (year as text)
             
             DO NOT split expressions into multiple math blocks:
             - ❌ "$60$ / $30$ = $2$" (WRONG - split into parts)
