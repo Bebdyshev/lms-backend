@@ -190,7 +190,44 @@ class GeminiParser:
                 text = text[:-3]
             text = text.strip()
             
-            questions = json.loads(text)
+            # Fix common LaTeX backslash issues in JSON
+            # Replace single backslashes with double backslashes for LaTeX commands
+            # We use a list of common commands to be safe, plus a regex for others
+            
+            import re
+            
+            # 1. Fix specific commands that might be interpreted as escape sequences (\t, \n, \f, \b, \r)
+            # \times -> \\times, \text -> \\text, \frac -> \\frac, etc.
+            latex_commands = [
+                "times", "text", "tan", "theta", "tau",  # \t
+                "frac", "forall", "phi",                 # \f
+                "beta", "bar", "break", "begin", "mathbf", "mathbb", # \b
+                "nu", "neq", "nabla",                    # \n
+                "rho", "right",                          # \r
+                "alpha", "sigma", "gamma", "delta", "epsilon", "lambda", "mu", "pi", "omega", # other greek
+                "sqrt", "sum", "sin", "cos", "log", "ln", "lim", "int", "infty", "approx", "div", "pm", "mp", "cdot", "leq", "geq" # other ops
+            ]
+            
+            for cmd in latex_commands:
+                # Replace \cmd with \\cmd, but only if it's not already \\cmd
+                # We look for single backslash followed by the command
+                # Note: In Python regex string, \\ matches a literal backslash
+                pattern = r'(?<!\\)\\' + cmd
+                replacement = r'\\\\' + cmd
+                text = re.sub(pattern, replacement, text)
+
+            # 2. Fix other backslashes that are not valid JSON escapes
+            # Valid JSON escapes: ", \, /, b, f, n, r, t, u
+            # If we see \ followed by something else (like \s, \a, \c), it's likely a LaTeX command
+            # Regex: Backslash not preceded by backslash, followed by character NOT in [ " \ / b f n r t u ]
+            text = re.sub(r'(?<!\\)\\(?![\\"/bfnrtu])', r'\\\\', text)
+
+            try:
+                questions = json.loads(text)
+            except json.JSONDecodeError as e:
+                print(f"JSON Decode Error: {e}")
+                print(f"Problematic text snippet: {text[max(0, e.pos-50):min(len(text), e.pos+50)]}")
+                raise Exception(f"Failed to parse Gemini response as JSON: {e}")
             
             # Post-process to ensure it matches our internal structure
             processed_questions = []
