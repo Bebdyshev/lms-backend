@@ -137,6 +137,16 @@ class GeminiParser:
             - ❌ "He needs $60$ grams" (OK for single number)
             - ✅ "He needs $60\\text{ grams}$" (BETTER with unit)
             
+            **JSON OUTPUT FORMATTING**:
+            - When generating JSON, you MUST escape backslashes in LaTeX commands
+            - In JSON strings, use DOUBLE backslash: "question_text": "The answer is $15.5\\\\text{ inches}$"
+            - A single backslash in JSON will be lost - always use double backslash for LaTeX commands
+            - Example JSON output:
+              {
+                "question_text": "In $\\\\text{2005}$, the size was $15.5\\\\text{ inches}$",
+                "options": ["$\\\\frac{1}{2}$", "$\\\\frac{3}{4}$", ...]
+              }
+            
             Format the output as a valid JSON string. Do not include markdown formatting like ```json ... ```.
             If an image is required to answer a question, add a field "needs_image": true.
             """
