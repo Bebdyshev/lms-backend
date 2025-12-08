@@ -78,13 +78,15 @@ class GeminiParser:
             
             CRITICAL - LaTeX Formatting Rules (MUST FOLLOW STRICTLY):
             - **EVERY** mathematical expression, number in mathematical context, variable, or formula MUST be wrapped in $...$
+            - For regular text (words, labels) inside math mode, use $\\text{your text}$
             - Variables and functions: $x$, $y$, $f(x)$, $g(t)$, etc.
             - All numbers in equations or formulas: $5$, $-3$, $0.5$, etc.
+            - Single numbers with units or labels: $5\\text{ meters}$, $3\\text{ seconds}$
             - Constants: $\\pi$, $e$, $c$, etc.
             - Operations: $+$, $-$, $\\times$, $\\div$, $=$, etc. in mathematical context
             - Fractions: ALWAYS use $\\frac{numerator}{denominator}$ (e.g., $\\frac{1}{2}$, $\\frac{3x+1}{2y-5}$)
             - Exponents: $x^2$, $x^{10}$, $2^n$, $e^{-x}$
-            - Subscripts: $x_1$, $x_{10}$, $a_n$
+            - Subscripts: $x_1$, $x_{10}$, $a_n$, $x_{\\text{max}}$
             - Square roots: $\\sqrt{x}$, $\\sqrt{2}$, $\\sqrt[n]{x}$
             - Absolute values: $|x|$, $|-5|$
             - Inequalities: $x > 5$, $y \\leq 10$, $x \\neq 0$
@@ -104,12 +106,16 @@ class GeminiParser:
             - "System: $\\begin{cases} x + y = 5 \\\\ x - y = 1 \\end{cases}$"
             - "If $a = 3$ and $b = 4$, then $c = \\sqrt{a^2 + b^2} = 5$"
             - "The derivative of $f(x) = x^2$ is $f'(x) = 2x$"
+            - "The distance is $5\\text{ meters}$"
+            - "Let $x_{\\text{max}}$ be the maximum value"
             
             DO NOT write mathematical expressions without LaTeX:
             - ❌ "x^2 + 5x + 6 = 0" 
             - ✅ "$x^2 + 5x + 6 = 0$"
             - ❌ "f(x) = 2x + 3"
             - ✅ "$f(x) = 2x + 3$"
+            - ❌ "5 meters"
+            - ✅ "$5\\text{ meters}$"
             
             Format the output as a valid JSON string. Do not include markdown formatting like ```json ... ```.
             If an image is required to answer a question, add a field "needs_image": true.
