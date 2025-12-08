@@ -79,7 +79,8 @@ class GeminiParser:
             CRITICAL - LaTeX Formatting Rules (MUST FOLLOW STRICTLY):
             - **EVERY** mathematical expression, number in mathematical context, variable, or formula MUST be wrapped in $...$
             - **NEVER** split a mathematical expression into multiple $...$ blocks - wrap the ENTIRE expression in ONE block
-            - For regular text (words, labels) inside math mode, use $\\text{your text}$ with proper spacing
+            - For regular text (words, labels) inside math mode, use BACKSLASH-text: $\\text{your text}$ with proper spacing
+            - **CRITICAL**: The command is \\text{} with a BACKSLASH, NOT just text{}
             - **IMPORTANT**: When using \\text{}, ALWAYS add a space before the text: $15.5\\text{ inches}$ NOT $15.5\\text{inches}$
             - For non-mathematical numbers (years, dates, IDs), use $\\text{number}$: $\\text{2005}$, $\\text{2011}$
             - Variables and functions: $x$, $y$, $f(x)$, $g(t)$, etc.
@@ -123,6 +124,8 @@ class GeminiParser:
             - ✅ "$5\\text{ meters}$"
             - ❌ "$15.5\\text{inches}$" (missing space)
             - ✅ "$15.5\\text{ inches}$" (correct with space)
+            - ❌ "$0.5 ext{ inch}$" (WRONG - missing backslash before text)
+            - ✅ "$0.5\\text{ inch}$" (CORRECT - with backslash)
             - ❌ "In 2005" (year without LaTeX)
             - ✅ "In $\\text{2005}$" (year as text)
             
