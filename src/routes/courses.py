@@ -1742,13 +1742,13 @@ async def analyze_sat_image(
     db: Session = Depends(get_db)
 ):
     """
-    Analyze SAT question image using Azure OpenAI Vision API
-    Upload an image of a SAT question and get structured question data
+    Analyze SAT question image or PDF using Gemini
+    Upload an image/PDF of a SAT question and get structured question data
     """
     try:
         # Validate file type
-        if not image.content_type.startswith('image/'):
-            raise HTTPException(status_code=400, detail="File must be an image")
+        if not (image.content_type.startswith('image/') or image.content_type == 'application/pdf'):
+            raise HTTPException(status_code=400, detail="File must be an image or PDF")
         
         # Create uploads directory if it doesn't exist
         uploads_dir = "uploads/sat_images"
@@ -1764,26 +1764,69 @@ async def analyze_sat_image(
         async with aiofiles.open(file_path, "wb") as buffer:
             await buffer.write(content)
         
-        # Initialize Azure OpenAI service
-        azure_service = AzureOpenAIService()
+        # Use Gemini Parser
+        from src.services.parser import parser_service
         
-        # Analyze the image
-        result = await azure_service.analyze_sat_image(file_path)
+        # Analyze the file
+        questions = await parser_service.parse_file(file_path, mime_type=image.content_type)
         
-        # Add file path to result for reference
-        result["image_url"] = f"/uploads/sat_images/{unique_filename}"
-        result["original_filename"] = image.filename
+        # If we got multiple questions, return the first one for now as the frontend expects a single result structure
+        # OR update frontend to handle multiple. 
+        # The user wants to upload a document with multiple questions.
+        # But the current frontend `analyzeImageFile` seems to expect a single result structure with `question_text`, `options`, etc.
+        # Let's see what the frontend expects.
+        # Frontend: `const result = await apiClient.analyzeSatImage(file);`
+        # Then: `const optionsArray = Array.isArray(result.options) ? result.options : [];`
         
-        # Clean up the temporary file
-        try:
-            os.remove(file_path)
-        except:
-            pass  # Don't fail if cleanup fails
+        # If I return a list, the frontend might break if it expects a single object.
+        # However, the user asked for "upload a PDF document of some SAT test + correct answers ... Gemini takes and converts them".
+        # This implies bulk import.
+        
+        # I should probably return the list of questions.
+        # But I need to check if I should change the endpoint signature or create a new one.
+        # The current endpoint is `/analyze-sat-image`.
+        # I'll return a wrapper object that can contain multiple questions.
+        
+        # If it's a single image, maybe it's just one question.
+        # If it's a PDF, it's likely multiple.
+        
+        # Let's return:
+        # {
+        #   "success": True,
+        #   "questions": questions, # List of parsed questions
+        #   # For backward compatibility with single-image frontend logic (if any):
+        #   ...questions[0] if questions else {}
+        # }
+        
+        result = {
+            "success": True,
+            "questions": questions,
+            "file_url": f"/uploads/sat_images/{unique_filename}",
+            "original_filename": image.filename
+        }
+        
+        # Backward compatibility for single question (if the frontend uses these fields directly)
+        if questions:
+            q = questions[0]
+            result.update({
+                "question_text": q.get("question_text"),
+                "options": q.get("options"),
+                "correct_answer": q.get("options")[q.get("correct_answer")]["letter"] if q.get("options") and isinstance(q.get("correct_answer"), int) else "A",
+                "explanation": q.get("explanation"),
+                "content_text": q.get("content_text")
+            })
+        
+        # Clean up the temporary file? 
+        # Maybe keep it if it's needed for "original_image_url"
+        # The user said "In some questions you need to upload images so let gemini mark such questions"
+        # If Gemini says "needs_image", we might need to point to this file or crop it?
+        # For now, we keep the file.
         
         return result
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error analyzing image: {str(e)}")
+        print(f"Error analyzing file: {e}")
+        raise HTTPException(status_code=500, detail=f"Error analyzing file: {str(e)}")
 
 @router.post("/{course_id}/add-summary-steps")
 async def add_summary_steps_to_course(
