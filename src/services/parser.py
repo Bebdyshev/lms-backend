@@ -13,10 +13,15 @@ class GeminiParser:
     def __init__(self):
         self.model = genai.GenerativeModel('gemini-2.0-flash')
 
-    async def parse_file(self, file_path: str, mime_type: str = None) -> List[Dict[str, Any]]:
+    async def parse_file(self, file_path: str, mime_type: str = None, correct_answers: str = None) -> List[Dict[str, Any]]:
         """
         Parse a file (PDF or Image) using Gemini to extract quiz questions.
         Returns a list of dictionaries compatible with the QuizQuestion model.
+        
+        Args:
+            file_path: Path to the file to parse
+            mime_type: MIME type of the file
+            correct_answers: Optional string with manual correct answers (e.g., "1.A 2.B 3.C" or "A,B,C,D")
         """
         if not mime_type:
             mime_type, _ = mimetypes.guess_type(file_path)
@@ -52,14 +57,21 @@ class GeminiParser:
             if not uploaded_file:
                 raise Exception("File upload failed")
             
+            # Build the prompt
             prompt = """
             Analyze this document and extract all quiz questions from it.
             Return the result as a JSON array of objects.
             
             Each object should have the following fields:
             - question_text: The text of the question.
-            - options: An array of 4 strings representing the answer choices.
-            - correct_answer: The index (0-3) of the correct answer.
+            - question_type: Determine the question type based on the question format:
+              * "single_choice" - Multiple choice with one correct answer (A, B, C, D options)
+              * "multiple_choice" - Multiple choice with multiple correct answers
+              * "short_answer" - Short text answer expected
+              * "media_question" - Question that includes an image/diagram
+              * "media_open_question" - Open-ended question with media attachment
+            - options: An array of 4 strings representing the answer choices (for single_choice/multiple_choice only).
+            - correct_answer: The index (0-3) of the correct answer for MCQ, or empty string for open questions.
             - explanation: A brief explanation of why the answer is correct (if available or inferable).
             - content_text: If the question refers to a reading passage, include the passage text here.
             - is_sat_question: Set to true.
@@ -81,6 +93,17 @@ class GeminiParser:
             
             Format the output as a valid JSON string. Do not include markdown formatting like ```json ... ```.
             If an image is required to answer a question, add a field "needs_image": true.
+            """
+            
+            # Add correct answers instruction if provided
+            if correct_answers and correct_answers.strip():
+                prompt += f"""
+            
+            CORRECT ANSWERS PROVIDED:
+            {correct_answers}
+            
+            Use these correct answers when setting the "correct_answer" field for each question.
+            Parse the format intelligently (e.g., "1.A 2.B" or "A,B,C,D").
             """
             
             # Generate content with retry logic
@@ -116,36 +139,46 @@ class GeminiParser:
             # Post-process to ensure it matches our internal structure
             processed_questions = []
             for i, q in enumerate(questions):
-                # Ensure options are in the right format for our frontend
-                options = []
-                raw_options = q.get("options", [])
-                letters = ['A', 'B', 'C', 'D']
+                question_type = q.get("question_type", "single_choice")
                 
-                for j, opt_text in enumerate(raw_options):
-                    if j < 4:
+                # Only process options for multiple choice questions
+                options = None
+                correct_answer = q.get("correct_answer", 0)
+                
+                if question_type in ["single_choice", "multiple_choice", "media_question"]:
+                    # Ensure options are in the right format for our frontend
+                    options = []
+                    raw_options = q.get("options", [])
+                    letters = ['A', 'B', 'C', 'D']
+                    
+                    for j, opt_text in enumerate(raw_options):
+                        if j < 4:
+                            options.append({
+                                "id": f"gen_{i}_{j}",
+                                "text": str(opt_text),
+                                "is_correct": j == q.get("correct_answer", 0),
+                                "letter": letters[j]
+                            })
+                    
+                    # Fill in missing options if fewer than 4
+                    while len(options) < 4:
+                        j = len(options)
                         options.append({
                             "id": f"gen_{i}_{j}",
-                            "text": str(opt_text),
-                            "is_correct": j == q.get("correct_answer", 0),
+                            "text": "",
+                            "is_correct": False,
                             "letter": letters[j]
                         })
-                
-                # Fill in missing options if fewer than 4
-                while len(options) < 4:
-                    j = len(options)
-                    options.append({
-                        "id": f"gen_{i}_{j}",
-                        "text": "",
-                        "is_correct": False,
-                        "letter": letters[j]
-                    })
+                else:
+                    # For open-ended questions, correct_answer is a string
+                    correct_answer = q.get("correct_answer", "")
 
                 processed_questions.append({
                     "id": f"gemini_{i}_{os.urandom(4).hex()}",
                     "question_text": q.get("question_text", "Question"),
-                    "question_type": "single_choice",
+                    "question_type": question_type,
                     "options": options,
-                    "correct_answer": q.get("correct_answer", 0),
+                    "correct_answer": correct_answer,
                     "points": 1,
                     "explanation": q.get("explanation", ""),
                     "is_sat_question": True,

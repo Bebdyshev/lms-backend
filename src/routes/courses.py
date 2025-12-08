@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session, joinedload, noload
 from sqlalchemy import func, desc, and_
 from typing import List, Optional
@@ -1738,12 +1738,14 @@ async def get_course_group_access_status(
 @router.post("/analyze-sat-image")
 async def analyze_sat_image(
     image: UploadFile = File(...),
+    correct_answers: str = Form(None),
     current_user: UserInDB = Depends(require_teacher_or_admin()),
     db: Session = Depends(get_db)
 ):
     """
     Analyze SAT question image or PDF using Gemini
     Upload an image/PDF of a SAT question and get structured question data
+    Optionally provide correct answers to override AI detection
     """
     try:
         # Validate file type
@@ -1768,7 +1770,7 @@ async def analyze_sat_image(
         from src.services.parser import parser_service
         
         # Analyze the file
-        questions = await parser_service.parse_file(file_path, mime_type=image.content_type)
+        questions = await parser_service.parse_file(file_path, mime_type=image.content_type, correct_answers=correct_answers)
         
         # If we got multiple questions, return the first one for now as the frontend expects a single result structure
         # OR update frontend to handle multiple. 
