@@ -78,6 +78,7 @@ class GeminiParser:
             
             CRITICAL - LaTeX Formatting Rules (MUST FOLLOW STRICTLY):
             - **EVERY** mathematical expression, number in mathematical context, variable, or formula MUST be wrapped in $...$
+            - **NEVER** split a mathematical expression into multiple $...$ blocks - wrap the ENTIRE expression in ONE block
             - For regular text (words, labels) inside math mode, use $\\text{your text}$
             - Variables and functions: $x$, $y$, $f(x)$, $g(t)$, etc.
             - All numbers in equations or formulas: $5$, $-3$, $0.5$, etc.
@@ -116,6 +117,14 @@ class GeminiParser:
             - ✅ "$f(x) = 2x + 3$"
             - ❌ "5 meters"
             - ✅ "$5\\text{ meters}$"
+            
+            DO NOT split expressions into multiple math blocks:
+            - ❌ "$60$ / $30$ = $2$" (WRONG - split into parts)
+            - ✅ "$60/30 = 2$" (CORRECT - entire expression in one block)
+            - ❌ "$2$ * $7$ = $14$" (WRONG - split into parts)
+            - ✅ "$2 \\times 7 = 14$" (CORRECT - entire expression in one block)
+            - ❌ "He needs $60$ grams" (OK for single number)
+            - ✅ "He needs $60\\text{ grams}$" (BETTER with unit)
             
             Format the output as a valid JSON string. Do not include markdown formatting like ```json ... ```.
             If an image is required to answer a question, add a field "needs_image": true.
