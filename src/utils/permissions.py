@@ -63,44 +63,57 @@ def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
         return False
     
     if user.role == "teacher":
-        # Teachers can access only their own courses
-        return course.teacher_id == user.id
-    
-    elif user.role == "student":
-        # Students can access if enrolled OR if their group has access
-        # First check individual enrollment
-        enrollment = db.query(Enrollment).filter(
-            Enrollment.user_id == user.id,
-            Enrollment.course_id == course_id,
-            Enrollment.is_active == True
-        ).first()
-        if enrollment:
+        # Teachers can access their own courses AND courses their groups have access to
+        # Check if teacher created this course
+        if course.teacher_id == user.id:
             return True
         
-        # Then check group access
-        from src.schemas.models import GroupStudent, CourseGroupAccess
+        # Check if any of teacher's groups have access to this course
+        from src.schemas.models import Group, CourseGroupAccess
         
-        # Find student's group
-        group_student = db.query(GroupStudent).filter(
-            GroupStudent.student_id == user.id
+        # Get groups where user is teacher
+        teacher_groups = db.query(Group).filter(Group.teacher_id == user.id).all()
+        
+        if not teacher_groups:
+            return False
+        
+        teacher_group_ids = [g.id for g in teacher_groups]
+        
+        # Check if any of teacher's groups have access to this course
+        group_access = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id.in_(teacher_group_ids),
+            CourseGroupAccess.course_id == course_id,
+            CourseGroupAccess.is_active == True
         ).first()
         
-        if group_student:
-            # Check if the group has access to this course
-            group_access = db.query(CourseGroupAccess).filter(
-                CourseGroupAccess.group_id == group_student.group_id,
-                CourseGroupAccess.course_id == course_id,
-                CourseGroupAccess.is_active == True
-            ).first()
-            
-            if group_access:
-                return True
+        return group_access is not None
+    
+    elif user.role == "student":
+        # Students can access if their group has access to the course
+        from src.schemas.models import GroupStudent, CourseGroupAccess
         
-        return False
+        # Find student's groups
+        group_students = db.query(GroupStudent).filter(
+            GroupStudent.student_id == user.id
+        ).all()
+        
+        if not group_students:
+            return False
+        
+        group_ids = [gs.group_id for gs in group_students]
+        
+        # Check if any of the student's groups have access to this course
+        group_access = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id.in_(group_ids),
+            CourseGroupAccess.course_id == course_id,
+            CourseGroupAccess.is_active == True
+        ).first()
+        
+        return group_access is not None
     
     elif user.role == "curator":
-        # Curators can access courses if they have students from their groups enrolled
-        from src.schemas.models import GroupStudent, Group
+        # Curators can access courses if their groups have access to the course
+        from src.schemas.models import GroupStudent, Group, CourseGroupAccess
         
         # Get groups where user is curator
         curator_groups = db.query(Group).filter(Group.curator_id == user.id).all()
@@ -110,18 +123,14 @@ def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
         
         curator_group_ids = [g.id for g in curator_groups]
         
-        # Check if any students from curator's groups are enrolled in this course
-        student_ids_in_groups = db.query(GroupStudent.student_id).filter(
-            GroupStudent.group_id.in_(curator_group_ids)
-        ).subquery()
-        
-        enrolled_students = db.query(Enrollment).filter(
-            Enrollment.course_id == course_id,
-            Enrollment.user_id.in_(student_ids_in_groups),
-            Enrollment.is_active == True
+        # Check if any of curator's groups have access to this course
+        group_access = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id.in_(curator_group_ids),
+            CourseGroupAccess.course_id == course_id,
+            CourseGroupAccess.is_active == True
         ).first()
         
-        return enrolled_students is not None
+        return group_access is not None
     
     return False
 
@@ -162,25 +171,37 @@ def check_student_access(student_id: int, user: UserInDB, db: Session) -> bool:
         return False
     
     if user.role == "teacher":
-        # Teachers can access analytics if student has access to at least one of their courses (via group access)
+        from src.schemas.models import GroupStudent, Group, CourseGroupAccess
+        
+        # 1. Check if teacher is assigned to any of the student's groups
+        student_groups = db.query(Group).join(GroupStudent).filter(
+            GroupStudent.student_id == student_id,
+            Group.teacher_id == user.id
+        ).first()
+        
+        if student_groups:
+            return True
+            
+        # 2. Check if student has access to any of the teacher's courses (legacy/creator access)
         teacher_courses = db.query(Course).filter(Course.teacher_id == user.id, Course.is_active == True).all()
         teacher_course_ids = [course.id for course in teacher_courses]
-        if not teacher_course_ids:
-            return False
-        # Check group access
-        from src.schemas.models import GroupStudent, CourseGroupAccess
-        # Найти все группы, в которых состоит студент
-        group_students = db.query(GroupStudent).filter(GroupStudent.student_id == student_id).all()
-        group_ids = [gs.group_id for gs in group_students]
-        if not group_ids:
-            return False
-        # Проверить, есть ли у этих групп доступ к курсам учителя
-        access = db.query(CourseGroupAccess).filter(
-            CourseGroupAccess.group_id.in_(group_ids),
-            CourseGroupAccess.course_id.in_(teacher_course_ids),
-            CourseGroupAccess.is_active == True
-        ).first()
-        return access is not None
+        
+        if teacher_course_ids:
+            # Найти все группы, в которых состоит студент
+            group_students = db.query(GroupStudent).filter(GroupStudent.student_id == student_id).all()
+            group_ids = [gs.group_id for gs in group_students]
+            
+            if group_ids:
+                # Проверить, есть ли у этих групп доступ к курсам учителя
+                access = db.query(CourseGroupAccess).filter(
+                    CourseGroupAccess.group_id.in_(group_ids),
+                    CourseGroupAccess.course_id.in_(teacher_course_ids),
+                    CourseGroupAccess.is_active == True
+                ).first()
+                if access:
+                    return True
+        
+        return False
     
     elif user.role == "curator":
         # Curators can access students in their assigned groups

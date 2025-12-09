@@ -76,12 +76,39 @@ async def get_courses(
             query = query.filter(Course.id.in_(enrolled_course_ids), Course.is_active == True)
         
     elif current_user.role == "teacher":
-        # Teachers see their own courses (both active and drafts)
-        query = query.filter(Course.teacher_id == current_user.id)
+        # Teachers see their own courses AND courses their groups have access to
+        from src.schemas.models import Group, CourseGroupAccess
+        
+        # Get teacher's own courses
+        own_courses = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
+        
+        # Get courses accessible via groups
+        teacher_groups = db.query(Group.id).filter(Group.teacher_id == current_user.id).subquery()
+        group_courses = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id.in_(teacher_groups),
+            CourseGroupAccess.is_active == True
+        ).subquery()
+        
+        # Combine both
+        from sqlalchemy import union
+        combined_course_ids = db.query(union(
+            own_courses.select(),
+            group_courses.select()
+        ).alias('course_id')).subquery()
+        
+        query = query.filter(Course.id.in_(combined_course_ids))
         
     elif current_user.role == "curator":
-        # Curators: for now, show active courses only
-        query = query.filter(Course.is_active == True)
+        # Curators see courses their groups have access to
+        from src.schemas.models import Group, CourseGroupAccess
+        
+        curator_groups = db.query(Group.id).filter(Group.curator_id == current_user.id).subquery()
+        group_courses = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id.in_(curator_groups),
+            CourseGroupAccess.is_active == True
+        ).subquery()
+        
+        query = query.filter(Course.id.in_(group_courses), Course.is_active == True)
     
     # Apply filters
     if teacher_id is not None:

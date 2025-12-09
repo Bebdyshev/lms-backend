@@ -163,13 +163,15 @@ class UserInDB(Base):
     
     # Relationships
     groups = relationship("GroupStudent", back_populates="student", cascade="all, delete-orphan")
-    enrollments = relationship("Enrollment", back_populates="user")
-    progress_records = relationship("StudentProgress", back_populates="user")
-    sent_messages = relationship("Message", foreign_keys="Message.from_user_id", back_populates="sender")
-    received_messages = relationship("Message", foreign_keys="Message.to_user_id", back_populates="recipient")
+    enrollments = relationship("Enrollment", back_populates="user", cascade="all, delete-orphan")
+    progress_records = relationship("StudentProgress", back_populates="user", cascade="all, delete-orphan")
+    sent_messages = relationship("Message", foreign_keys="Message.from_user_id", back_populates="sender", cascade="all, delete-orphan")
+    received_messages = relationship("Message", foreign_keys="Message.to_user_id", back_populates="recipient", cascade="all, delete-orphan")
     created_courses = relationship("Course", back_populates="teacher")
-    assignment_submissions = relationship("AssignmentSubmission", foreign_keys="AssignmentSubmission.user_id", back_populates="user")
+    assignment_submissions = relationship("AssignmentSubmission", foreign_keys="AssignmentSubmission.user_id", back_populates="user", cascade="all, delete-orphan")
     favorite_flashcards = relationship("FavoriteFlashcard", back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
+    step_progress = relationship("StepProgress", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
 
 class Token(BaseModel):
     access_token: str
@@ -319,7 +321,7 @@ class Course(Base):
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     cover_image_url = Column(String, nullable=True)
-    teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     estimated_duration_minutes = Column(Integer, default=0)
     is_active = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -395,7 +397,7 @@ class CourseSchema(BaseModel):
     title: str
     description: Optional[str] = None
     cover_image_url: Optional[str] = None
-    teacher_id: int
+    teacher_id: Optional[int] = None
     teacher_name: Optional[str] = None
     estimated_duration_minutes: int
     total_modules: int = 0
@@ -962,7 +964,7 @@ class Notification(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
-    user = relationship("UserInDB")
+    user = relationship("UserInDB", back_populates="notifications")
 
 class NotificationSchema(BaseModel):
     id: int

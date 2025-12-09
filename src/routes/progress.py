@@ -1848,9 +1848,31 @@ async def get_ungraded_attempts(
         query = query.filter(QuizAttempt.is_graded == True)
     
     if current_user.role == "teacher":
-        # Filter by teacher's courses
-        teacher_course_ids = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
-        query = query.filter(QuizAttempt.course_id.in_(teacher_course_ids))
+        # Filter by teacher's groups - only show attempts from students in teacher's groups
+        from src.schemas.models import Group, GroupStudent, CourseGroupAccess
+        
+        # Get teacher's groups
+        teacher_group_ids = db.query(Group.id).filter(
+            Group.teacher_id == current_user.id,
+            Group.is_active == True
+        ).subquery()
+        
+        # Get students from teacher's groups
+        teacher_student_ids = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id.in_(teacher_group_ids)
+        ).subquery()
+        
+        # Get courses that teacher's groups have access to
+        teacher_course_ids = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id.in_(teacher_group_ids),
+            CourseGroupAccess.is_active == True
+        ).subquery()
+        
+        # Filter attempts by teacher's students AND teacher's courses
+        query = query.filter(
+            QuizAttempt.user_id.in_(teacher_student_ids),
+            QuizAttempt.course_id.in_(teacher_course_ids)
+        )
     
     attempts = query.order_by(QuizAttempt.created_at.desc()).all()
     

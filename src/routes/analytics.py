@@ -439,10 +439,15 @@ async def get_quiz_performance_analytics(
 
 @router.get("/students/all")
 async def get_all_students_analytics(
+    course_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
-    """Получить аналитику по всем доступным студентам"""
+    """Получить аналитику по всем доступным студентам
+    
+    Args:
+        course_id: Опционально - ID курса для фильтрации последнего урока
+    """
     
     # Проверка прав доступа
     if current_user.role not in ["teacher", "curator", "admin"]:
@@ -487,7 +492,7 @@ async def get_all_students_analytics(
         
         # Получаем ВСЕ курсы где есть прогресс студента (не через Enrollment!)
         # Используем StepProgress чтобы найти курсы где студент действительно учится
-        courses_with_progress = db.query(Course).join(
+        courses_query = db.query(Course).join(
             Module, Module.course_id == Course.id
         ).join(
             Lesson, Lesson.module_id == Module.id
@@ -497,14 +502,22 @@ async def get_all_students_analytics(
             StepProgress, StepProgress.step_id == Step.id
         ).filter(
             StepProgress.user_id == student.id
-        ).distinct().all()
+        )
+        
+        if course_id:
+            courses_query = courses_query.filter(Course.id == course_id)
+            
+        courses_with_progress = courses_query.distinct().all()
         
         # Если нет прогресса, пробуем через Enrollment
         if not courses_with_progress:
-            courses_with_progress = db.query(Course).join(Enrollment).filter(
+            enrollment_query = db.query(Course).join(Enrollment).filter(
                 Enrollment.user_id == student.id,
                 Course.is_active == True
-            ).all()
+            )
+            if course_id:
+                enrollment_query = enrollment_query.filter(Course.id == course_id)
+            courses_with_progress = enrollment_query.all()
         
         active_courses = courses_with_progress
         
@@ -558,11 +571,25 @@ async def get_all_students_analytics(
         completion_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
         assignment_score_percentage = (total_assignment_score / total_max_score * 100) if total_max_score > 0 else 0
         
-        # Получаем информацию о последнем уроке
+        # Получаем информацию о последнем уроке (фильтруем по курсу если указан)
         last_lesson_info = None
-        last_step_progress = db.query(StepProgress).filter(
+        
+        # Build query with optional course filter
+        step_progress_query = db.query(StepProgress).join(
+            Step, StepProgress.step_id == Step.id
+        ).join(
+            Lesson, Step.lesson_id == Lesson.id
+        ).join(
+            Module, Lesson.module_id == Module.id
+        ).filter(
             StepProgress.user_id == student.id
-        ).order_by(StepProgress.visited_at.desc()).first()
+        )
+        
+        # Filter by course if provided
+        if course_id:
+            step_progress_query = step_progress_query.filter(Module.course_id == course_id)
+            
+        last_step_progress = step_progress_query.order_by(StepProgress.visited_at.desc()).first()
         
         if last_step_progress:
             # Получаем информацию об уроке
@@ -768,7 +795,8 @@ async def get_course_groups_analytics(
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
     # Get groups with students who have progress in this course
-    groups_with_students = db.query(Group).join(
+    # Start with base query
+    groups_query = db.query(Group).join(
         GroupStudent, GroupStudent.group_id == Group.id
     ).join(
         UserInDB, GroupStudent.student_id == UserInDB.id
@@ -783,7 +811,16 @@ async def get_course_groups_analytics(
     ).filter(
         Module.course_id == course_id,
         Group.is_active == True
-    ).distinct().all()
+    )
+    
+    # Filter by teacher/curator ownership
+    if current_user.role == "teacher":
+        groups_query = groups_query.filter(Group.teacher_id == current_user.id)
+    elif current_user.role == "curator":
+        groups_query = groups_query.filter(Group.curator_id == current_user.id)
+    # Admin sees all groups
+    
+    groups_with_students = groups_query.distinct().all()
     
     # Get course structure for calculations
     total_steps_in_course = db.query(Step).join(Lesson).join(Module).filter(
@@ -875,10 +912,16 @@ async def get_course_groups_analytics(
 @router.get("/group/{group_id}/students")
 async def get_group_students_analytics(
     group_id: int,
+    course_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
-    """Получить аналитику по студентам конкретной группы"""
+    """Получить аналитику по студентам конкретной группы
+    
+    Args:
+        group_id: ID группы
+        course_id: Опционально - ID курса для фильтрации прогресса и последнего урока
+    """
     
     # Проверка прав доступа
     if current_user.role not in ["teacher", "curator", "admin"]:
@@ -904,7 +947,7 @@ async def get_group_students_analytics(
     students_analytics = []
     for student in students:
         # Получаем курсы где есть прогресс студента (через StepProgress - source of truth)
-        courses_with_progress = db.query(Course).join(
+        courses_query = db.query(Course).join(
             Module, Module.course_id == Course.id
         ).join(
             Lesson, Lesson.module_id == Module.id
@@ -914,15 +957,23 @@ async def get_group_students_analytics(
             StepProgress, StepProgress.step_id == Step.id
         ).filter(
             StepProgress.user_id == student.id
-        ).distinct().all()
+        )
+        
+        if course_id:
+            courses_query = courses_query.filter(Course.id == course_id)
+            
+        courses_with_progress = courses_query.distinct().all()
         
         # Фолбэк на Enrollment если нет прогресса
         if not courses_with_progress:
-            courses_with_progress = db.query(Course).join(Enrollment).filter(
+            enrollment_query = db.query(Course).join(Enrollment).filter(
                 Enrollment.user_id == student.id,
                 Enrollment.is_active == True,
                 Course.is_active == True
-            ).all()
+            )
+            if course_id:
+                enrollment_query = enrollment_query.filter(Course.id == course_id)
+            courses_with_progress = enrollment_query.all()
         
         active_courses = courses_with_progress
         
@@ -978,11 +1029,25 @@ async def get_group_students_analytics(
         completion_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
         assignment_score_percentage = (total_assignment_score / total_max_score * 100) if total_max_score > 0 else 0
         
-        # Получаем информацию о последнем уроке
+        # Получаем информацию о последнем уроке (фильтруем по курсу если указан)
         last_lesson_info = None
-        last_step_progress = db.query(StepProgress).filter(
+        
+        # Build query with optional course filter
+        step_progress_query = db.query(StepProgress).join(
+            Step, StepProgress.step_id == Step.id
+        ).join(
+            Lesson, Step.lesson_id == Lesson.id
+        ).join(
+            Module, Lesson.module_id == Module.id
+        ).filter(
             StepProgress.user_id == student.id
-        ).order_by(StepProgress.visited_at.desc()).first()
+        )
+        
+        # Filter by course if provided
+        if course_id:
+            step_progress_query = step_progress_query.filter(Module.course_id == course_id)
+        
+        last_step_progress = step_progress_query.order_by(StepProgress.visited_at.desc()).first()
         
         if last_step_progress:
             # Получаем информацию об уроке

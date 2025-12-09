@@ -413,6 +413,14 @@ async def delete_user(
         admin_count = db.query(UserInDB).filter(UserInDB.role == "admin").count()
         if admin_count <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete the last admin user")
+            
+    # Prevent deleting a teacher if they own groups
+    group_count = db.query(Group).filter(Group.teacher_id == user_id).count()
+    if group_count > 0:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete user. They are the teacher for {group_count} group(s). Please reassign or delete these groups first."
+        )
     
     db.delete(user)
     db.commit()
