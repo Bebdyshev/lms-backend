@@ -37,6 +37,17 @@ class BulkCreateUsersRequest(BaseModel):
     notify_users: bool = False  # For future email notifications
     # Note: group_ids are in each CreateUserRequest
 
+class BulkCreateUsersFromTextRequest(BaseModel):
+    """
+    Request model for bulk creating users from pasted text (TSV/CSV format).
+    Expected format per line: name\tphone\tmonths\tdate\temail
+    Example: Ибрагим Саида Асланкызы\t87756486372\tноябрь, декабрь\tDecember 3 2025\tibragim.saida@mail.ru
+    """
+    text: str  # Raw text with tab-separated values
+    group_ids: Optional[List[int]] = None  # Groups to assign all created students to
+    role: str = "student"  # Default role
+    generate_passwords: bool = True  # Generate passwords for users
+
 class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -296,6 +307,144 @@ async def create_bulk_users(
         except Exception as e:
             failed_users.append({
                 "email": user_data.email,
+                "error": str(e)
+            })
+    
+    # Commit all successful creations
+    if created_users:
+        db.commit()
+    else:
+        db.rollback()
+    
+    return BulkCreateResponse(
+        created_users=created_users,
+        failed_users=failed_users
+    )
+
+@router.post("/users/bulk-text", response_model=BulkCreateResponse)
+async def create_bulk_users_from_text(
+    request: BulkCreateUsersFromTextRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """
+    Create multiple users from pasted text (TSV format).
+    Expected format per line: name<TAB>phone<TAB>months<TAB>date<TAB>email
+    Lines starting with # are ignored as comments.
+    Empty lines are skipped.
+    """
+    created_users = []
+    failed_users = []
+    
+    lines = request.text.strip().split('\n')
+    
+    for line_num, line in enumerate(lines, start=1):
+        line = line.strip()
+        
+        # Skip empty lines and comments
+        if not line or line.startswith('#'):
+            continue
+        
+        try:
+            # Split by tab
+            parts = line.split('\t')
+            
+            if len(parts) < 5:
+                failed_users.append({
+                    "email": f"Line {line_num}",
+                    "error": f"Invalid format: expected 5 tab-separated values, got {len(parts)}. Line: {line[:50]}..."
+                })
+                continue
+            
+            name = parts[0].strip()
+            phone = parts[1].strip()
+            # months = parts[2].strip()  # Not used for user creation, could be stored in notes
+            # date = parts[3].strip()    # Not used for user creation, could be stored in notes
+            email = parts[4].strip()
+            
+            # Validate required fields
+            if not name:
+                failed_users.append({
+                    "email": f"Line {line_num}",
+                    "error": "Name is required"
+                })
+                continue
+            
+            if not email:
+                failed_users.append({
+                    "email": f"Line {line_num}",
+                    "error": "Email is required"
+                })
+                continue
+            
+            # Validate email format (basic check)
+            if '@' not in email or '.' not in email:
+                failed_users.append({
+                    "email": email,
+                    "error": "Invalid email format"
+                })
+                continue
+            
+            # Check if email already exists
+            existing_user = db.query(UserInDB).filter(UserInDB.email == email).first()
+            if existing_user:
+                failed_users.append({
+                    "email": email,
+                    "error": "Email already registered"
+                })
+                continue
+            
+            # Generate password
+            password = generate_password() if request.generate_passwords else None
+            generated_password = password
+            
+            # Generate student ID for students
+            student_id = None
+            if request.role == "student":
+                student_id = generate_student_id()
+                # Ensure student_id is unique
+                while db.query(UserInDB).filter(UserInDB.student_id == student_id).first():
+                    student_id = generate_student_id()
+            
+            # Create user
+            new_user = UserInDB(
+                email=email,
+                name=name,
+                hashed_password=hash_password(password) if password else hash_password(generate_password()),
+                role=request.role,
+                student_id=student_id,
+                is_active=True
+            )
+            
+            db.add(new_user)
+            db.flush()  # Get ID without committing
+            
+            # Assign user to groups if group_ids provided and user is a student
+            if request.group_ids and request.role == "student":
+                for group_id in request.group_ids:
+                    # Verify group exists
+                    group = db.query(Group).filter(Group.id == group_id).first()
+                    if group:
+                        # Check if association already exists
+                        existing = db.query(GroupStudent).filter(
+                            GroupStudent.group_id == group_id,
+                            GroupStudent.student_id == new_user.id
+                        ).first()
+                        if not existing:
+                            group_student = GroupStudent(
+                                group_id=group_id,
+                                student_id=new_user.id
+                            )
+                            db.add(group_student)
+            
+            created_users.append(CreateUserResponse(
+                user=UserSchema.from_orm(new_user),
+                generated_password=generated_password
+            ))
+            
+        except Exception as e:
+            failed_users.append({
+                "email": f"Line {line_num}",
                 "error": str(e)
             })
     
