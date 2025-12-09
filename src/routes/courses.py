@@ -1073,10 +1073,8 @@ async def update_lesson(
     lesson.duration_minutes = lesson_data.duration_minutes
     # Update explicit next lesson if provided (can be None)
     lesson.next_lesson_id = lesson_data.next_lesson_id
-    
-    # Only update order_index if it's not 0 (preserve existing order)
-    if lesson_data.order_index != 0:
-        lesson.order_index = lesson_data.order_index
+    # Always update order_index (can be 0 for first item)
+    lesson.order_index = lesson_data.order_index
     
     db.commit()
     db.refresh(lesson)
