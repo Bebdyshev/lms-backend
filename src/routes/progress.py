@@ -1530,10 +1530,9 @@ async def grade_quiz_attempt(
         raise HTTPException(status_code=404, detail="Quiz attempt not found")
         
     # Check course access
-    if current_user.role == "teacher":
-        course = db.query(Course).filter(Course.id == attempt.course_id).first()
-        if not course or course.teacher_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied to this course")
+    # Check course access
+    if not check_course_access(attempt.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
             
     try:
         attempt.score_percentage = grade_data.score_percentage
@@ -1566,10 +1565,9 @@ async def delete_quiz_attempt(
         raise HTTPException(status_code=404, detail="Quiz attempt not found")
         
     # Check course access
-    if current_user.role == "teacher":
-        course = db.query(Course).filter(Course.id == attempt.course_id).first()
-        if not course or course.teacher_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied to this course")
+    # Check course access
+    if not check_course_access(attempt.course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
             
     try:
         db.delete(attempt)
@@ -1926,26 +1924,28 @@ async def get_ungraded_attempts(
             except Exception as e:
                 print(f"Error parsing quiz content: {e}")
         
-        # Always include ungraded attempts (is_graded=False means needs grading)
-        results.append({
-            "id": attempt.id,
-            "user_id": attempt.user_id,
-            "user_name": user.name if user else "Unknown",
-            "user_email": user.email if user else "Unknown",
-            "step_id": attempt.step_id,
-            "step_title": step.title if step else "Unknown Step",
-            "lesson_id": attempt.lesson_id,
-            "lesson_title": lesson.title if lesson else "Unknown Lesson",
-            "course_id": attempt.course_id,
-            "course_title": course.title if course else "Unknown Course",
-            "created_at": attempt.created_at,
-            "quiz_title": attempt.quiz_title,
-            "score_percentage": attempt.score_percentage,
-            "is_graded": attempt.is_graded if attempt.is_graded is not None else False,
-            "feedback": attempt.feedback,
-            "long_text_answers": long_text_answers,
-            "type": "quiz"  # To distinguish from assignment submissions
-        })
+        # Only include attempts that need grading (have long text answers)
+        # User requested to only see long_text quizzes in this view
+        if long_text_answers:
+            results.append({
+                "id": attempt.id,
+                "user_id": attempt.user_id,
+                "user_name": user.name if user else "Unknown",
+                "user_email": user.email if user else "Unknown",
+                "step_id": attempt.step_id,
+                "step_title": step.title if step else "Unknown Step",
+                "lesson_id": attempt.lesson_id,
+                "lesson_title": lesson.title if lesson else "Unknown Lesson",
+                "course_id": attempt.course_id,
+                "course_title": course.title if course else "Unknown Course",
+                "created_at": attempt.created_at,
+                "quiz_title": attempt.quiz_title,
+                "score_percentage": attempt.score_percentage,
+                "is_graded": attempt.is_graded if attempt.is_graded is not None else False,
+                "feedback": attempt.feedback,
+                "long_text_answers": long_text_answers,
+                "type": "quiz"  # To distinguish from assignment submissions
+            })
         
     return results
 
