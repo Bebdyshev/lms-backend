@@ -790,7 +790,8 @@ async def get_student_progress_overview(
         if course_steps > 0:
             course_completion_percentage = (course_completed_steps / course_steps) * 100
         
-        # Get teacher info
+
+        # Get teach info
         teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
         
         course_progress.append({
@@ -825,8 +826,36 @@ async def get_student_progress_overview(
         "total_time_spent_minutes": total_time_spent,
         "daily_streak": current_user.daily_streak or 0,
         "last_activity_date": current_user.last_activity_date,
-        "courses": course_progress
+        "courses": course_progress,
+        "group_teachers": get_student_group_teachers(current_user.id, db)
     }
+
+def get_student_group_teachers(student_id: int, db: Session) -> List[Dict[str, Any]]:
+    """Helper to get teachers for all groups a student belongs to"""
+    from src.schemas.models import Group, GroupStudent
+    
+    # Get all groups the student belongs to
+    groups = db.query(Group).join(
+        GroupStudent, Group.id == GroupStudent.group_id
+    ).filter(
+        GroupStudent.student_id == student_id,
+        Group.is_active == True
+    ).all()
+    
+    teachers = []
+    teacher_ids = set()
+    
+    for group in groups:
+        if group.teacher_id and group.teacher_id not in teacher_ids:
+            teacher = db.query(UserInDB).filter(UserInDB.id == group.teacher_id).first()
+            if teacher:
+                teachers.append({
+                    "id": teacher.id,
+                    "name": teacher.name
+                })
+                teacher_ids.add(teacher.id)
+                
+    return teachers
 
 @router.get("/student/{student_id}/overview")
 async def get_student_progress_overview_by_id(
@@ -986,7 +1015,8 @@ async def get_student_progress_overview_by_id(
         "total_time_spent_minutes": total_time_spent,
         "daily_streak": student.daily_streak or 0,
         "last_activity_date": student.last_activity_date,
-        "courses": course_progress
+        "courses": course_progress,
+        "group_teachers": get_student_group_teachers(student_id, db)
     }
 
 # =============================================================================
