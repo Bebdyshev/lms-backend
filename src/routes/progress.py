@@ -1898,6 +1898,11 @@ async def get_ungraded_attempts(
                 content = json.loads(step.content_text) if isinstance(step.content_text, str) else step.content_text
                 questions = content.get('questions', [])
                 
+                # Check for global passage (for text_based quizzes)
+                global_passage = ''
+                if content.get('quiz_type') == 'text_based' or content.get('quiz_media_type') == 'text':
+                    global_passage = content.get('quiz_media_url', '')
+                
                 # Parse saved answers
                 answers_map = {}
                 if attempt.answers:
@@ -1915,10 +1920,16 @@ async def get_ungraded_attempts(
                 for q in questions:
                     if q.get('question_type') == 'long_text':
                         q_id = str(q.get('id', ''))
+                        
+                        # Determine content text (passage)
+                        passage = q.get('content_text', '')
+                        if not passage and global_passage:
+                            passage = global_passage
+                            
                         long_text_answers.append({
                             "question_id": q_id,
                             "question_text": q.get('question_text', 'No question text'),
-                            "content_text": q.get('content_text', ''),  # Passage if exists
+                            "content_text": passage,  # Passage if exists
                             "student_answer": answers_map.get(q_id, '')
                         })
             except Exception as e:
