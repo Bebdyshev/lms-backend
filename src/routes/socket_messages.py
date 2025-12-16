@@ -435,15 +435,20 @@ async def handle_contacts_get(sid, data=None):
                     })
             
             # Curators from the same group
-            if current_user.group_id:
-                group_student_ids = db.query(GroupStudent.student_id).filter(
-                    GroupStudent.group_id == current_user.group_id
-                ).subquery()
-                curators = db.query(UserInDB).filter(
+            # Get groups where student is a member
+            student_groups = db.query(GroupStudent.group_id).filter(
+                GroupStudent.student_id == current_user_id
+            ).all()
+            
+            if student_groups:
+                student_group_ids = [sg.group_id for sg in student_groups]
+                # Get students in these groups (peers) - logic seems to want curators though
+                # Original logic: curators of the group
+                curators = db.query(UserInDB).join(Group, Group.curator_id == UserInDB.id).filter(
+                    Group.id.in_(student_group_ids),
                     UserInDB.role == "curator",
-                    UserInDB.id.in_(group_student_ids),
                     UserInDB.is_active == True
-                ).all()
+                ).distinct().all()
                 
                 for curator in curators:
                     available_contacts.append({
@@ -514,10 +519,13 @@ async def handle_contacts_get(sid, data=None):
                 })
         
         elif current_user.role == "curator":
-            # Curators can write to students from their group
-            if current_user.group_id:
+            # Curators can write to students from their groups
+            curator_groups = db.query(Group).filter(Group.curator_id == current_user_id).all()
+            
+            if curator_groups:
+                curator_group_ids = [g.id for g in curator_groups]
                 group_student_ids = db.query(GroupStudent.student_id).filter(
-                    GroupStudent.group_id == current_user.group_id
+                    GroupStudent.group_id.in_(curator_group_ids)
                 ).subquery()
                 students = db.query(UserInDB).filter(
                     UserInDB.role == "student",

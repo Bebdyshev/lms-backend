@@ -491,11 +491,17 @@ async def get_students_progress(
             students_query = students_query.filter(UserInDB.id.in_(enrolled_student_ids))
     
     elif current_user.role == "curator":
-        # Кураторы видят учеников из своей группы
-        if current_user.group_id:
-            # Get students in curator's group using GroupStudent association table
+        # Кураторы видят учеников из своих групп
+        from src.schemas.models import Group
+        
+        # Get groups where current user is curator
+        curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+        
+        if curator_groups:
+            group_ids = [g.id for g in curator_groups]
+            # Get students in curator's groups using GroupStudent association table
             group_student_ids = db.query(GroupStudent.student_id).filter(
-                GroupStudent.group_id == current_user.group_id
+                GroupStudent.group_id.in_(group_ids)
             ).subquery()
             students_query = students_query.filter(UserInDB.id.in_(group_student_ids))
         else:

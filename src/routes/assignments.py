@@ -848,9 +848,9 @@ async def get_assignment_student_progress(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
-    """Get student progress for an assignment (teachers only)"""
-    if current_user.role not in ["teacher", "admin"]:
-        raise HTTPException(status_code=403, detail="Only teachers and admins can access student progress")
+    """Get student progress for an assignment (teachers, admins, and curators)"""
+    if current_user.role not in ["teacher", "admin", "curator"]:
+        raise HTTPException(status_code=403, detail="Only teachers, admins, and curators can access student progress")
     
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if not assignment:
@@ -864,15 +864,35 @@ async def get_assignment_student_progress(
         lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
         if lesson:
             module = db.query(Module).filter(Module.id == lesson.module_id).first()
-            if module and check_course_access(module.course_id, current_user, db):
-                has_access = True
+            if module:
+                 # Teacher/Admin course access check
+                if current_user.role in ["teacher", "admin"]:
+                    if check_course_access(module.course_id, current_user, db):
+                        has_access = True
+                # Curator access check: Must manage a group in this course
+                elif current_user.role == "curator":
+                    from src.schemas.models import Group
+                    # Check if curator has any groups in this course
+                    # We can iterate headers or do a query
+                    curator_groups_count = db.query(Group).filter(
+                        Group.course_id == module.course_id,
+                        Group.curator_id == current_user.id
+                    ).count()
+                    if curator_groups_count > 0:
+                        has_access = True
+
     
     # Check group access if assignment is linked to group
     if assignment.group_id:
         from src.schemas.models import Group
         group = db.query(Group).filter(Group.id == assignment.group_id).first()
-        if current_user.role == "admin" or (group and group.teacher_id == current_user.id):
-            has_access = True
+        
+        if current_user.role == "admin":
+             has_access = True
+        elif current_user.role == "teacher" and group and group.teacher_id == current_user.id:
+             has_access = True
+        elif current_user.role == "curator" and group and group.curator_id == current_user.id:
+             has_access = True
     
     if not has_access:
         raise HTTPException(status_code=403, detail="Access denied to this assignment")
@@ -920,6 +940,21 @@ async def get_assignment_student_progress(
         # For now, we'll return empty list as these assignments need explicit assignment
         pass
     
+    # If curator, filter students to only those in their groups
+    if current_user.role == "curator":
+        from src.schemas.models import Group, GroupStudent
+        
+        # Get all student IDs in groups managed by this curator
+        curator_student_ids = [
+            res[0] for res in db.query(GroupStudent.student_id).join(Group).filter(
+                Group.curator_id == current_user.id
+            ).all()
+        ]
+        curator_student_set = set(curator_student_ids)
+        
+        # Filter the students list
+        students = [s for s in students if s.id in curator_student_set]
+
     # Remove duplicates (in case a student is both enrolled and in group)
     unique_students = []
     seen_ids = set()

@@ -1146,3 +1146,77 @@ class EventParticipantSchema(BaseModel):
     
     class Config:
         from_attributes = True
+# =============================================================================
+# LEADERBOARD MODELS
+# =============================================================================
+
+class LeaderboardEntry(Base):
+    __tablename__ = "leaderboard_entries"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    week_number = Column(Integer, nullable=False)
+    
+    # Manual scores - Lessons (Participation/Attendance)
+    lesson_1 = Column(Float, default=0.0)
+    lesson_2 = Column(Float, default=0.0)
+    lesson_3 = Column(Float, default=0.0)
+    lesson_4 = Column(Float, default=0.0)
+    lesson_5 = Column(Float, default=0.0)
+
+    # Manual scores - Other
+    curator_hour = Column(Float, default=0.0)
+    mock_exam = Column(Float, default=0.0)
+    study_buddy = Column(Float, default=0.0)
+    self_reflection_journal = Column(Float, default=0.0)
+    weekly_evaluation = Column(Float, default=0.0)
+    extra_points = Column(Float, default=0.0)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("UserInDB", foreign_keys=[user_id])
+    group = relationship("Group", foreign_keys=[group_id])
+    
+    __table_args__ = (
+        UniqueConstraint('user_id', 'group_id', 'week_number', name='uq_leaderboard_entry'),
+    )
+
+class LeaderboardEntrySchema(BaseModel):
+    id: int
+    user_id: int
+    group_id: int
+    week_number: int
+    lesson_1: float
+    lesson_2: float
+    lesson_3: float
+    lesson_4: float
+    lesson_5: float
+    curator_hour: float
+    mock_exam: float
+    study_buddy: float
+    self_reflection_journal: float
+    weekly_evaluation: float
+    extra_points: float
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class LeaderboardEntryCreateSchema(BaseModel):
+    user_id: int
+    group_id: int
+    week_number: int
+    lesson_1: Optional[float] = None
+    lesson_2: Optional[float] = None
+    lesson_3: Optional[float] = None
+    lesson_4: Optional[float] = None
+    lesson_5: Optional[float] = None
+    curator_hour: Optional[float] = None
+    mock_exam: Optional[float] = None
+    study_buddy: Optional[float] = None
+    self_reflection_journal: Optional[float] = None
+    weekly_evaluation: Optional[float] = None
+    extra_points: Optional[float] = None
