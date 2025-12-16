@@ -7,13 +7,46 @@ from datetime import datetime
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, Group, GroupStudent, Assignment, AssignmentSubmission, Lesson, Module, Course,
-    LeaderboardEntry, LeaderboardEntrySchema, LeaderboardEntryCreateSchema
+    LeaderboardEntry, LeaderboardEntrySchema, LeaderboardEntryCreateSchema,
+    GroupSchema
 )
 from src.routes.auth import get_current_user_dependency
 
 router = APIRouter()
 
-@router.get("/curator/leaderboard/{group_id}")
+@router.get("/curator/groups", response_model=List[GroupSchema])
+async def get_curator_groups(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get groups managed by average curator"""
+    if current_user.role != "curator":
+        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
+        
+    groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+    # We need to return GroupSchema. Since GroupSchema has many fields, we might need to populate them or use a simplified schema.
+    # The frontend only uses id and name for the dropdown.
+    # But for compatibility, let's use GroupSchema and fill basics.
+    
+    result = []
+    for group in groups:
+        # Simplified population since we just need the list
+        result.append(GroupSchema(
+            id=group.id,
+            name=group.name,
+            description=group.description,
+            teacher_id=group.teacher_id,
+            teacher_name="", # Not critical for dropdown
+            curator_id=group.curator_id,
+            curator_name=current_user.name,
+            student_count=0, # Not critical
+            students=[],
+            created_at=group.created_at,
+            is_active=group.is_active
+        ))
+    return result
+
+@router.get("/curator/leaderboard/{group_id}", response_model=List[dict])
 async def get_group_leaderboard(
     group_id: int,
     week_number: int = Query(..., ge=1, le=52),
@@ -39,7 +72,7 @@ async def get_group_leaderboard(
     student_ids = [gs.student_id for gs in group_students]
     
     if not student_ids:
-        return {"students": []}
+        return []
         
     students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
     students_map = {s.id: s for s in students}
@@ -120,6 +153,11 @@ async def get_group_leaderboard(
         
         # Manual scores defaults
         manual = {
+            "lesson_1": entry.lesson_1 if entry else 0,
+            "lesson_2": entry.lesson_2 if entry else 0,
+            "lesson_3": entry.lesson_3 if entry else 0,
+            "lesson_4": entry.lesson_4 if entry else 0,
+            "lesson_5": entry.lesson_5 if entry else 0,
             "curator_hour": entry.curator_hour if entry else 0,
             "mock_exam": entry.mock_exam if entry else 0,
             "study_buddy": entry.study_buddy if entry else 0,
