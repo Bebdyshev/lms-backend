@@ -2027,6 +2027,8 @@ async def get_ungraded_attempts(
                 "is_graded": attempt.is_graded if attempt.is_graded is not None else False,
                 "feedback": attempt.feedback,
                 "quiz_answers": quiz_answers,
+                "quiz_media_type": content.get('quiz_media_type'),
+                "quiz_media_url": content.get('quiz_media_url'),
                 "type": "quiz"  # To distinguish from assignment submissions
             })
         

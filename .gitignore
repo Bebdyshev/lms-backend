@@ -14,3 +14,4 @@ uploads/
 !package-lock.json
 !tsconfig.json
 backups/
+sync_prod_db.sh
