@@ -1890,7 +1890,8 @@ async def get_ungraded_attempts(
         course = db.query(Course).filter(Course.id == attempt.course_id).first()
         
         # Get quiz questions from step content
-        long_text_answers = []
+        quiz_answers = []
+        has_long_text = False
         
         if step and step.content_text:
             import json
@@ -1916,28 +1917,99 @@ async def get_ungraded_attempts(
                     except Exception as e:
                         print(f"Error parsing answers: {e}")
                 
-                # Filter only long_text questions
+                # Process all questions
                 for q in questions:
-                    if q.get('question_type') == 'long_text':
+                    try:
                         q_id = str(q.get('id', ''))
+                        q_type = q.get('question_type', 'single_choice')
+                        raw_answer = answers_map.get(q_id, '')
                         
+                        student_answer_text = str(raw_answer)
+                        is_correct = False
+                        correct_answer_text = ""
+                        
+                        # Flag if this attempts has long text that needs grading
+                        if q_type == 'long_text':
+                            has_long_text = True
+                        
+                        # Resolve answer text for choice questions
+                        if q_type in ['single_choice', 'multiple_choice', 'media_question']:
+                            options = q.get('options', []) or []
+                            
+                            # Get correct answer text
+                            correct_idx = q.get('correct_answer')
+                            if isinstance(correct_idx, int) and 0 <= correct_idx < len(options):
+                                correct_answer_text = options[correct_idx].get('text', '')
+                            elif isinstance(correct_idx, list):
+                                correct_texts = []
+                                for idx in correct_idx:
+                                    if isinstance(idx, int) and 0 <= idx < len(options):
+                                        correct_texts.append(options[idx].get('text', ''))
+                                correct_answer_text = ", ".join(correct_texts)
+                                
+                            # Resolve student answer text and check correctness
+                            try:
+                                if q_type == 'multiple_choice':
+                                    # Answer might be list of indices
+                                    if isinstance(raw_answer, list):
+                                        selected_texts = []
+                                        for idx in raw_answer:
+                                            if isinstance(idx, int) and 0 <= idx < len(options):
+                                                selected_texts.append(options[idx].get('text', ''))
+                                        student_answer_text = ", ".join(selected_texts) if selected_texts else "No answer"
+                                        
+                                        if isinstance(correct_idx, list):
+                                            # Convert both to sets of integers for comparison to handle potential mixed types
+                                            raw_set = {int(x) for x in raw_answer if str(x).isdigit()}
+                                            correct_set = {int(x) for x in correct_idx if str(x).isdigit()}
+                                            is_correct = raw_set == correct_set
+                                else:
+                                    # Single choice, answer is index
+                                    idx = int(raw_answer) if str(raw_answer).isdigit() else -1
+                                    if 0 <= idx < len(options):
+                                        student_answer_text = options[idx].get('text', '')
+                                        is_correct = (idx == correct_idx)
+                                    else:
+                                        student_answer_text = "No answer" if not raw_answer else str(raw_answer)
+                            except Exception as e:
+                                print(f"Error resolving answer for Q {q_id}: {e}")
+                        
+                        elif q_type in ['short_answer', 'fill_blank']:
+                            # Simple string comparison
+                             correct = q.get('correct_answer', '')
+                             correct_answer_text = str(correct)
+                             if isinstance(correct, list):
+                                 is_correct = str(raw_answer).strip().lower() in [str(a).strip().lower() for a in correct]
+                                 correct_answer_text = ", ".join([str(a) for a in correct])
+                             else:
+                                 is_correct = str(raw_answer).strip().lower() == str(correct).strip().lower()
+
                         # Determine content text (passage)
                         passage = q.get('content_text', '')
                         if not passage and global_passage:
                             passage = global_passage
                             
-                        long_text_answers.append({
+                        quiz_answers.append({
                             "question_id": q_id,
                             "question_text": q.get('question_text', 'No question text'),
+                            "question_type": q_type,
                             "content_text": passage,  # Passage if exists
-                            "student_answer": answers_map.get(q_id, '')
+                            "student_answer": student_answer_text,
+                            "is_correct": is_correct,
+                            "correct_answer": correct_answer_text,
+                            "max_points": q.get('points', 1)
                         })
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        print(f"Error parsing question {q.get('id')} in step {step.id}: {e}")
+                        # Continue to next question instead of failing entire quiz
             except Exception as e:
-                print(f"Error parsing quiz content: {e}")
+                print(f"Error parsing step content: {e}")
         
         # Only include attempts that need grading (have long text answers)
-        # User requested to only see long_text quizzes in this view
-        if long_text_answers:
+        # BUT return full context
+        if has_long_text:
             results.append({
                 "id": attempt.id,
                 "user_id": attempt.user_id,
@@ -1954,7 +2026,7 @@ async def get_ungraded_attempts(
                 "score_percentage": attempt.score_percentage,
                 "is_graded": attempt.is_graded if attempt.is_graded is not None else False,
                 "feedback": attempt.feedback,
-                "long_text_answers": long_text_answers,
+                "quiz_answers": quiz_answers,
                 "type": "quiz"  # To distinguish from assignment submissions
             })
         
