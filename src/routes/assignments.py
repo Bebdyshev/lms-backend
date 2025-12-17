@@ -452,8 +452,8 @@ async def submit_assignment(
         raise HTTPException(status_code=403, detail="Access denied to this assignment")
     
     # Check if assignment is overdue
-    if assignment.due_date and assignment.due_date < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Assignment deadline has passed")
+    # if assignment.due_date and assignment.due_date < datetime.utcnow():
+    #     raise HTTPException(status_code=400, detail="Assignment deadline has passed")
     
     # Check if already submitted (non-hidden submission exists)
     existing_submission = db.query(AssignmentSubmission).filter(

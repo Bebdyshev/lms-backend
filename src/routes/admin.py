@@ -168,6 +168,9 @@ async def create_single_user(
 ):
     """Create a single user (admin only)"""
     try:
+        # Normalize email
+        user_data.email = user_data.email.lower()
+        
         # Check if email already exists
         existing_user = db.query(UserInDB).filter(UserInDB.email == user_data.email).first()
         if existing_user:
@@ -244,6 +247,9 @@ async def create_bulk_users(
     
     for user_data in request.users:
         try:
+            # Normalize email
+            user_data.email = user_data.email.lower()
+            
             # Check if email already exists
             existing_user = db.query(UserInDB).filter(UserInDB.email == user_data.email).first()
             if existing_user:
@@ -360,7 +366,7 @@ async def create_bulk_users_from_text(
             phone = parts[1].strip()
             # months = parts[2].strip()  # Not used for user creation, could be stored in notes
             # date = parts[3].strip()    # Not used for user creation, could be stored in notes
-            email = parts[4].strip()
+            email = parts[4].strip().lower()
             
             # Validate required fields
             if not name:
@@ -467,6 +473,9 @@ async def create_admin(
 ):
     """Create a new admin user (admin only)"""
     try:
+        # Normalize email
+        admin_data.email = admin_data.email.lower()
+        
         # Check if email already exists
         existing_user = db.query(UserInDB).filter(UserInDB.email == admin_data.email).first()
         if existing_user:
@@ -510,6 +519,9 @@ async def create_admin_temp(
 ):
     """Create a new admin user (temporary endpoint without auth - will be deleted)"""
     try:
+        # Normalize email
+        admin_data.email = admin_data.email.lower()
+        
         # Check if email already exists
         existing_user = db.query(UserInDB).filter(UserInDB.email == admin_data.email).first()
         if existing_user:

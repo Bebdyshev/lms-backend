@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from src.utils.auth_utils import (
     hash_password, 
     verify_password, 
@@ -36,8 +37,8 @@ async def login(user: UserLogin, db: Session = Depends(get_db)):
     try:
         logger.info(f"Attempting login for email: {user.email}")
         
-        # Find user by email
-        db_user = db.query(UserInDB).filter(UserInDB.email == user.email).first()
+        # Find user by email (case-insensitive)
+        db_user = db.query(UserInDB).filter(func.lower(UserInDB.email) == user.email.lower()).first()
         if not db_user:
             logger.warning(f"User not found: {user.email}")
             raise HTTPException(status_code=400, detail="Invalid credentials")
@@ -56,11 +57,11 @@ async def login(user: UserLogin, db: Session = Depends(get_db)):
         
         # Create access and refresh tokens
         access_token = create_access_token(data={
-            "sub": user.email, 
+            "sub": db_user.email, 
             "user_id": db_user.id,
             "role": db_user.role
         })
-        refresh_token = create_refresh_token(data={"sub": user.email})
+        refresh_token = create_refresh_token(data={"sub": db_user.email})
         
         # Store refresh token in database
         db_user.refresh_token = refresh_token
@@ -88,7 +89,8 @@ async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
             
         user_email = payload.get("sub")
-        user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+        # Find user by email (case-insensitive)
+        user = db.query(UserInDB).filter(func.lower(UserInDB.email) == user_email.lower()).first()
 
         if not user or user.refresh_token != token or not user.is_active:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
@@ -125,7 +127,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     
     user_email = payload.get("sub")
-    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    # Find user by email (case-insensitive)
+    user = db.query(UserInDB).filter(func.lower(UserInDB.email) == user_email.lower()).first()
     
     if user is None or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
@@ -140,7 +143,8 @@ async def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_
         raise HTTPException(status_code=401, detail="Invalid token")
 
     user_email = payload.get("sub")
-    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    # Find user by email (case-insensitive)
+    user = db.query(UserInDB).filter(func.lower(UserInDB.email) == user_email.lower()).first()
 
     if user:
         user.refresh_token = None
@@ -156,7 +160,8 @@ async def get_current_user_dependency(token: str = Depends(oauth2_scheme), db: S
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     
     user_email = payload.get("sub")
-    user = db.query(UserInDB).filter(UserInDB.email == user_email).first()
+    # Find user by email (case-insensitive)
+    user = db.query(UserInDB).filter(func.lower(UserInDB.email) == user_email.lower()).first()
     
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
