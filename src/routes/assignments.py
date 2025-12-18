@@ -375,6 +375,9 @@ async def update_assignment(
     db.commit()
     db.refresh(assignment)
     
+    # Sync linked lessons for fast lookup
+    sync_assignment_linked_lessons(assignment, db)
+    
     return AssignmentSchema.from_orm(assignment)
 
 @router.delete("/{assignment_id}")
