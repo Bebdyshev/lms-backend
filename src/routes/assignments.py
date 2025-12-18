@@ -630,6 +630,61 @@ async def get_assignment_submissions(
     
     return result
 
+@router.get("/{assignment_id}/submissions/{submission_id}", response_model=AssignmentSubmissionSchema)
+async def get_submission(
+    assignment_id: int,
+    submission_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get a specific submission for an assignment"""
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    submission = db.query(AssignmentSubmission).filter(
+        AssignmentSubmission.id == submission_id,
+        AssignmentSubmission.assignment_id == assignment_id
+    ).first()
+    
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+    
+    # Check permissions
+    if current_user.role == "student":
+        # Students can only see their own submissions
+        if submission.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    elif current_user.role in ["teacher", "curator"]:
+        # Teachers/curators can see submissions from their students
+        if assignment.lesson_id:
+            lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
+            module = db.query(Module).filter(Module.id == lesson.module_id).first()
+            
+            if not check_course_access(module.course_id, current_user, db):
+                raise HTTPException(status_code=403, detail="Access denied")
+        elif assignment.group_id:
+            from src.schemas.models import Group
+            group = db.query(Group).filter(Group.id == assignment.group_id).first()
+            if current_user.role != "admin" and group.teacher_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Enhance submission with user and grader names
+    submission_data = AssignmentSubmissionSchema.from_orm(submission)
+    
+    # Get user name
+    user = db.query(UserInDB).filter(UserInDB.id == submission.user_id).first()
+    if user:
+        submission_data.user_name = user.name
+    
+    # Get grader name
+    if submission.graded_by:
+        grader = db.query(UserInDB).filter(UserInDB.id == submission.graded_by).first()
+        if grader:
+            submission_data.grader_name = grader.name
+    
+    return submission_data
+
 @router.get("/submissions/my", response_model=List[AssignmentSubmissionSchema])
 async def get_my_submissions(
     course_id: Optional[int] = None,
@@ -698,6 +753,31 @@ async def mark_submission_seen(
     
     return {"success": True}
 
+@router.put("/submissions/{submission_id}/allow-resubmit")
+async def allow_resubmission(
+    submission_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Allow a student to resubmit an assignment.
+    This works by marking the current submission as hidden.
+    """
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Only teachers can allow resubmission")
+    
+    submission = db.query(AssignmentSubmission).filter(AssignmentSubmission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission not found")
+        
+    # Mark as hidden so it doesn't block new submissions
+    submission.is_hidden = True
+    submission.graded_at = None
+    submission.is_graded = False # Optional: Reset graded status just in case
+    
+    db.commit()
+    
+    return {"message": "Resubmission allowed successfully"}
 @router.put("/{assignment_id}/submissions/{submission_id}/grade", response_model=AssignmentSubmissionSchema)
 async def grade_submission(
     assignment_id: int,

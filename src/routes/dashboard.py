@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, and_
+from sqlalchemy import func, desc, and_, or_
 from typing import List, Optional
 from datetime import datetime, timedelta
+import json
 
 from src.config import get_db
 from src.schemas.models import (
@@ -693,6 +694,13 @@ async def get_teacher_pending_submissions(
         Assignment.is_active == True
     ).all()
     
+    # Add assignments directly linked to groups
+    group_assignments = db.query(Assignment).filter(
+        Assignment.group_id.in_(teacher_group_ids),
+        Assignment.is_active == True
+    ).all()
+    teacher_assignments.extend(group_assignments)
+
     if not teacher_assignments:
         return {"pending_submissions": []}
     
@@ -797,6 +805,13 @@ async def get_teacher_recent_submissions(
         Assignment.is_active == True
     ).all()
     
+    # Add assignments directly linked to groups
+    group_assignments = db.query(Assignment).filter(
+        Assignment.group_id.in_(teacher_group_ids),
+        Assignment.is_active == True
+    ).all()
+    teacher_assignments.extend(group_assignments)
+
     if not teacher_assignments:
         return {"recent_submissions": []}
     
