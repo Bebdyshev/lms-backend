@@ -6,6 +6,7 @@ import os
 import uuid
 from datetime import datetime
 import aiofiles
+import json
 
 from src.config import get_db
 from src.schemas.models import (
@@ -14,6 +15,7 @@ from src.schemas.models import (
     LessonSchema, LessonCreateSchema, StepSchema, StepCreateSchema,
     LessonMaterialSchema, UserInDB, QuizData,
     CourseGroupAccess, CourseGroupAccessSchema, Group, GroupStudent,
+    Assignment, AssignmentLinkedLesson,
     LegacyLessonSchema  # Keep for migration period
 )
 from src.routes.auth import get_current_user_dependency
@@ -487,6 +489,7 @@ async def get_course_modules(
     # Optimization: Pre-fetch steps and calculate redirects if needed
     steps_by_lesson = {}
     unlocked_by_redirect_ids = set()
+    unlocked_by_assignment_ids = set()
 
     if include_lessons and modules:
         # Fetch all steps for these lessons in one lightweight query
@@ -509,8 +512,26 @@ async def get_course_modules(
                     steps_by_lesson[s.lesson_id] = []
                 steps_by_lesson[s.lesson_id].append(s)
 
-        # Calculate lessons unlocked by explicit redirects
-        if current_user.role == "student":
+        if should_fetch_progress:
+            # Get active assignments for the target student's groups that are linked to lessons
+            from src.schemas.models import GroupStudent, AssignmentLinkedLesson
+            student_group_ids = db.query(GroupStudent.group_id).filter(
+                GroupStudent.student_id == target_user_id
+            ).subquery()
+            
+            # FAST LOOKUP: Use AssignmentLinkedLesson table
+            assigned_lesson_ids = db.query(AssignmentLinkedLesson.lesson_id).join(
+                Assignment, Assignment.id == AssignmentLinkedLesson.assignment_id
+            ).filter(
+                Assignment.group_id.in_(student_group_ids),
+                Assignment.is_active == True,
+                (Assignment.is_hidden == False) | (Assignment.is_hidden == None)
+            ).all()
+            
+            unlocked_by_assignment_ids = {a[0] for a in assigned_lesson_ids}
+
+            # If current user is student, calculate redirects
+            # (Redirects logic depends on whether we are calculating for students)
             for mod in modules:
                 for les in mod.lessons:
                     if les.next_lesson_id:
@@ -591,10 +612,10 @@ async def get_course_modules(
                 lesson_dict = lesson_schema.model_dump()
                 
                 # SEQUENTIAL ACCESS LOGIC: Determine if lesson is accessible
-                # For students only - teachers and admins can access any lesson
-                if current_user.role == "student":
-                    # Check if explicitly unlocked by redirect
-                    if lesson.id in unlocked_by_redirect_ids:
+                # If viewing for a specific student OR current user is a student
+                if current_user.role == "student" or student_id:
+                    # Check if explicitly unlocked by redirect or assignment
+                    if lesson.id in unlocked_by_redirect_ids or lesson.id in unlocked_by_assignment_ids:
                         lesson_dict["is_accessible"] = True
                     # First lesson is always accessible
                     elif lesson_idx == 0:
@@ -936,9 +957,26 @@ async def check_lesson_access(
     if current_user.role != "student":
         return {"accessible": True}
     
-    # Check if this lesson is unlocked by a redirect from a completed lesson
-    from src.schemas.models import StudentProgress, StepProgress
+    # Check if this lesson is assigned as homework (priority access) - optimized lookup
+    from src.schemas.models import StudentProgress, StepProgress, Assignment, GroupStudent, AssignmentLinkedLesson
     
+    student_group_ids = db.query(GroupStudent.group_id).filter(
+        GroupStudent.student_id == current_user.id
+    ).subquery()
+    
+    is_assigned = db.query(AssignmentLinkedLesson).join(
+        Assignment, Assignment.id == AssignmentLinkedLesson.assignment_id
+    ).filter(
+        AssignmentLinkedLesson.lesson_id == lesson_id,
+        Assignment.group_id.in_(student_group_ids),
+        Assignment.is_active == True,
+        (Assignment.is_hidden == False) | (Assignment.is_hidden == None)
+    ).first()
+    
+    if is_assigned:
+        print(f"DEBUG: Lesson {lesson_id} reached via active assignment")
+        return {"accessible": True}
+
     # First, find ALL lessons that redirect to this one
     redirect_sources = db.query(Lesson).filter(Lesson.next_lesson_id == lesson_id).all()
     

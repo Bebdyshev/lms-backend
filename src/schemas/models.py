@@ -567,7 +567,22 @@ class AssignmentSubmission(Base):
     user = relationship("UserInDB", foreign_keys=[user_id], back_populates="assignment_submissions")
     grader = relationship("UserInDB", foreign_keys=[graded_by])
 
-# Assignment Schemas
+class AssignmentLinkedLesson(Base):
+    """Denormalized table for fast lookup of lessons linked to assignments"""
+    __tablename__ = "assignment_linked_lessons"
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False, index=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Unique constraint
+    __table_args__ = (
+        UniqueConstraint('assignment_id', 'lesson_id', name='uq_assignment_lesson'),
+    )
+
+    # Relationships (optional, for backref)
+    assignment = relationship("Assignment", backref="linked_lessons_rel")
+    lesson = relationship("Lesson")
+
 class AssignmentSchema(BaseModel):
     id: int
     lesson_id: Optional[int] = None

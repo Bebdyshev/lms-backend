@@ -9,7 +9,7 @@ from src.config import get_db
 from src.schemas.models import (
     Assignment, AssignmentSubmission, Lesson, Module, Course, UserInDB,
     AssignmentSchema, AssignmentCreateSchema, AssignmentSubmissionSchema,
-    SubmitAssignmentSchema, GradeSubmissionSchema
+    SubmitAssignmentSchema, GradeSubmissionSchema, AssignmentLinkedLesson
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, check_course_access
@@ -256,9 +256,10 @@ async def create_assignment(
     
     db.commit()
     
-    # Refresh all created assignments
+    # Refresh all created assignments and sync linked lessons
     for a in created_assignments:
         db.refresh(a)
+        sync_assignment_linked_lessons(a, db)
     
     # Return the first one to satisfy response model
     return AssignmentSchema.from_orm(created_assignments[0])
@@ -1394,3 +1395,43 @@ async def get_assignment_types():
             }
         ]
     }
+
+def sync_assignment_linked_lessons(assignment: Assignment, db: Session):
+    """
+    Synchronizes the assignment_linked_lessons table for an assignment.
+    Extracts lesson IDs from multi_task content or the lesson_id field.
+    """
+    from src.schemas.models import AssignmentLinkedLesson
+    
+    # 1. Clear existing links
+    db.query(AssignmentLinkedLesson).filter(
+        AssignmentLinkedLesson.assignment_id == assignment.id
+    ).delete()
+    
+    linked_lesson_ids = set()
+    
+    # 2. Add direct lesson_id if present
+    if assignment.lesson_id:
+        linked_lesson_ids.add(assignment.lesson_id)
+        
+    # 3. Add lessons from multi_task content
+    if assignment.assignment_type == 'multi_task' and assignment.content:
+        try:
+            content = json.loads(assignment.content) if isinstance(assignment.content, str) else assignment.content
+            tasks = content.get('tasks', [])
+            for task in tasks:
+                if task.get('task_type') == 'course_unit':
+                    task_content = task.get('content', {})
+                    lesson_ids = task_content.get('lesson_ids', [])
+                    for lid in lesson_ids:
+                        if isinstance(lid, int):
+                            linked_lesson_ids.add(lid)
+        except Exception as e:
+            print(f"Error parsing assignment {assignment.id} content: {e}")
+            
+    # 4. Create new links
+    for lid in linked_lesson_ids:
+        link = AssignmentLinkedLesson(assignment_id=assignment.id, lesson_id=lid)
+        db.add(link)
+        
+    db.commit()
