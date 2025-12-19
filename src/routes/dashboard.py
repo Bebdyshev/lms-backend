@@ -87,22 +87,28 @@ def get_student_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     enrolled_courses_count = len(all_courses)
     
     # Calculate total study time (convert minutes to hours)
-    total_study_time_hours = user.total_study_time_minutes // 60
+    total_study_time_hours = (user.total_study_time_minutes or 0) // 60
     
-    # Calculate average progress across all courses
+    # Calculate average progress across all courses using StepProgress
     total_progress = 0
     course_progresses = []
     
     for course in all_courses:
-        # Get course progress
-        course_progress_records = db.query(StudentProgress).filter(
-            StudentProgress.user_id == user.id,
-            StudentProgress.course_id == course.id
-        ).all()
+        # Get all steps in this course
+        total_steps = db.query(Step).join(Lesson).join(Module).filter(
+            Module.course_id == course.id
+        ).count()
         
-        if course_progress_records:
-            # Calculate average progress for this course
-            course_avg_progress = sum(p.completion_percentage for p in course_progress_records) / len(course_progress_records)
+        # Get completed steps for this user in this course
+        completed_steps = db.query(StepProgress).filter(
+            StepProgress.user_id == user.id,
+            StepProgress.course_id == course.id,
+            StepProgress.status == "completed"
+        ).count()
+        
+        # Calculate progress percentage
+        if total_steps > 0:
+            course_avg_progress = (completed_steps / total_steps) * 100
         else:
             course_avg_progress = 0
         
@@ -115,11 +121,11 @@ def get_student_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         # Count total modules in course
         total_modules = db.query(Module).filter(Module.course_id == course.id).count()
         
-        # Get last accessed time
-        last_progress = db.query(StudentProgress).filter(
-            StudentProgress.user_id == user.id,
-            StudentProgress.course_id == course.id
-        ).order_by(desc(StudentProgress.last_accessed)).first()
+        # Get last accessed time from StepProgress
+        last_step_progress = db.query(StepProgress).filter(
+            StepProgress.user_id == user.id,
+            StepProgress.course_id == course.id
+        ).order_by(desc(StepProgress.visited_at)).first()
         
         course_progresses.append({
             "id": course.id,
@@ -129,14 +135,18 @@ def get_student_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "total_modules": total_modules,
             "progress": round(course_avg_progress),
             "status": "completed" if course_avg_progress >= 100 else "in_progress" if course_avg_progress > 0 else "not_started",
-            "last_accessed": last_progress.last_accessed if last_progress else datetime.utcnow()
+            "last_accessed": last_step_progress.visited_at if (last_step_progress and last_step_progress.visited_at) else None
         })
     
     # Calculate overall average progress
     average_progress = round(total_progress / enrolled_courses_count) if enrolled_courses_count > 0 else 0
     
-    # Sort courses by last accessed (most recent first)
-    course_progresses.sort(key=lambda x: x["last_accessed"], reverse=True)
+    # Sort courses by last accessed (most recent first), handling None values
+    # Courses with None last_accessed (never accessed) will be placed at the end
+    course_progresses.sort(
+        key=lambda x: x["last_accessed"] if x["last_accessed"] is not None else datetime.min, 
+        reverse=True
+    )
     
     return DashboardStatsSchema(
         user={
@@ -742,8 +752,8 @@ async def get_teacher_pending_submissions(
             "submitted_file_name": submission.submitted_file_name
         })
     
-    # Sort by submission date (most recent first)
-    submissions_data.sort(key=lambda x: x["submitted_at"], reverse=True)
+    # Sort by submission date (most recent first), handling potential None values
+    submissions_data.sort(key=lambda x: x["submitted_at"] if x["submitted_at"] is not None else datetime.min, reverse=True)
     
     return {"pending_submissions": submissions_data}
 
@@ -1256,8 +1266,8 @@ async def get_curator_pending_submissions(
             "submitted_file_name": submission.submitted_file_name
         })
     
-    # Sort by submission date (most recent first)
-    submissions_data.sort(key=lambda x: x["submitted_at"], reverse=True)
+    # Sort by submission date (most recent first), handling potential None values
+    submissions_data.sort(key=lambda x: x["submitted_at"] if x["submitted_at"] is not None else datetime.min, reverse=True)
     
     return {"pending_submissions": submissions_data}
 
