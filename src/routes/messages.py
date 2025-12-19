@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_, and_
 from typing import List, Optional
 from datetime import datetime
+import logging
 
 from src.config import get_db
 from src.schemas.models import (
@@ -12,7 +13,9 @@ from src.schemas.models import (
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_student_access
 from src.schemas.models import GroupStudent
+from src.utils.push_notifications import send_message_notification
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # =============================================================================
@@ -119,6 +122,19 @@ async def send_message(
     message_response = MessageSchema.from_orm(new_message)
     message_response.sender_name = current_user.name
     message_response.recipient_name = recipient.name
+    
+    # Send push notification to recipient if they have a push token
+    if recipient.push_token:
+        try:
+            send_message_notification(
+                push_token=recipient.push_token,
+                sender_name=current_user.name,
+                message_preview=message_data.content.strip(),
+                partner_id=current_user.id
+            )
+            logger.info(f"Push notification sent to user {recipient.id}")
+        except Exception as e:
+            logger.error(f"Failed to send push notification: {str(e)}")
     
     # Создать уведомление для получателя
     create_message_notification(new_message, db)

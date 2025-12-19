@@ -81,3 +81,33 @@ async def complete_onboarding(
     db.commit()
     db.refresh(user)
     return user
+
+
+class PushTokenRequest(BaseModel):
+    push_token: str
+    device_type: str = "expo"  # expo, ios, android
+
+
+@router.post("/push-token")
+async def register_push_token(
+    token_data: PushTokenRequest,
+    db: Session = Depends(get_db),
+    user: UserInDB = Depends(get_current_user),
+):
+    """Register or update user's push notification token."""
+    user.push_token = token_data.push_token
+    user.device_type = token_data.device_type
+    db.commit()
+    return {"detail": "Push token registered successfully"}
+
+
+@router.delete("/push-token")
+async def remove_push_token(
+    db: Session = Depends(get_db),
+    user: UserInDB = Depends(get_current_user),
+):
+    """Remove user's push notification token."""
+    user.push_token = None
+    user.device_type = None
+    db.commit()
+    return {"detail": "Push token removed successfully"}

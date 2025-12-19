@@ -151,6 +151,10 @@ class UserInDB(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     refresh_token = Column(String, nullable=True)
     
+    # Push notifications
+    push_token = Column(String, nullable=True, index=True)
+    device_type = Column(String, nullable=True)  # 'expo', 'ios', 'android'
+    
     # Onboarding tracking
     onboarding_completed = Column(Boolean, default=False, nullable=False)
     onboarding_completed_at = Column(DateTime, nullable=True)
