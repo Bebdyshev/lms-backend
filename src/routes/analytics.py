@@ -490,9 +490,8 @@ async def get_all_students_analytics(
             GroupStudent.student_id == student.id
         ).all()
         
-        # Получаем ВСЕ курсы где есть прогресс студента (не через Enrollment!)
-        # Используем StepProgress чтобы найти курсы где студент действительно учится
-        courses_query = db.query(Course).join(
+        # Получаем ВСЕ курсы где есть прогресс студента для подсчета общего прогресса
+        all_courses_query = db.query(Course).join(
             Module, Module.course_id == Course.id
         ).join(
             Lesson, Lesson.module_id == Module.id
@@ -504,22 +503,22 @@ async def get_all_students_analytics(
             StepProgress.user_id == student.id
         )
         
-        if course_id:
-            courses_query = courses_query.filter(Course.id == course_id)
-            
-        courses_with_progress = courses_query.distinct().all()
+        all_courses_with_progress = all_courses_query.distinct().all()
         
-        # Если нет прогресса, пробуем через Enrollment
-        if not courses_with_progress:
+        # Если нет прогресса, пробуем через Enrollment для общего прогресса
+        if not all_courses_with_progress:
             enrollment_query = db.query(Course).join(Enrollment).filter(
                 Enrollment.user_id == student.id,
                 Course.is_active == True
             )
-            if course_id:
-                enrollment_query = enrollment_query.filter(Course.id == course_id)
-            courses_with_progress = enrollment_query.all()
+            all_courses_with_progress = enrollment_query.all()
         
-        active_courses = courses_with_progress
+        active_courses = all_courses_with_progress
+        
+        # Получаем курсы для фильтрации last_lesson (если указан course_id)
+        last_lesson_courses = active_courses
+        if course_id:
+            last_lesson_courses = [c for c in active_courses if c.id == course_id]
         
         # Подсчитываем общий прогресс
         total_steps = 0
