@@ -1433,7 +1433,8 @@ async def get_curator_assignments_analytics(
                 )
             )
         ),
-        Assignment.is_active == True
+        Assignment.is_active == True,
+        Assignment.is_hidden == False
     ).all()
     
     if not assignments:
@@ -1442,7 +1443,8 @@ async def get_curator_assignments_analytics(
     # Get all submissions for these assignments filtered by curator students
     all_submissions = db.query(AssignmentSubmission).filter(
         AssignmentSubmission.assignment_id.in_([a.id for a in assignments]),
-        AssignmentSubmission.user_id.in_(curator_student_ids)
+        AssignmentSubmission.user_id.in_(curator_student_ids),
+        AssignmentSubmission.is_hidden == False
     ).all()
     
     # Group submissions by assignment
@@ -1462,8 +1464,10 @@ async def get_curator_assignments_analytics(
         scores = [s.score for s in subs if s.is_graded and s.score is not None]
         avg_score = sum(scores) / len(scores) if scores else 0
         
-        # Get course title
+        # Get course info and count enrolled students from curator's groups
         course_title = "Unknown Course"
+        total_students_for_assignment = 0
+        
         if assignment.lesson_id:
             lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
             if lesson:
@@ -1472,6 +1476,14 @@ async def get_curator_assignments_analytics(
                      course = db.query(Course).filter(Course.id == module.course_id).first()
                      if course:
                          course_title = course.title
+                         
+                         # Count students from curator's groups enrolled in this course
+                         enrolled_curator_students = db.query(Enrollment).filter(
+                             Enrollment.course_id == course.id,
+                             Enrollment.user_id.in_(curator_student_ids),
+                             Enrollment.is_active == True
+                         ).count()
+                         total_students_for_assignment = enrolled_curator_students
 
         results.append({
             "id": assignment.id,
@@ -1479,9 +1491,7 @@ async def get_curator_assignments_analytics(
             "course_title": course_title,
             "due_date": assignment.due_date,
             "max_score": assignment.max_score,
-            "total_students": len(curator_student_ids), # Approximation: all students in curator groups could potentially see it if enrolled in course
-            # To be more precise, we should check which students are enrolled in the course of this assignment
-            # But for "how well students do", raw counts of submission vs total group size is decent proxy.
+            "total_students": total_students_for_assignment,
             "submitted_count": submitted_count,
             "graded_count": graded_count,
             "average_score": round(avg_score, 1)

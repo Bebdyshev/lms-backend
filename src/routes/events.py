@@ -7,7 +7,8 @@ from datetime import datetime, date, timedelta
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, Event, EventGroup, EventParticipant, Group, GroupStudent,
-    EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course
+    EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course,
+    CreateEventRequest
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role
@@ -647,3 +648,100 @@ async def unregister_from_event(
     db.commit()
     
     return {"detail": "Successfully unregistered from event"}
+
+@router.post("/curator/create", response_model=EventSchema)
+async def create_curator_event(
+    event_data: CreateEventRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_user_dependency)
+):
+    """Create a new event as curator for managed groups"""
+    
+    # Only curators and admins can create events
+    if current_user.role not in ["curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Only curators and admins can create events")
+    
+    # Validate event type
+    valid_types = ["class", "weekly_test", "webinar"]
+    if event_data.event_type not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid event type. Must be one of: {valid_types}")
+    
+    # Validate datetime
+    if event_data.start_datetime >= event_data.end_datetime:
+        raise HTTPException(status_code=400, detail="Start datetime must be before end datetime")
+    
+    # For curators: verify they manage all specified groups
+    if current_user.role == "curator" and event_data.group_ids:
+        curator_groups = db.query(Group).filter(
+            Group.curator_id == current_user.id,
+            Group.id.in_(event_data.group_ids)
+        ).all()
+        
+        if len(curator_groups) != len(event_data.group_ids):
+            raise HTTPException(
+                status_code=403, 
+                detail="You can only create events for groups you manage"
+            )
+    
+    # Validate groups exist
+    groups = []
+    if event_data.group_ids:
+        groups = db.query(Group).filter(Group.id.in_(event_data.group_ids)).all()
+        if len(groups) != len(event_data.group_ids):
+            raise HTTPException(status_code=400, detail="One or more groups not found")
+
+    # Validate courses exist (optional)
+    courses = []
+    if event_data.course_ids:
+        courses = db.query(Course).filter(Course.id.in_(event_data.course_ids)).all()
+        if len(courses) != len(event_data.course_ids):
+            raise HTTPException(status_code=400, detail="One or more courses not found")
+    
+    # Create event
+    event = Event(
+        title=event_data.title,
+        description=event_data.description,
+        event_type=event_data.event_type,
+        start_datetime=event_data.start_datetime,
+        end_datetime=event_data.end_datetime,
+        location=event_data.location,
+        is_online=event_data.is_online,
+        meeting_url=event_data.meeting_url,
+        created_by=current_user.id,
+        is_recurring=event_data.is_recurring,
+        recurrence_pattern=event_data.recurrence_pattern,
+        recurrence_end_date=event_data.recurrence_end_date,
+        max_participants=event_data.max_participants
+    )
+    
+    db.add(event)
+    db.flush()  # To get the event ID
+    
+    # Create event-group associations
+    for group_id in event_data.group_ids:
+        event_group = EventGroup(event_id=event.id, group_id=group_id)
+        db.add(event_group)
+
+    # Create event-course associations
+    if event_data.course_ids:
+        for course_id in event_data.course_ids:
+            event_course = EventCourse(event_id=event.id, course_id=course_id)
+            db.add(event_course)
+    
+    db.commit()
+    db.refresh(event)
+    
+    # Return enriched event data
+    result = EventSchema.from_orm(event)
+    result.creator_name = current_user.name
+    result.groups = [g.name for g in groups] if event_data.group_ids else []
+    result.group_ids = event_data.group_ids or []
+    result.course_ids = event_data.course_ids or []
+    
+    if event_data.course_ids:
+        course_names = [c.title for c in courses]
+        result.courses = course_names
+    else:
+        result.courses = []
+    
+    return result
