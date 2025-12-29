@@ -1391,23 +1391,15 @@ async def get_curator_assignments_analytics(
     
     from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
     
-    print(f"DEBUG: Curator ID={current_user.id}, Name={current_user.name}")
-    
     # Get curator's groups
     curator_groups = db.query(Group).filter(
         Group.curator_id == current_user.id
     ).all()
     
-    print(f"DEBUG: Found {len(curator_groups)} groups for curator")
-    for g in curator_groups:
-        print(f"  - Group ID={g.id}, Name={g.name}")
-    
     if not curator_groups:
         return {"assignments": []}
     
     curator_group_ids = [g.id for g in curator_groups]
-    
-    print(f"DEBUG: Group IDs: {curator_group_ids}")
     
     # Get students from curator's groups
     curator_student_ids = set()
@@ -1416,8 +1408,6 @@ async def get_curator_assignments_analytics(
     ).all()
     for gs in group_students:
         curator_student_ids.add(gs.student_id)
-    
-    print(f"DEBUG: Found {len(curator_student_ids)} students in curator's groups: {curator_student_ids}")
     
     if not curator_student_ids:
         return {"assignments": []}
@@ -1429,48 +1419,9 @@ async def get_curator_assignments_analytics(
     ).distinct().all()
     course_ids = [c[0] for c in course_ids]
     
-    print(f"DEBUG: Found {len(course_ids)} courses with access: {course_ids}")
-    
-    if not course_ids:
-        return {"assignments": []}
-    
-    # Debug: Check if there are ANY assignments in the database
-    total_assignments_in_db = db.query(Assignment).count()
-    print(f"DEBUG: Total assignments in entire database: {total_assignments_in_db}")
-    
-    # Debug: Check assignments for each course
-    for course_id in course_ids:
-        modules_in_course = db.query(Module).filter(Module.course_id == course_id).all()
-        print(f"DEBUG: Course {course_id} has {len(modules_in_course)} modules")
-        
-        for module in modules_in_course:
-            lessons_in_module = db.query(Lesson).filter(Lesson.module_id == module.id).all()
-            print(f"  - Module {module.id} ({module.title}) has {len(lessons_in_module)} lessons")
-            
-            for lesson in lessons_in_module:
-                assignments_in_lesson = db.query(Assignment).filter(Assignment.lesson_id == lesson.id).all()
-                if assignments_in_lesson:
-                    print(f"    - Lesson {lesson.id} ({lesson.title}) has {len(assignments_in_lesson)} assignments")
-    
-    # First, let's check all assignments in these courses without filters
-    all_assignments_in_courses = db.query(Assignment).filter(
-        Assignment.lesson_id.in_(
-            db.query(Lesson.id).filter(
-                Lesson.module_id.in_(
-                    db.query(Module.id).filter(
-                        Module.course_id.in_(course_ids)
-                    )
-                )
-            )
-        )
-    ).all()
-    
-    print(f"DEBUG: Total assignments in courses (no filters): {len(all_assignments_in_courses)}")
-    for a in all_assignments_in_courses[:5]:
-        print(f"  - Assignment ID={a.id}, Title={a.title}, is_active={a.is_active}, is_hidden={a.is_hidden}")
-    
-    # Get assignments
-    assignments = db.query(Assignment).filter(
+    # Get assignments - BOTH lesson-based AND group-based
+    # Lesson-based assignments from courses
+    lesson_based_assignments = db.query(Assignment).filter(
         Assignment.lesson_id.in_(
             db.query(Lesson.id).filter(
                 Lesson.module_id.in_(
@@ -1484,9 +1435,16 @@ async def get_curator_assignments_analytics(
         Assignment.is_hidden == False
     ).all()
     
-    print(f"DEBUG: Found {len(assignments)} assignments")
-    for a in assignments[:5]:  # Print first 5
-        print(f"  - Assignment ID={a.id}, Title={a.title}")
+    # Group-based assignments (no lesson_id, but have group_id)
+    group_based_assignments = db.query(Assignment).filter(
+        Assignment.group_id.in_(curator_group_ids),
+        Assignment.lesson_id.is_(None),  # Only assignments without lesson_id
+        Assignment.is_active == True,
+        Assignment.is_hidden == False
+    ).all()
+    
+    # Combine both types
+    assignments = lesson_based_assignments + group_based_assignments
     
     if not assignments:
         return {"assignments": []}
@@ -1520,21 +1478,33 @@ async def get_curator_assignments_analytics(
         total_students_for_assignment = 0
         
         if assignment.lesson_id:
+            # Lesson-based assignment - get course from lesson hierarchy
             lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
             if lesson:
                 module = db.query(Module).filter(Module.id == lesson.module_id).first()
                 if module:
-                     course = db.query(Course).filter(Course.id == module.course_id).first()
-                     if course:
-                         course_title = course.title
-                         
-                         # Count students from curator's groups enrolled in this course
-                         enrolled_curator_students = db.query(Enrollment).filter(
-                             Enrollment.course_id == course.id,
-                             Enrollment.user_id.in_(curator_student_ids),
-                             Enrollment.is_active == True
-                         ).count()
-                         total_students_for_assignment = enrolled_curator_students
+                    course = db.query(Course).filter(Course.id == module.course_id).first()
+                    if course:
+                        course_title = course.title
+                        
+                        # Count students from curator's groups enrolled in this course
+                        enrolled_curator_students = db.query(Enrollment).filter(
+                            Enrollment.course_id == course.id,
+                            Enrollment.user_id.in_(curator_student_ids),
+                            Enrollment.is_active == True
+                        ).count()
+                        total_students_for_assignment = enrolled_curator_students
+        elif assignment.group_id:
+            # Group-based assignment - get group name as "course"
+            group = db.query(Group).filter(Group.id == assignment.group_id).first()
+            if group:
+                course_title = f"Group: {group.name}"
+                
+                # Count students in this specific group
+                students_in_group = db.query(GroupStudent).filter(
+                    GroupStudent.group_id == assignment.group_id
+                ).count()
+                total_students_for_assignment = students_in_group
 
         results.append({
             "id": assignment.id,

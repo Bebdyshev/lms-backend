@@ -1127,7 +1127,12 @@ async def update_lesson(
     
     # Get course through module and check permissions
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this lesson")
+    
     course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found for this lesson")
     
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1166,11 +1171,41 @@ async def delete_lesson(
     
     # Get course through module and check permissions
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this lesson")
+    
     course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found for this lesson")
     
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # CRITICAL: Remove all references to this lesson from other lessons' next_lesson_id
+    # This prevents foreign key constraint violation
+    lessons_pointing_to_this = db.query(Lesson).filter(
+        Lesson.next_lesson_id == lesson_id
+    ).all()
+    
+    for pointing_lesson in lessons_pointing_to_this:
+        pointing_lesson.next_lesson_id = None
+    
+    # Delete related assignment links first
+    from src.schemas.models import AssignmentLinkedLesson
+    assignment_links = db.query(AssignmentLinkedLesson).filter(
+        AssignmentLinkedLesson.lesson_id == lesson_id
+    ).all()
+    for link in assignment_links:
+        db.delete(link)
+    
+    # Delete related student progress records
+    student_progress_records = db.query(StudentProgress).filter(
+        StudentProgress.lesson_id == lesson_id
+    ).all()
+    for record in student_progress_records:
+        db.delete(record)
+    
+    # Now delete the lesson (cascade will delete steps and their progress)
     db.delete(lesson)
     db.commit()
     
@@ -1194,6 +1229,9 @@ async def get_lesson_steps(
     
     # Get course through module and check access
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this lesson")
+    
     if not check_course_access(module.course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this lesson")
     
@@ -1246,7 +1284,12 @@ async def create_step(
     
     # Get course through module and check permissions
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this lesson")
+    
     course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found for this lesson")
     
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1301,7 +1344,12 @@ async def get_step(
     
     # Get course through lesson and module, check access
     lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found for this step")
+    
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this step")
     
     if not check_course_access(module.course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this step")
@@ -1322,8 +1370,16 @@ async def update_step(
     
     # Get course through lesson and module, check permissions
     lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found for this step")
+    
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this step")
+    
     course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found for this step")
     
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1371,7 +1427,12 @@ async def reorder_steps(
     
     # Get course through module, check permissions
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this lesson")
+    
     course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found for this lesson")
     
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1412,8 +1473,16 @@ async def delete_step(
     
     # Get course through lesson and module, check permissions
     lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found for this step")
+    
     module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found for this step")
+    
     course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found for this step")
     
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
