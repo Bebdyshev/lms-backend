@@ -763,6 +763,47 @@ async def delete_module(
     if current_user.role != "admin" and course.teacher_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
     
+    # Get all lessons in this module
+    lessons = db.query(Lesson).filter(Lesson.module_id == module_id).all()
+    lesson_ids = [lesson.id for lesson in lessons]
+    
+    if lesson_ids:
+        # Remove references from other lessons' next_lesson_id
+        lessons_pointing_to_module_lessons = db.query(Lesson).filter(
+            Lesson.next_lesson_id.in_(lesson_ids)
+        ).all()
+        
+        for pointing_lesson in lessons_pointing_to_module_lessons:
+            pointing_lesson.next_lesson_id = None
+        
+        # Get all steps for all lessons
+        steps = db.query(Step).filter(Step.lesson_id.in_(lesson_ids)).all()
+        step_ids = [step.id for step in steps]
+        
+        # Delete step progress records
+        from src.schemas.models import AssignmentLinkedLesson, StepProgress
+        if step_ids:
+            step_progress_records = db.query(StepProgress).filter(
+                StepProgress.step_id.in_(step_ids)
+            ).all()
+            for record in step_progress_records:
+                db.delete(record)
+        
+        # Delete assignment links
+        assignment_links = db.query(AssignmentLinkedLesson).filter(
+            AssignmentLinkedLesson.lesson_id.in_(lesson_ids)
+        ).all()
+        for link in assignment_links:
+            db.delete(link)
+        
+        # Delete student progress records
+        student_progress_records = db.query(StudentProgress).filter(
+            StudentProgress.lesson_id.in_(lesson_ids)
+        ).all()
+        for record in student_progress_records:
+            db.delete(record)
+    
+    # Now delete the module (will cascade delete lessons and steps)
     db.delete(module)
     db.commit()
     
@@ -1190,8 +1231,20 @@ async def delete_lesson(
     for pointing_lesson in lessons_pointing_to_this:
         pointing_lesson.next_lesson_id = None
     
-    # Delete related assignment links first
-    from src.schemas.models import AssignmentLinkedLesson
+    # Get all steps for this lesson
+    steps = db.query(Step).filter(Step.lesson_id == lesson_id).all()
+    step_ids = [step.id for step in steps]
+    
+    # Delete step progress records FIRST (before deleting steps)
+    from src.schemas.models import AssignmentLinkedLesson, StepProgress
+    if step_ids:
+        step_progress_records = db.query(StepProgress).filter(
+            StepProgress.step_id.in_(step_ids)
+        ).all()
+        for record in step_progress_records:
+            db.delete(record)
+    
+    # Delete related assignment links
     assignment_links = db.query(AssignmentLinkedLesson).filter(
         AssignmentLinkedLesson.lesson_id == lesson_id
     ).all()
@@ -1205,7 +1258,7 @@ async def delete_lesson(
     for record in student_progress_records:
         db.delete(record)
     
-    # Now delete the lesson (cascade will delete steps and their progress)
+    # Now delete the lesson (will cascade delete steps since we already deleted step_progress)
     db.delete(lesson)
     db.commit()
     
