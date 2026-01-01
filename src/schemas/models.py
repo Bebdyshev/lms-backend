@@ -587,6 +587,27 @@ class AssignmentLinkedLesson(Base):
     assignment = relationship("Assignment", backref="linked_lessons_rel")
     lesson = relationship("Lesson")
 
+class AssignmentExtension(Base):
+    """Individual deadline extensions for students"""
+    __tablename__ = "assignment_extensions"
+    id = Column(Integer, primary_key=True, index=True)
+    assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    extended_deadline = Column(DateTime, nullable=False)  # New deadline for this student
+    reason = Column(Text, nullable=True)  # Optional reason for extension
+    granted_by = Column(Integer, ForeignKey("users.id"), nullable=False)  # Teacher who granted extension
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Unique constraint - one extension per student per assignment
+    __table_args__ = (
+        UniqueConstraint('assignment_id', 'student_id', name='uq_assignment_student_extension'),
+    )
+    
+    # Relationships
+    assignment = relationship("Assignment", backref="extensions")
+    student = relationship("UserInDB", foreign_keys=[student_id], backref="assignment_extensions")
+    granter = relationship("UserInDB", foreign_keys=[granted_by])
+
 class AssignmentSchema(BaseModel):
     id: int
     lesson_id: Optional[int] = None
@@ -682,6 +703,25 @@ class SubmitAssignmentSchema(BaseModel):
     answers: dict
     file_url: Optional[str] = None
     submitted_file_name: Optional[str] = None
+
+class AssignmentExtensionSchema(BaseModel):
+    id: int
+    assignment_id: int
+    student_id: int
+    student_name: Optional[str] = None
+    extended_deadline: datetime
+    reason: Optional[str] = None
+    granted_by: int
+    granter_name: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class GrantExtensionSchema(BaseModel):
+    student_id: int
+    extended_deadline: datetime
+    reason: Optional[str] = None
 
 # =============================================================================
 # PROGRESS TRACKING MODELS

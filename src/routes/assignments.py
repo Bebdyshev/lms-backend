@@ -7,9 +7,10 @@ import json
 
 from src.config import get_db
 from src.schemas.models import (
-    Assignment, AssignmentSubmission, Lesson, Module, Course, UserInDB,
+    Assignment, AssignmentSubmission, Lesson, Module, Course, UserInDB, Enrollment,
     AssignmentSchema, AssignmentCreateSchema, AssignmentSubmissionSchema,
-    SubmitAssignmentSchema, GradeSubmissionSchema, AssignmentLinkedLesson
+    SubmitAssignmentSchema, GradeSubmissionSchema, AssignmentLinkedLesson,
+    AssignmentExtension, AssignmentExtensionSchema, GrantExtensionSchema
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, check_course_access
@@ -455,9 +456,28 @@ async def submit_assignment(
     if not has_access:
         raise HTTPException(status_code=403, detail="Access denied to this assignment")
     
-    # Check if assignment is overdue
-    # if assignment.due_date and assignment.due_date < datetime.utcnow():
-    #     raise HTTPException(status_code=400, detail="Assignment deadline has passed")
+    # Check if assignment is overdue (with extension support)
+    if assignment.due_date:
+        # Check if student has an extension
+        extension = db.query(AssignmentExtension).filter(
+            AssignmentExtension.assignment_id == assignment_id,
+            AssignmentExtension.student_id == current_user.id
+        ).first()
+        
+        # Use extended deadline if exists, otherwise use original deadline
+        effective_deadline = extension.extended_deadline if extension else assignment.due_date
+        
+        if effective_deadline < datetime.utcnow():
+            if extension:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Extended deadline has passed. Your deadline was {effective_deadline.strftime('%Y-%m-%d %H:%M')}"
+                )
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Assignment deadline has passed. Deadline was {effective_deadline.strftime('%Y-%m-%d %H:%M')}"
+                )
     
     # Check if already submitted (non-hidden submission exists)
     existing_submission = db.query(AssignmentSubmission).filter(
@@ -1055,10 +1075,22 @@ async def get_assignment_student_progress(
     # Create submission lookup
     submission_lookup = {sub.user_id: sub for sub in submissions}
     
+    # Get all extensions for this assignment
+    extensions = db.query(AssignmentExtension).filter(
+        AssignmentExtension.assignment_id == assignment_id
+    ).all()
+    
+    # Create extension lookup
+    extension_lookup = {ext.student_id: ext for ext in extensions}
+    
     # Build student progress data
     student_progress = []
     for student in unique_students:
         submission = submission_lookup.get(student.id)
+        extension = extension_lookup.get(student.id)
+        
+        # Determine effective deadline (extension or original)
+        effective_deadline = extension.extended_deadline if extension else assignment.due_date
         
         # Determine status
         status = "not_submitted"
@@ -1076,8 +1108,8 @@ async def get_assignment_student_progress(
                 status = "submitted"
             submitted_at = submission.submitted_at
         else:
-            # Check if overdue
-            if assignment.due_date and assignment.due_date < datetime.utcnow():
+            # Check if overdue using effective deadline
+            if effective_deadline and effective_deadline < datetime.utcnow():
                 status = "overdue"
                 is_overdue = True
         
@@ -1190,6 +1222,15 @@ async def get_assignment_status_for_student(
         AssignmentSubmission.is_hidden == False  # Don't show hidden submissions to students
     ).first()
     
+    # Check if student has an extension
+    extension = db.query(AssignmentExtension).filter(
+        AssignmentExtension.assignment_id == assignment_id,
+        AssignmentExtension.student_id == current_user.id
+    ).first()
+    
+    # Determine effective deadline
+    effective_deadline = extension.extended_deadline if extension else assignment.due_date
+    
     # Determine status
     status = "not_started"
     attempts_left = 1  # async default to 1 attempt
@@ -1202,12 +1243,12 @@ async def get_assignment_status_for_student(
             status = "submitted"
         attempts_left = 0  # Already submitted
     else:
-        # Check if assignment is overdue
-        if assignment.due_date and assignment.due_date < datetime.utcnow():
+        # Check if assignment is overdue using effective deadline
+        if effective_deadline and effective_deadline < datetime.utcnow():
             late = True
             status = "overdue"
     
-    return {
+    response_data = {
         "status": status,
         "attempts_left": attempts_left,
         "late": late,
@@ -1222,6 +1263,12 @@ async def get_assignment_status_for_student(
         "submitted_file_name": submission.submitted_file_name if submission else None,
         "feedback": submission.feedback if submission else None
     }
+    
+    # Add extension info if exists
+    if extension:
+        response_data["extended_deadline"] = extension.extended_deadline
+    
+    return response_data
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -1518,3 +1565,147 @@ def sync_assignment_linked_lessons(assignment: Assignment, db: Session):
         db.add(link)
         
     db.commit()
+
+# =============================================================================
+# ASSIGNMENT EXTENSIONS (DEADLINE MANAGEMENT)
+# =============================================================================
+
+@router.post("/{assignment_id}/extensions", response_model=AssignmentExtensionSchema)
+async def grant_extension(
+    assignment_id: int,
+    extension_data: GrantExtensionSchema,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Grant deadline extension to a student (teacher/admin only)"""
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Only teachers and admins can grant extensions")
+    
+    # Verify assignment exists
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    # Verify student exists and is actually a student
+    student = db.query(UserInDB).filter(UserInDB.id == extension_data.student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    if student.role != "student":
+        raise HTTPException(status_code=400, detail="Extensions can only be granted to students")
+    
+    # Check if extension already exists
+    existing_extension = db.query(AssignmentExtension).filter(
+        AssignmentExtension.assignment_id == assignment_id,
+        AssignmentExtension.student_id == extension_data.student_id
+    ).first()
+    
+    if existing_extension:
+        # Update existing extension
+        existing_extension.extended_deadline = extension_data.extended_deadline
+        existing_extension.reason = extension_data.reason
+        existing_extension.granted_by = current_user.id
+        db.commit()
+        db.refresh(existing_extension)
+        
+        # Add names for response
+        result = AssignmentExtensionSchema.model_validate(existing_extension)
+        result.student_name = student.name
+        result.granter_name = current_user.name
+        return result
+    
+    # Create new extension
+    extension = AssignmentExtension(
+        assignment_id=assignment_id,
+        student_id=extension_data.student_id,
+        extended_deadline=extension_data.extended_deadline,
+        reason=extension_data.reason,
+        granted_by=current_user.id
+    )
+    db.add(extension)
+    db.commit()
+    db.refresh(extension)
+    
+    # Add names for response
+    result = AssignmentExtensionSchema.model_validate(extension)
+    result.student_name = student.name
+    result.granter_name = current_user.name
+    return result
+
+@router.get("/{assignment_id}/extensions", response_model=List[AssignmentExtensionSchema])
+async def get_assignment_extensions(
+    assignment_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get all extensions for an assignment (teacher/admin only)"""
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Only teachers and admins can view extensions")
+    
+    # Verify assignment exists
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    extensions = db.query(AssignmentExtension).filter(
+        AssignmentExtension.assignment_id == assignment_id
+    ).all()
+    
+    # Add student and granter names
+    result = []
+    for ext in extensions:
+        student = db.query(UserInDB).filter(UserInDB.id == ext.student_id).first()
+        granter = db.query(UserInDB).filter(UserInDB.id == ext.granted_by).first()
+        
+        ext_schema = AssignmentExtensionSchema.model_validate(ext)
+        ext_schema.student_name = student.name if student else None
+        ext_schema.granter_name = granter.name if granter else None
+        result.append(ext_schema)
+    
+    return result
+
+@router.delete("/{assignment_id}/extensions/{student_id}")
+async def revoke_extension(
+    assignment_id: int,
+    student_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Revoke deadline extension for a student (teacher/admin only)"""
+    if current_user.role not in ["teacher", "admin"]:
+        raise HTTPException(status_code=403, detail="Only teachers and admins can revoke extensions")
+    
+    extension = db.query(AssignmentExtension).filter(
+        AssignmentExtension.assignment_id == assignment_id,
+        AssignmentExtension.student_id == student_id
+    ).first()
+    
+    if not extension:
+        raise HTTPException(status_code=404, detail="Extension not found")
+    
+    db.delete(extension)
+    db.commit()
+    
+    return {"message": "Extension revoked successfully"}
+
+@router.get("/{assignment_id}/my-extension", response_model=Optional[AssignmentExtensionSchema])
+async def get_my_extension(
+    assignment_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get current user's extension for an assignment (students can check their own)"""
+    extension = db.query(AssignmentExtension).filter(
+        AssignmentExtension.assignment_id == assignment_id,
+        AssignmentExtension.student_id == current_user.id
+    ).first()
+    
+    if not extension:
+        return None
+    
+    # Add names for response
+    granter = db.query(UserInDB).filter(UserInDB.id == extension.granted_by).first()
+    result = AssignmentExtensionSchema.model_validate(extension)
+    result.student_name = current_user.name
+    result.granter_name = granter.name if granter else None
+    
+    return result
