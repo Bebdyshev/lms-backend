@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -14,6 +14,7 @@ from src.schemas.models import UserInDB, Token, UserSchema
 import logging
 from pydantic import BaseModel
 from datetime import datetime
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +33,7 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 @router.post("/login", response_model=Token)
-async def login(user: UserLogin, db: Session = Depends(get_db)):
+async def login(user: UserLogin, response: Response, db: Session = Depends(get_db)):
     """Simple login with email and password"""
     try:
         logger.info(f"Attempting login for email: {user.email}")
@@ -67,6 +68,32 @@ async def login(user: UserLogin, db: Session = Depends(get_db)):
         db_user.refresh_token = refresh_token
         db.commit()
         
+        # Determine if we're in production (HTTPS) or development (HTTP)
+        is_production = os.getenv("ENVIRONMENT", "development") == "production"
+        
+        # Set cookies with proper attributes for Safari iOS compatibility
+        # Access token cookie
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,  # Prevent JavaScript access
+            secure=is_production,  # HTTPS only in production
+            samesite="none" if is_production else "lax",  # "none" for cross-origin in production
+            max_age=30 * 60,  # 30 minutes
+            path="/"
+        )
+        
+        # Refresh token cookie
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=is_production,
+            samesite="none" if is_production else "lax",
+            max_age=7 * 24 * 60 * 60,  # 7 days
+            path="/"
+        )
+        
         return {
             "access_token": access_token, 
             "refresh_token": refresh_token,
@@ -80,7 +107,7 @@ async def login(user: UserLogin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Login failed")
 
 @router.post("/refresh", response_model=Token)
-async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
+async def refresh_token(request: RefreshTokenRequest, response: Response, db: Session = Depends(get_db)):
     """Refresh access token using refresh token"""
     try:
         token = request.refresh_token
@@ -106,6 +133,30 @@ async def refresh_token(request: RefreshTokenRequest, db: Session = Depends(get_
         # Update user's refresh token
         user.refresh_token = new_refresh_token
         db.commit()
+        
+        # Determine environment
+        is_production = os.getenv("ENVIRONMENT", "development") == "production"
+        
+        # Set new cookies
+        response.set_cookie(
+            key="access_token",
+            value=new_access_token,
+            httponly=True,
+            secure=is_production,
+            samesite="none" if is_production else "lax",
+            max_age=30 * 60,
+            path="/"
+        )
+        
+        response.set_cookie(
+            key="refresh_token",
+            value=new_refresh_token,
+            httponly=True,
+            secure=is_production,
+            samesite="none" if is_production else "lax",
+            max_age=7 * 24 * 60 * 60,
+            path="/"
+        )
         
         return {
             "access_token": new_access_token,
@@ -136,7 +187,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 @router.post("/logout")
-async def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+async def logout(response: Response, token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     """Logout user by invalidating refresh token"""
     payload = verify_token(token)
     if payload is None:
@@ -149,6 +200,10 @@ async def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_
     if user:
         user.refresh_token = None
         db.commit()
+    
+    # Clear cookies
+    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path="/")
 
     return {"detail": "Logged out successfully"}
 
