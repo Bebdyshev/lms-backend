@@ -21,8 +21,11 @@ COPY alembic.ini .
 # Создание директории для uploads
 RUN mkdir -p uploads
 
+# Make start script executable
+RUN chmod +x scripts/start.sh
+
 # Открытие порта
 EXPOSE 8000
 
-# Запуск приложения (Socket.IO wrapped ASGI app) с 4 workers для concurrency
-CMD ["uvicorn", "src.app:socket_app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# Запуск приложения с автоматическими миграциями
+CMD ["./scripts/start.sh"]
