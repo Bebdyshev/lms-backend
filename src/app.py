@@ -24,8 +24,8 @@ from src.routes.socket_messages import create_socket_app
 
 load_dotenv()
 
-# Set max upload size to 5MB
-MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5 MB in bytes
+# Set max upload size to 100MB
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB in bytes
 
 app = FastAPI(
     title="LMS Platform API",
