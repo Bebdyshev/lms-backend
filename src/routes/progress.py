@@ -10,7 +10,7 @@ from src.schemas.models import (
     UserInDB, AssignmentSubmission, ProgressSchema, StepProgress,
     StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent,
     ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema,
-    QuizAttemptGradeSchema
+    QuizAttemptGradeSchema, QuizAttemptUpdateSchema
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access, require_teacher_or_admin
@@ -1520,9 +1520,35 @@ async def create_quiz_attempt(
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
-    """Сохранить попытку прохождения квиза"""
+    """Сохранить попытку прохождения квиза или обновить черновик"""
     try:
-        # Create quiz attempt record
+        # Check if there's an existing draft for this step
+        existing_draft = db.query(QuizAttempt).filter(
+            QuizAttempt.user_id == current_user.id,
+            QuizAttempt.step_id == attempt_data.step_id,
+            QuizAttempt.is_draft == True
+        ).first()
+        
+        if existing_draft:
+            # Update existing draft
+            existing_draft.answers = attempt_data.answers
+            existing_draft.current_question_index = attempt_data.current_question_index
+            existing_draft.time_spent_seconds = attempt_data.time_spent_seconds
+            existing_draft.updated_at = datetime.utcnow()
+            
+            if not attempt_data.is_draft:
+                # Finalizing the quiz
+                existing_draft.is_draft = False
+                existing_draft.correct_answers = attempt_data.correct_answers
+                existing_draft.score_percentage = attempt_data.score_percentage
+                existing_draft.is_graded = attempt_data.is_graded
+                existing_draft.completed_at = datetime.utcnow()
+            
+            db.commit()
+            db.refresh(existing_draft)
+            return existing_draft
+        
+        # Create new quiz attempt record
         quiz_attempt = QuizAttempt(
             user_id=current_user.id,
             step_id=attempt_data.step_id,
@@ -1535,7 +1561,9 @@ async def create_quiz_attempt(
             answers=attempt_data.answers,
             time_spent_seconds=attempt_data.time_spent_seconds,
             is_graded=attempt_data.is_graded,
-            completed_at=datetime.utcnow(),
+            is_draft=attempt_data.is_draft,
+            current_question_index=attempt_data.current_question_index,
+            completed_at=None if attempt_data.is_draft else datetime.utcnow(),
             created_at=datetime.utcnow()
         )
         
@@ -1548,6 +1576,52 @@ async def create_quiz_attempt(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to save quiz attempt: {str(e)}")
+
+
+@router.patch("/quiz-attempts/{attempt_id}", response_model=QuizAttemptSchema)
+async def update_quiz_attempt(
+    attempt_id: int,
+    update_data: QuizAttemptUpdateSchema,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Update a quiz draft (auto-save progress)"""
+    attempt = db.query(QuizAttempt).filter(
+        QuizAttempt.id == attempt_id,
+        QuizAttempt.user_id == current_user.id
+    ).first()
+    
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Quiz attempt not found")
+    
+    try:
+        if update_data.answers is not None:
+            attempt.answers = update_data.answers
+        if update_data.current_question_index is not None:
+            attempt.current_question_index = update_data.current_question_index
+        if update_data.time_spent_seconds is not None:
+            attempt.time_spent_seconds = update_data.time_spent_seconds
+        
+        # Handle finalization
+        if update_data.is_draft is not None and not update_data.is_draft:
+            attempt.is_draft = False
+            attempt.completed_at = datetime.utcnow()
+            if update_data.correct_answers is not None:
+                attempt.correct_answers = update_data.correct_answers
+            if update_data.score_percentage is not None:
+                attempt.score_percentage = update_data.score_percentage
+            if update_data.is_graded is not None:
+                attempt.is_graded = update_data.is_graded
+        
+        attempt.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(attempt)
+        
+        return attempt
+        
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update quiz attempt: {str(e)}")
 
 
 @router.put("/quiz-attempts/{attempt_id}/grade", response_model=QuizAttemptSchema)

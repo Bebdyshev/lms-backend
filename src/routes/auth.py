@@ -79,7 +79,7 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
             httponly=True,  # Prevent JavaScript access
             secure=is_production,  # HTTPS only in production
             samesite="none" if is_production else "lax",  # "none" for cross-origin in production
-            max_age=30 * 60,  # 30 minutes
+            max_age=24 * 60 * 60,  # 24 hours
             path="/"
         )
         
@@ -90,7 +90,7 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
             httponly=True,
             secure=is_production,
             samesite="none" if is_production else "lax",
-            max_age=7 * 24 * 60 * 60,  # 7 days
+            max_age=30 * 24 * 60 * 60,  # 30 days
             path="/"
         )
         
@@ -144,7 +144,7 @@ async def refresh_token(request: RefreshTokenRequest, response: Response, db: Se
             httponly=True,
             secure=is_production,
             samesite="none" if is_production else "lax",
-            max_age=30 * 60,
+            max_age=24 * 60 * 60,  # 24 hours
             path="/"
         )
         
@@ -154,7 +154,7 @@ async def refresh_token(request: RefreshTokenRequest, response: Response, db: Se
             httponly=True,
             secure=is_production,
             samesite="none" if is_production else "lax",
-            max_age=7 * 24 * 60 * 60,
+            max_age=30 * 24 * 60 * 60,  # 30 days
             path="/"
         )
         

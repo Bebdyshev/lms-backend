@@ -5,8 +5,8 @@ from passlib.exc import UnknownHashError
 
 SECRET_KEY = "i-hate-epu"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 120
-REFRESH_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7 days
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+REFRESH_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

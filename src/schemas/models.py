@@ -21,11 +21,15 @@ class QuestionOption(BaseModel):
     text: str
     is_correct: bool = False
 
+class MatchingPair(BaseModel):
+    left: str
+    right: str
+
 class QuizQuestion(BaseModel):
     id: str
     assignment_id: str = ""
     question_text: str
-    question_type: str  # single_choice, multiple_choice, fill_blank, long_text, media_question
+    question_type: str  # single_choice, multiple_choice, fill_blank, long_text, media_question, matching
     options: Optional[List[QuestionOption]] = None
     correct_answer: Union[str, List[str]] = ""
     points: int = 1
@@ -35,6 +39,8 @@ class QuizQuestion(BaseModel):
     media_type: Optional[str] = None  # 'pdf', 'image'
     expected_length: Optional[int] = None  # For long text questions (character count)
     keywords: Optional[List[str]] = None  # For auto-grading long text answers
+    # Matching question fields
+    matching_pairs: Optional[List[MatchingPair]] = None  # Pairs for matching questions
 
 class QuizData(BaseModel):
     title: str
@@ -829,8 +835,13 @@ class QuizAttempt(Base):
     score_percentage = Column(Float, nullable=False)
     answers = Column(Text, nullable=True)  # JSON string of user answers
     time_spent_seconds = Column(Integer, nullable=True)
-    completed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)  # NULL for drafts
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)  # Track last update
+    
+    # Draft/In-progress support
+    is_draft = Column(Boolean, default=False, nullable=False)  # True = in-progress, not submitted
+    current_question_index = Column(Integer, default=0, nullable=True)  # Track progress position
     
     # Grading fields
     is_graded = Column(Boolean, default=True)  # True for auto-graded, False for manual grading required
@@ -905,8 +916,13 @@ class QuizAttemptSchema(BaseModel):
     score_percentage: float
     answers: Optional[str] = None
     time_spent_seconds: Optional[int] = None
-    completed_at: datetime
+    completed_at: Optional[datetime] = None  # NULL for drafts
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    
+    # Draft/In-progress support
+    is_draft: bool = False
+    current_question_index: Optional[int] = None
     
     # Grading fields
     is_graded: Optional[bool] = True
@@ -928,11 +944,25 @@ class QuizAttemptCreateSchema(BaseModel):
     lesson_id: int
     quiz_title: Optional[str] = None
     total_questions: int
-    correct_answers: int
-    score_percentage: float
+    correct_answers: int = 0  # Default 0 for drafts
+    score_percentage: float = 0  # Default 0 for drafts
     answers: Optional[str] = None
     time_spent_seconds: Optional[int] = None
     is_graded: bool = True  # Default to True (auto-graded)
+    is_draft: bool = False  # True = save as draft/in-progress
+    current_question_index: Optional[int] = None  # Track progress position
+
+
+class QuizAttemptUpdateSchema(BaseModel):
+    """Schema for updating a quiz draft"""
+    answers: Optional[str] = None
+    current_question_index: Optional[int] = None
+    time_spent_seconds: Optional[int] = None
+    # For finalizing the quiz
+    is_draft: Optional[bool] = None
+    correct_answers: Optional[int] = None
+    score_percentage: Optional[float] = None
+    is_graded: Optional[bool] = None
 
 class QuizAttemptGradeSchema(BaseModel):
     score_percentage: float
