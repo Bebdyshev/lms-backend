@@ -55,7 +55,7 @@ class QuizData(BaseModel):
 class TaskItem(BaseModel):
     """Individual task within a multi-task assignment"""
     id: str  # Unique ID for this task
-    task_type: str  # 'course_unit', 'file_task', 'text_task', 'link_task'
+    task_type: str  # 'course_unit', 'file_task', 'text_task', 'link_task', 'pdf_text_task'
     title: str
     description: Optional[str] = None
     order_index: int
@@ -67,6 +67,7 @@ class TaskItem(BaseModel):
     # file_task: { question: str, allowed_file_types: List[str], max_file_size_mb: int, teacher_file_url: str, teacher_file_name: str }
     # text_task: { question: str, max_length: int, keywords: List[str] }
     # link_task: { url: str, link_description: str, completion_criteria: str }
+    # pdf_text_task: { question: str, max_length: int, keywords: List[str], teacher_file_url: str, teacher_file_name: str }
 
 class MultiTaskContent(BaseModel):
     """Content structure for multi-task assignments"""

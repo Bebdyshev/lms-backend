@@ -1303,7 +1303,7 @@ def validate_assignment_content(assignment_type: str, content: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="multi_task assignment must have at least one task")
         
         # Validate each task
-        valid_task_types = ["course_unit", "file_task", "text_task", "link_task"]
+        valid_task_types = ["course_unit", "file_task", "text_task", "link_task", "pdf_text_task"]
         for i, task in enumerate(tasks):
             # Check required task fields
             if not isinstance(task, dict):
@@ -1347,6 +1347,12 @@ def validate_assignment_content(assignment_type: str, content: Dict[str, Any]):
                     raise HTTPException(
                         status_code=400, 
                         detail=f"Task {i+1} (link_task) must have 'url' in content"
+                    )
+            elif task_type == "pdf_text_task":
+                if "question" not in task_content:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Task {i+1} (pdf_text_task) must have 'question' in content"
                     )
 
 
