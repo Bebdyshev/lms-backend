@@ -1670,6 +1670,14 @@ async def get_curator_homework_by_group(
             scores = [s["score"] for s in students_progress if s["score"] is not None]
             avg_score = round(sum(scores) / len(scores), 1) if scores else 0
             
+            # Parse assignment content
+            assignment_content = None
+            if assignment.content:
+                try:
+                    assignment_content = json.loads(assignment.content) if isinstance(assignment.content, str) else assignment.content
+                except:
+                    assignment_content = None
+            
             assignments_data.append({
                 "id": assignment.id,
                 "title": assignment.title,
@@ -1678,6 +1686,7 @@ async def get_curator_homework_by_group(
                 "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
                 "max_score": assignment.max_score,
                 "assignment_type": assignment.assignment_type,
+                "content": assignment_content,
                 "summary": {
                     "total_students": len(group_student_ids),
                     "submitted": submitted_count,

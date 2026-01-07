@@ -716,19 +716,48 @@ async def get_submission(
         # Students can only see their own submissions
         if submission.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
+    elif current_user.role == "admin":
+        # Admins can see all submissions
+        pass
     elif current_user.role in ["teacher", "curator"]:
         # Teachers/curators can see submissions from their students
+        has_access = False
+        
         if assignment.lesson_id:
             lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
             module = db.query(Module).filter(Module.id == lesson.module_id).first()
             
-            if not check_course_access(module.course_id, current_user, db):
-                raise HTTPException(status_code=403, detail="Access denied")
-        elif assignment.group_id:
+            if check_course_access(module.course_id, current_user, db):
+                has_access = True
+        
+        if assignment.group_id:
             from src.schemas.models import Group
             group = db.query(Group).filter(Group.id == assignment.group_id).first()
-            if current_user.role != "admin" and group.teacher_id != current_user.id:
-                raise HTTPException(status_code=403, detail="Access denied")
+            if group:
+                # Teacher owns the group
+                if current_user.role == "teacher" and group.teacher_id == current_user.id:
+                    has_access = True
+                # Curator owns the group
+                if current_user.role == "curator" and group.curator_id == current_user.id:
+                    has_access = True
+        
+        # Also check if the student is in any of the curator's groups
+        if current_user.role == "curator" and not has_access:
+            from src.schemas.models import Group, GroupStudent
+            curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+            curator_group_ids = [g.id for g in curator_groups]
+            
+            # Check if the submission's student is in any of curator's groups
+            student_in_curator_group = db.query(GroupStudent).filter(
+                GroupStudent.group_id.in_(curator_group_ids),
+                GroupStudent.student_id == submission.user_id
+            ).first()
+            
+            if student_in_curator_group:
+                has_access = True
+        
+        if not has_access:
+            raise HTTPException(status_code=403, detail="Access denied")
     
     # Enhance submission with user and grader names
     submission_data = AssignmentSubmissionSchema.from_orm(submission)
