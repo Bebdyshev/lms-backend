@@ -1522,3 +1522,181 @@ async def get_curator_assignments_analytics(
     results.sort(key=lambda x: x["due_date"] or datetime.min, reverse=True)
     
     return {"assignments": results}
+
+
+@router.get("/curator/homework-by-group")
+async def get_curator_homework_by_group(
+    group_id: Optional[int] = None,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Get homework data grouped by curator's groups with detailed student submissions.
+    Returns groups with their assignments and student progress.
+    """
+    if current_user.role != "curator":
+        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
+    
+    from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
+    
+    # Get curator's groups
+    curator_groups_query = db.query(Group).filter(Group.curator_id == current_user.id)
+    if group_id:
+        curator_groups_query = curator_groups_query.filter(Group.id == group_id)
+    
+    curator_groups = curator_groups_query.all()
+    
+    if not curator_groups:
+        return {"groups": []}
+    
+    result = []
+    
+    for group in curator_groups:
+        # Get students in this group
+        group_student_ids = [gs.student_id for gs in db.query(GroupStudent).filter(
+            GroupStudent.group_id == group.id
+        ).all()]
+        
+        if not group_student_ids:
+            result.append({
+                "group_id": group.id,
+                "group_name": group.name,
+                "students_count": 0,
+                "assignments": []
+            })
+            continue
+        
+        # Get students info
+        students = db.query(UserInDB).filter(UserInDB.id.in_(group_student_ids)).all()
+        students_map = {s.id: s for s in students}
+        
+        # Get courses that this group has access to
+        course_access = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id == group.id,
+            CourseGroupAccess.is_active == True
+        ).all()
+        course_ids = [ca.course_id for ca in course_access]
+        
+        # Get lesson-based assignments from those courses
+        lesson_based_assignments = []
+        if course_ids:
+            lesson_ids = db.query(Lesson.id).filter(
+                Lesson.module_id.in_(
+                    db.query(Module.id).filter(Module.course_id.in_(course_ids))
+                )
+            ).all()
+            lesson_ids = [l[0] for l in lesson_ids]
+            
+            if lesson_ids:
+                lesson_based_assignments = db.query(Assignment).filter(
+                    Assignment.lesson_id.in_(lesson_ids),
+                    Assignment.is_active == True,
+                    (Assignment.is_hidden == False) | (Assignment.is_hidden.is_(None))
+                ).all()
+        
+        # Get group-based assignments
+        group_based_assignments = db.query(Assignment).filter(
+            Assignment.group_id == group.id,
+            Assignment.lesson_id.is_(None),
+            Assignment.is_active == True,
+            (Assignment.is_hidden == False) | (Assignment.is_hidden.is_(None))
+        ).all()
+        
+        # Combine assignments
+        all_assignments = lesson_based_assignments + group_based_assignments
+        
+        assignments_data = []
+        for assignment in all_assignments:
+            # Get course info
+            course_title = "Unknown"
+            if assignment.lesson_id:
+                lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
+                if lesson:
+                    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+                    if module:
+                        course = db.query(Course).filter(Course.id == module.course_id).first()
+                        if course:
+                            course_title = course.title
+            elif assignment.group_id:
+                course_title = f"Group Assignment"
+            
+            # Get submissions for this assignment from group students
+            submissions = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == assignment.id,
+                AssignmentSubmission.user_id.in_(group_student_ids),
+                AssignmentSubmission.is_hidden == False
+            ).all()
+            
+            submissions_map = {s.user_id: s for s in submissions}
+            
+            # Build student progress list
+            students_progress = []
+            for student_id in group_student_ids:
+                student = students_map.get(student_id)
+                if not student:
+                    continue
+                
+                submission = submissions_map.get(student_id)
+                
+                # Determine status
+                status = 'not_submitted'
+                if submission:
+                    if submission.is_graded:
+                        status = 'graded'
+                    else:
+                        status = 'submitted'
+                elif assignment.due_date and assignment.due_date < datetime.utcnow():
+                    status = 'overdue'
+                
+                students_progress.append({
+                    "student_id": student.id,
+                    "student_name": student.name,
+                    "student_email": student.email,
+                    "status": status,
+                    "submission_id": submission.id if submission else None,
+                    "score": submission.score if submission else None,
+                    "max_score": assignment.max_score,
+                    "submitted_at": submission.submitted_at.isoformat() if submission and submission.submitted_at else None,
+                    "graded_at": submission.graded_at.isoformat() if submission and submission.graded_at else None,
+                    "feedback": submission.feedback if submission else None
+                })
+            
+            # Calculate summary
+            submitted_count = len([s for s in students_progress if s["status"] in ['submitted', 'graded']])
+            graded_count = len([s for s in students_progress if s["status"] == 'graded'])
+            not_submitted_count = len([s for s in students_progress if s["status"] == 'not_submitted'])
+            overdue_count = len([s for s in students_progress if s["status"] == 'overdue'])
+            
+            scores = [s["score"] for s in students_progress if s["score"] is not None]
+            avg_score = round(sum(scores) / len(scores), 1) if scores else 0
+            
+            assignments_data.append({
+                "id": assignment.id,
+                "title": assignment.title,
+                "description": assignment.description,
+                "course_title": course_title,
+                "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
+                "max_score": assignment.max_score,
+                "assignment_type": assignment.assignment_type,
+                "summary": {
+                    "total_students": len(group_student_ids),
+                    "submitted": submitted_count,
+                    "graded": graded_count,
+                    "not_submitted": not_submitted_count,
+                    "overdue": overdue_count,
+                    "average_score": avg_score
+                },
+                "students": students_progress
+            })
+        
+        # Sort assignments by due date (most recent first)
+        assignments_data.sort(key=lambda x: x["due_date"] or "9999-99-99", reverse=True)
+        
+        result.append({
+            "group_id": group.id,
+            "group_name": group.name,
+            "students_count": len(group_student_ids),
+            "assignments": assignments_data
+        })
+    
+    return {"groups": result}
