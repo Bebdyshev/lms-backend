@@ -110,11 +110,11 @@ async def upload_file(
     
     # Validate file type
     allowed_types = {
-        "teacher_assignment": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"],
-        "assignment": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"],
-        "submission": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt"],
-        "step_attachment": ["pdf", "docx", "doc", "jpg", "png", "gif", "txt", "zip", "xlsx", "pptx"],
-        "question_media": ["pdf", "jpg", "png", "gif", "webp", "mp3", "wav", "ogg", "m4a"]  # For quiz question attachments and audio
+        "teacher_assignment": ["pdf", "docx", "doc", "jpg", "jpeg", "png", "gif", "txt"],
+        "assignment": ["pdf", "docx", "doc", "jpg", "jpeg", "png", "gif", "txt"],
+        "submission": ["pdf", "docx", "doc", "jpg", "jpeg", "png", "gif", "txt"],
+        "step_attachment": ["pdf", "docx", "doc", "jpg", "jpeg", "png", "gif", "txt", "zip", "xlsx", "pptx"],
+        "question_media": ["pdf", "jpg", "jpeg", "png", "gif", "webp", "mp3", "wav", "ogg", "m4a"]  # For quiz question attachments and audio
     }
     
     if file_type not in allowed_types:
