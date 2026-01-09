@@ -9,7 +9,7 @@ from datetime import datetime
 
 from src.config import get_db
 from src.schemas.models import (
-    UserInDB, StepProgress, Step, Lesson, Course, Module, Enrollment
+    UserInDB, StepProgress, Step, Lesson, Course, Module
 )
 from src.utils.permissions import require_admin
 
