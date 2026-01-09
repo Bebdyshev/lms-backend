@@ -9,7 +9,8 @@ from src.config import get_db
 from src.schemas.models import (
     UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
     StudentProgress, Assignment, AssignmentSubmission, Event, EventGroup, EventParticipant,
-    EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema
+    EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema,
+    StepProgress, Step, Lesson
 )
 from src.utils.auth_utils import hash_password
 from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups

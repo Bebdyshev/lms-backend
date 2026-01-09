@@ -6,6 +6,7 @@ from datetime import datetime
 from src.config import init_db
 from src.routes.auth import router as auth_router
 from src.routes.admin import router as admin_router
+from src.routes.admin_progress import router as admin_progress_router
 from src.routes.dashboard import router as dashboard_router
 from src.routes.users import router as users_router
 from src.routes.courses import router as courses_router
@@ -78,6 +79,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Include routers
 app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin"])
+app.include_router(admin_progress_router, prefix="/admin", tags=["Admin Progress"])
 app.include_router(dashboard_router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(users_router, prefix="/users", tags=["Users"])
 app.include_router(courses_router, prefix="/courses", tags=["Courses"])
