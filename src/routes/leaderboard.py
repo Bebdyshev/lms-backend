@@ -359,6 +359,15 @@ async def get_student_ranking(
             current_user_rank = rank
             current_user_entry = leaderboard_entry
     
+    # Calculate steps to next rank
+    steps_to_next_rank = 0
+    if current_user_rank > 1 and current_user_entry:
+        # Find the person ahead
+        person_ahead = leaderboard[current_user_rank - 2]  # -2 because rank is 1-indexed and we need previous
+        steps_to_next_rank = person_ahead['steps_completed'] - current_user_entry['steps_completed'] + 1
+        if steps_to_next_rank < 0:
+            steps_to_next_rank = 0
+    
     # Fun titles based on rank
     def get_rank_title(rank: int, total: int) -> str:
         if rank == 1:
@@ -384,5 +393,6 @@ async def get_student_ranking(
         "current_user_entry": current_user_entry,
         "current_user_title": get_rank_title(current_user_rank, len(entries)) if current_user_rank > 0 else "🎯 No Progress Yet",
         "total_participants": len(entries),
-        "period": period
+        "period": period,
+        "steps_to_next_rank": steps_to_next_rank
     }
