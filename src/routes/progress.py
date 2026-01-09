@@ -1606,6 +1606,8 @@ async def update_quiz_attempt(
         if update_data.is_draft is not None and not update_data.is_draft:
             attempt.is_draft = False
             attempt.completed_at = datetime.utcnow()
+            if update_data.total_questions is not None:
+                attempt.total_questions = update_data.total_questions
             if update_data.correct_answers is not None:
                 attempt.correct_answers = update_data.correct_answers
             if update_data.score_percentage is not None:

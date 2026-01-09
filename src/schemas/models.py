@@ -964,6 +964,7 @@ class QuizAttemptUpdateSchema(BaseModel):
     correct_answers: Optional[int] = None
     score_percentage: Optional[float] = None
     is_graded: Optional[bool] = None
+    total_questions: Optional[int] = None
 
 class QuizAttemptGradeSchema(BaseModel):
     score_percentage: float
