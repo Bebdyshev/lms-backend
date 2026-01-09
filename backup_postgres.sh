@@ -16,7 +16,7 @@ fi
 DB_NAME="lms_db"
 DB_USER="myuser"
 BACKUP_DIR="./backups"
-DATE=$(date +%Y%m%d_%H%M%S)
+DATE=$(date +%m%d%Y_%H%M)
 BACKUP_FILE="${BACKUP_DIR}/${DB_NAME}_${DATE}.dump"
 
 # Цвета для вывода
@@ -47,10 +47,6 @@ if [ $? -eq 0 ]; then
     echo -e "${GREEN}✓ Бэкап успешно создан!${NC}"
     echo -e "${GREEN}  Файл: $BACKUP_FILE${NC}"
     echo -e "${GREEN}  Размер: $FILE_SIZE${NC}"
-    
-    # Опционально: удалить старые бэкапы (старше 7 дней)
-    echo -e "${YELLOW}Очистка старых бэкапов (старше 7 дней)...${NC}"
-    find $BACKUP_DIR -name "*.dump" -mtime +7 -delete
     
     # Показать список всех бэкапов
     echo -e "${YELLOW}Доступные бэкапы:${NC}"
