@@ -54,19 +54,6 @@ def admin_complete_steps_for_user(
             detail=f"Курс с ID {request.course_id} не найден"
         )
     
-    # Проверяем, что студент записан на курс
-    enrollment = db.query(Enrollment).filter(
-        Enrollment.user_id == request.user_id,
-        Enrollment.course_id == request.course_id,
-        Enrollment.is_active == True
-    ).first()
-    
-    if not enrollment:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Пользователь не записан на курс {course.title}"
-        )
-    
     # Получаем шаги для завершения
     query = db.query(Step).join(Lesson).join(Module).filter(
         Module.course_id == request.course_id
