@@ -229,3 +229,160 @@ async def update_leaderboard_entry(
     db.commit()
     db.refresh(entry)
     return entry
+
+
+# ==================== STUDENT LEADERBOARD ====================
+
+from src.schemas.models import StepProgress
+from datetime import timedelta
+
+@router.get("/student/my-ranking")
+async def get_student_ranking(
+    period: str = Query("all_time", regex="^(all_time|this_week|this_month)$"),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Get leaderboard for current student's group.
+    Shows ranking by completed steps and time spent.
+    Perfect for competitive students who want to flex 💪
+    """
+    
+    if current_user.role not in ['student', 'admin']:
+        raise HTTPException(status_code=403, detail="This endpoint is for students only")
+    
+    # Find user's group
+    group_membership = db.query(GroupStudent).filter(
+        GroupStudent.student_id == current_user.id
+    ).first()
+    
+    group_id = None
+    group_name = None
+    student_ids = []
+    
+    if group_membership:
+        group = db.query(Group).filter(Group.id == group_membership.group_id).first()
+        if group:
+            group_id = group.id
+            group_name = group.name
+            
+            # Get all students in this group
+            group_students = db.query(GroupStudent).filter(
+                GroupStudent.group_id == group.id
+            ).all()
+            student_ids = [gs.student_id for gs in group_students]
+    
+    if not student_ids:
+        # User is not in any group, show global leaderboard for students
+        students = db.query(UserInDB).filter(
+            UserInDB.role == 'student',
+            UserInDB.is_active == True
+        ).limit(100).all()
+        student_ids = [s.id for s in students]
+        group_name = "Global Rankings"
+    
+    # Calculate time filter
+    time_filter = None
+    now = datetime.utcnow()
+    
+    if period == "this_week":
+        # Start of current week (Monday)
+        start_of_week = now - timedelta(days=now.weekday())
+        start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_filter = start_of_week
+    elif period == "this_month":
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        time_filter = start_of_month
+    
+    # Build query for progress stats
+    progress_query = db.query(
+        StepProgress.user_id,
+        func.count(StepProgress.id).label('steps_completed'),
+        func.coalesce(func.sum(StepProgress.time_spent_minutes), 0).label('time_spent')
+    ).filter(
+        StepProgress.user_id.in_(student_ids),
+        StepProgress.status == 'completed'
+    )
+    
+    if time_filter:
+        progress_query = progress_query.filter(StepProgress.completed_at >= time_filter)
+    
+    progress_stats = progress_query.group_by(StepProgress.user_id).all()
+    
+    # Create stats dictionary
+    stats_dict = {
+        stat.user_id: {
+            'steps_completed': stat.steps_completed,
+            'time_spent_minutes': int(stat.time_spent)
+        }
+        for stat in progress_stats
+    }
+    
+    # Get all student info
+    students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
+    
+    # Build leaderboard entries
+    entries = []
+    for student in students:
+        stats = stats_dict.get(student.id, {'steps_completed': 0, 'time_spent_minutes': 0})
+        entries.append({
+            'user_id': student.id,
+            'user_name': student.name or student.email.split('@')[0],
+            'avatar_url': student.avatar_url,
+            'steps_completed': stats['steps_completed'],
+            'time_spent_minutes': stats['time_spent_minutes'],
+            'is_current_user': student.id == current_user.id
+        })
+    
+    # Sort by steps completed (primary), then by time spent (secondary)
+    entries.sort(key=lambda x: (-x['steps_completed'], -x['time_spent_minutes']))
+    
+    # Add ranks and find current user
+    leaderboard = []
+    current_user_rank = 0
+    current_user_entry = None
+    
+    for i, entry in enumerate(entries):
+        rank = i + 1
+        leaderboard_entry = {
+            'rank': rank,
+            'user_id': entry['user_id'],
+            'user_name': entry['user_name'],
+            'avatar_url': entry['avatar_url'],
+            'steps_completed': entry['steps_completed'],
+            'time_spent_minutes': entry['time_spent_minutes'],
+            'is_current_user': entry['is_current_user']
+        }
+        leaderboard.append(leaderboard_entry)
+        
+        if entry['is_current_user']:
+            current_user_rank = rank
+            current_user_entry = leaderboard_entry
+    
+    # Fun titles based on rank
+    def get_rank_title(rank: int, total: int) -> str:
+        if rank == 1:
+            return "👑 The GOAT"
+        elif rank == 2:
+            return "🥈 Almost There"
+        elif rank == 3:
+            return "🥉 Bronze Legend"
+        elif rank <= 5:
+            return "🔥 On Fire"
+        elif rank <= total * 0.25:
+            return "💪 Top 25%"
+        elif rank <= total * 0.5:
+            return "📈 Rising Star"
+        else:
+            return "🚀 Just Getting Started"
+    
+    return {
+        "group_id": group_id,
+        "group_name": group_name,
+        "leaderboard": leaderboard[:20],  # Top 20
+        "current_user_rank": current_user_rank,
+        "current_user_entry": current_user_entry,
+        "current_user_title": get_rank_title(current_user_rank, len(entries)) if current_user_rank > 0 else "🎯 No Progress Yet",
+        "total_participants": len(entries),
+        "period": period
+    }
