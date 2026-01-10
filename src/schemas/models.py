@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, String, Integer, Float, DateTime, Date, Time, ForeignKey, Text, Enum, ARRAY, Boolean, UniqueConstraint
+    Column, String, Integer, Float, DateTime, Date, Time, ForeignKey, Text, Enum, ARRAY, Boolean, UniqueConstraint, JSON
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -142,6 +142,240 @@ class FavoriteFlashcardCreateSchema(BaseModel):
     flashcard_data: str  # JSON string with FlashcardItem data
 
 # =============================================================================
+# ASSIGNMENT ZERO MODELS - Self-Assessment Questionnaire for New Students
+# =============================================================================
+
+class AssignmentZeroSubmission(Base):
+    """Stores self-assessment questionnaire data for new students"""
+    __tablename__ = "assignment_zero_submissions"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    
+    # Personal Information
+    full_name = Column(String, nullable=False)
+    phone_number = Column(String, nullable=False)
+    parent_phone_number = Column(String, nullable=False)
+    telegram_id = Column(String, nullable=False)
+    email = Column(String, nullable=False)  # Email for weekly tests
+    college_board_email = Column(String, nullable=False)
+    college_board_password = Column(String, nullable=False)
+    birthday_date = Column(Date, nullable=False)
+    city = Column(String, nullable=False)
+    
+    # School Information
+    school_type = Column(String, nullable=False)  # NIS, RFMS, BIL, Private, Public
+    group_name = Column(String, nullable=False)
+    
+    # SAT Information
+    sat_target_date = Column(String, nullable=False)  # October, November, December, March, May
+    has_passed_sat_before = Column(Boolean, default=False)
+    previous_sat_score = Column(String, nullable=True)  # e.g., "October 2024 - Math 650, Verbal 550"
+    recent_practice_test_score = Column(String, nullable=False)  # Description of recent practice
+    bluebook_practice_test_5_score = Column(String, nullable=False)  # e.g., "Math 500, Verbal 560"
+    
+    # File Upload
+    screenshot_url = Column(String, nullable=True)  # URL to uploaded screenshot
+    
+    # Grammar Assessment (1-5 scale: 1=Don't know, 5=Mastered)
+    grammar_punctuation = Column(Integer, nullable=True)  # Punctuation
+    grammar_noun_clauses = Column(Integer, nullable=True)  # Noun Clauses
+    grammar_relative_clauses = Column(Integer, nullable=True)  # Relative Clauses
+    grammar_verb_forms = Column(Integer, nullable=True)  # Verb Forms and Tenses
+    grammar_comparisons = Column(Integer, nullable=True)  # Comparisons
+    grammar_transitions = Column(Integer, nullable=True)  # Transitions
+    grammar_synthesis = Column(Integer, nullable=True)  # Synthesis Questions
+    
+    # Reading Skills Assessment (1-5 scale)
+    reading_word_in_context = Column(Integer, nullable=True)  # Words in Context
+    reading_text_structure = Column(Integer, nullable=True)  # Text Structure and Purpose
+    reading_cross_text = Column(Integer, nullable=True)  # Cross-Text Connections
+    reading_central_ideas = Column(Integer, nullable=True)  # Central Ideas and Details
+    reading_inferences = Column(Integer, nullable=True)  # Inferences
+    
+    # SAT Passage Types Assessment (1-5 scale)
+    passages_literary = Column(Integer, nullable=True)  # Literary passages
+    passages_social_science = Column(Integer, nullable=True)  # Social science passages
+    passages_humanities = Column(Integer, nullable=True)  # Humanities passages
+    passages_science = Column(Integer, nullable=True)  # Science passages
+    passages_poetry = Column(Integer, nullable=True)  # Poetry passages
+    
+    # Math Topics (JSON array of selected topics)
+    math_topics = Column(JSON, nullable=True)  # List of selected topics
+    
+    # Additional comments
+    additional_comments = Column(Text, nullable=True)
+    
+    # Progress tracking for auto-save
+    is_draft = Column(Boolean, default=True)  # True = in progress, False = submitted
+    last_saved_step = Column(Integer, default=1)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    user = relationship("UserInDB", backref="assignment_zero_submission")
+
+class AssignmentZeroSubmissionSchema(BaseModel):
+    id: int
+    user_id: int
+    full_name: str
+    phone_number: str
+    parent_phone_number: str
+    telegram_id: str
+    email: str
+    college_board_email: str
+    college_board_password: str
+    birthday_date: date
+    city: str
+    school_type: str
+    group_name: str
+    sat_target_date: str
+    has_passed_sat_before: bool
+    previous_sat_score: Optional[str] = None
+    recent_practice_test_score: str
+    bluebook_practice_test_5_score: str
+    screenshot_url: Optional[str] = None
+    
+    # Grammar Assessment (1-5 scale)
+    grammar_punctuation: Optional[int] = None
+    grammar_noun_clauses: Optional[int] = None
+    grammar_relative_clauses: Optional[int] = None
+    grammar_verb_forms: Optional[int] = None
+    grammar_comparisons: Optional[int] = None
+    grammar_transitions: Optional[int] = None
+    grammar_synthesis: Optional[int] = None
+    
+    # Reading Skills Assessment (1-5 scale)
+    reading_word_in_context: Optional[int] = None
+    reading_text_structure: Optional[int] = None
+    reading_cross_text: Optional[int] = None
+    reading_central_ideas: Optional[int] = None
+    reading_inferences: Optional[int] = None
+    
+    # SAT Passage Types Assessment (1-5 scale)
+    passages_literary: Optional[int] = None
+    passages_social_science: Optional[int] = None
+    passages_humanities: Optional[int] = None
+    passages_science: Optional[int] = None
+    passages_poetry: Optional[int] = None
+    
+    # Math Topics
+    math_topics: Optional[List[str]] = None
+    
+    # Additional comments
+    additional_comments: Optional[str] = None
+    
+    # Progress tracking
+    is_draft: bool = False
+    last_saved_step: int = 1
+    
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class AssignmentZeroSubmitSchema(BaseModel):
+    full_name: str
+    phone_number: str
+    parent_phone_number: str
+    telegram_id: str
+    email: str
+    college_board_email: str
+    college_board_password: str
+    birthday_date: date
+    city: str
+    school_type: str
+    group_name: str
+    sat_target_date: str
+    has_passed_sat_before: bool = False
+    previous_sat_score: Optional[str] = None
+    recent_practice_test_score: str
+    bluebook_practice_test_5_score: str
+    screenshot_url: Optional[str] = None
+    
+    # Grammar Assessment (1-5 scale)
+    grammar_punctuation: Optional[int] = None
+    grammar_noun_clauses: Optional[int] = None
+    grammar_relative_clauses: Optional[int] = None
+    grammar_verb_forms: Optional[int] = None
+    grammar_comparisons: Optional[int] = None
+    grammar_transitions: Optional[int] = None
+    grammar_synthesis: Optional[int] = None
+    
+    # Reading Skills Assessment (1-5 scale)
+    reading_word_in_context: Optional[int] = None
+    reading_text_structure: Optional[int] = None
+    reading_cross_text: Optional[int] = None
+    reading_central_ideas: Optional[int] = None
+    reading_inferences: Optional[int] = None
+    
+    # SAT Passage Types Assessment (1-5 scale)
+    passages_literary: Optional[int] = None
+    passages_social_science: Optional[int] = None
+    passages_humanities: Optional[int] = None
+    passages_science: Optional[int] = None
+    passages_poetry: Optional[int] = None
+    
+    # Math Topics
+    math_topics: Optional[List[str]] = None
+    
+    # Additional comments
+    additional_comments: Optional[str] = None
+
+# Schema for saving progress (partial data)
+class AssignmentZeroSaveProgressSchema(BaseModel):
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    parent_phone_number: Optional[str] = None
+    telegram_id: Optional[str] = None
+    email: Optional[str] = None
+    college_board_email: Optional[str] = None
+    college_board_password: Optional[str] = None
+    birthday_date: Optional[date] = None
+    city: Optional[str] = None
+    school_type: Optional[str] = None
+    group_name: Optional[str] = None
+    sat_target_date: Optional[str] = None
+    has_passed_sat_before: Optional[bool] = None
+    previous_sat_score: Optional[str] = None
+    recent_practice_test_score: Optional[str] = None
+    bluebook_practice_test_5_score: Optional[str] = None
+    screenshot_url: Optional[str] = None
+    
+    # Grammar Assessment
+    grammar_punctuation: Optional[int] = None
+    grammar_noun_clauses: Optional[int] = None
+    grammar_relative_clauses: Optional[int] = None
+    grammar_verb_forms: Optional[int] = None
+    grammar_comparisons: Optional[int] = None
+    grammar_transitions: Optional[int] = None
+    grammar_synthesis: Optional[int] = None
+    
+    # Reading Skills Assessment
+    reading_word_in_context: Optional[int] = None
+    reading_text_structure: Optional[int] = None
+    reading_cross_text: Optional[int] = None
+    reading_central_ideas: Optional[int] = None
+    reading_inferences: Optional[int] = None
+    
+    # SAT Passage Types Assessment
+    passages_literary: Optional[int] = None
+    passages_social_science: Optional[int] = None
+    passages_humanities: Optional[int] = None
+    passages_science: Optional[int] = None
+    passages_poetry: Optional[int] = None
+    
+    # Math Topics
+    math_topics: Optional[List[str]] = None
+    
+    # Additional comments
+    additional_comments: Optional[str] = None
+    
+    # Progress tracking
+    last_saved_step: Optional[int] = None
+
+# =============================================================================
 # USER MODELS - LMS PLATFORM
 # =============================================================================
 
@@ -165,6 +399,10 @@ class UserInDB(Base):
     # Onboarding tracking
     onboarding_completed = Column(Boolean, default=False, nullable=False)
     onboarding_completed_at = Column(DateTime, nullable=True)
+    
+    # Assignment Zero (self-assessment questionnaire for new students)
+    assignment_zero_completed = Column(Boolean, default=False, nullable=False)
+    assignment_zero_completed_at = Column(DateTime, nullable=True)
     
     # Student specific fields
     student_id = Column(String, unique=True, nullable=True)  # For students only
@@ -205,6 +443,8 @@ class UserSchema(BaseModel):
     last_activity_date: Optional[date] = None
     onboarding_completed: Optional[bool] = False
     onboarding_completed_at: Optional[datetime] = None
+    assignment_zero_completed: Optional[bool] = False
+    assignment_zero_completed_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
