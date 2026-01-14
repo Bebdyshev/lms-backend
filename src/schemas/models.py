@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, String, Integer, Float, DateTime, Date, Time, ForeignKey, Text, Enum, ARRAY, Boolean, UniqueConstraint, JSON
+    Column, String, Integer, BigInteger, Float, DateTime, Date, Time, ForeignKey, Text, Enum, ARRAY, Boolean, UniqueConstraint, JSON
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -1711,3 +1711,28 @@ class LeaderboardEntryCreateSchema(BaseModel):
     self_reflection_journal: Optional[float] = None
     weekly_evaluation: Optional[float] = None
     extra_points: Optional[float] = None
+
+
+# =============================================================================
+# QUESTION ERROR REPORTS
+# =============================================================================
+
+class QuestionErrorReport(Base):
+    """Model for tracking error reports submitted by users for quiz questions."""
+    __tablename__ = "question_error_reports"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    question_id = Column(BigInteger, nullable=False, index=True)  # ID of the question from quiz content (BigInteger for large IDs)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    step_id = Column(Integer, ForeignKey("steps.id", ondelete="SET NULL"), nullable=True)
+    message = Column(Text, nullable=False)
+    suggested_answer = Column(Text, nullable=True)  # User's suggested correct answer
+    status = Column(String, default="pending", nullable=False)  # pending, reviewed, resolved, dismissed
+    created_at = Column(DateTime, default=datetime.utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    
+    # Relationships
+    user = relationship("UserInDB", foreign_keys=[user_id])
+    step = relationship("Step", foreign_keys=[step_id])
+    resolver = relationship("UserInDB", foreign_keys=[resolved_by])

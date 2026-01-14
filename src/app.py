@@ -19,6 +19,7 @@ from src.routes.analytics import router as analytics_router
 from src.routes.flashcards import router as flashcards_router
 from src.routes.leaderboard import router as leaderboard_router
 from src.routes.assignment_zero import router as assignment_zero_router
+from src.routes.questions import router as questions_router
 from dotenv import load_dotenv
 import logging
 import os
@@ -93,6 +94,7 @@ app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
 app.include_router(flashcards_router, prefix="/flashcards", tags=["Flashcards"])
 app.include_router(leaderboard_router, prefix="/leaderboard", tags=["Leaderboard"])
 app.include_router(assignment_zero_router, prefix="/assignment-zero", tags=["Assignment Zero"])
+app.include_router(questions_router, tags=["Questions"])
 
 # Root endpoint with ASCII art
 @app.get("/")
