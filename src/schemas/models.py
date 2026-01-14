@@ -202,6 +202,48 @@ class AssignmentZeroSubmission(Base):
     # Math Topics (JSON array of selected topics)
     math_topics = Column(JSON, nullable=True)  # List of selected topics
     
+    # =============================================================================
+    # IELTS Specific Fields (shown when user belongs to IELTS group)
+    # =============================================================================
+    
+    # IELTS Test Information
+    ielts_target_date = Column(String, nullable=True)  # Target IELTS test date
+    has_passed_ielts_before = Column(Boolean, default=False)
+    previous_ielts_score = Column(String, nullable=True)  # e.g., "Overall 6.5 - L:7 R:6.5 W:6 S:6.5"
+    ielts_target_score = Column(String, nullable=True)  # Target overall band score
+    
+    # IELTS Listening Assessment (1-5 scale)
+    ielts_listening_main_idea = Column(Integer, nullable=True)  # Understanding main ideas
+    ielts_listening_details = Column(Integer, nullable=True)  # Catching specific details
+    ielts_listening_opinion = Column(Integer, nullable=True)  # Understanding opinions/attitudes
+    ielts_listening_accents = Column(Integer, nullable=True)  # Understanding different accents
+    
+    # IELTS Reading Assessment (1-5 scale)
+    ielts_reading_skimming = Column(Integer, nullable=True)  # Skimming for main ideas
+    ielts_reading_scanning = Column(Integer, nullable=True)  # Scanning for specific info
+    ielts_reading_vocabulary = Column(Integer, nullable=True)  # Academic vocabulary
+    ielts_reading_inference = Column(Integer, nullable=True)  # Making inferences
+    ielts_reading_matching = Column(Integer, nullable=True)  # Matching headings/info
+    
+    # IELTS Writing Assessment (1-5 scale)
+    ielts_writing_task1_graphs = Column(Integer, nullable=True)  # Describing graphs/charts
+    ielts_writing_task1_process = Column(Integer, nullable=True)  # Describing processes
+    ielts_writing_task2_structure = Column(Integer, nullable=True)  # Essay structure
+    ielts_writing_task2_arguments = Column(Integer, nullable=True)  # Developing arguments
+    ielts_writing_grammar = Column(Integer, nullable=True)  # Grammar accuracy
+    ielts_writing_vocabulary = Column(Integer, nullable=True)  # Vocabulary range
+    
+    # IELTS Speaking Assessment (1-5 scale)
+    ielts_speaking_fluency = Column(Integer, nullable=True)  # Fluency and coherence
+    ielts_speaking_vocabulary = Column(Integer, nullable=True)  # Lexical resource
+    ielts_speaking_grammar = Column(Integer, nullable=True)  # Grammatical range
+    ielts_speaking_pronunciation = Column(Integer, nullable=True)  # Pronunciation
+    ielts_speaking_part2 = Column(Integer, nullable=True)  # Long turn speaking (Part 2)
+    ielts_speaking_part3 = Column(Integer, nullable=True)  # Discussion skills (Part 3)
+    
+    # IELTS Topics (JSON array of topics that need improvement)
+    ielts_weak_topics = Column(JSON, nullable=True)  # List of weak areas
+    
     # Additional comments
     additional_comments = Column(Text, nullable=True)
     
@@ -262,6 +304,44 @@ class AssignmentZeroSubmissionSchema(BaseModel):
     # Math Topics
     math_topics: Optional[List[str]] = None
     
+    # IELTS Fields
+    ielts_target_date: Optional[str] = None
+    has_passed_ielts_before: Optional[bool] = False
+    previous_ielts_score: Optional[str] = None
+    ielts_target_score: Optional[str] = None
+    
+    # IELTS Listening Assessment
+    ielts_listening_main_idea: Optional[int] = None
+    ielts_listening_details: Optional[int] = None
+    ielts_listening_opinion: Optional[int] = None
+    ielts_listening_accents: Optional[int] = None
+    
+    # IELTS Reading Assessment
+    ielts_reading_skimming: Optional[int] = None
+    ielts_reading_scanning: Optional[int] = None
+    ielts_reading_vocabulary: Optional[int] = None
+    ielts_reading_inference: Optional[int] = None
+    ielts_reading_matching: Optional[int] = None
+    
+    # IELTS Writing Assessment
+    ielts_writing_task1_graphs: Optional[int] = None
+    ielts_writing_task1_process: Optional[int] = None
+    ielts_writing_task2_structure: Optional[int] = None
+    ielts_writing_task2_arguments: Optional[int] = None
+    ielts_writing_grammar: Optional[int] = None
+    ielts_writing_vocabulary: Optional[int] = None
+    
+    # IELTS Speaking Assessment
+    ielts_speaking_fluency: Optional[int] = None
+    ielts_speaking_vocabulary: Optional[int] = None
+    ielts_speaking_grammar: Optional[int] = None
+    ielts_speaking_pronunciation: Optional[int] = None
+    ielts_speaking_part2: Optional[int] = None
+    ielts_speaking_part3: Optional[int] = None
+    
+    # IELTS Weak Topics
+    ielts_weak_topics: Optional[List[str]] = None
+    
     # Additional comments
     additional_comments: Optional[str] = None
     
@@ -320,6 +400,44 @@ class AssignmentZeroSubmitSchema(BaseModel):
     # Math Topics
     math_topics: Optional[List[str]] = None
     
+    # IELTS Fields
+    ielts_target_date: Optional[str] = None
+    has_passed_ielts_before: Optional[bool] = False
+    previous_ielts_score: Optional[str] = None
+    ielts_target_score: Optional[str] = None
+    
+    # IELTS Listening Assessment
+    ielts_listening_main_idea: Optional[int] = None
+    ielts_listening_details: Optional[int] = None
+    ielts_listening_opinion: Optional[int] = None
+    ielts_listening_accents: Optional[int] = None
+    
+    # IELTS Reading Assessment
+    ielts_reading_skimming: Optional[int] = None
+    ielts_reading_scanning: Optional[int] = None
+    ielts_reading_vocabulary: Optional[int] = None
+    ielts_reading_inference: Optional[int] = None
+    ielts_reading_matching: Optional[int] = None
+    
+    # IELTS Writing Assessment
+    ielts_writing_task1_graphs: Optional[int] = None
+    ielts_writing_task1_process: Optional[int] = None
+    ielts_writing_task2_structure: Optional[int] = None
+    ielts_writing_task2_arguments: Optional[int] = None
+    ielts_writing_grammar: Optional[int] = None
+    ielts_writing_vocabulary: Optional[int] = None
+    
+    # IELTS Speaking Assessment
+    ielts_speaking_fluency: Optional[int] = None
+    ielts_speaking_vocabulary: Optional[int] = None
+    ielts_speaking_grammar: Optional[int] = None
+    ielts_speaking_pronunciation: Optional[int] = None
+    ielts_speaking_part2: Optional[int] = None
+    ielts_speaking_part3: Optional[int] = None
+    
+    # IELTS Weak Topics
+    ielts_weak_topics: Optional[List[str]] = None
+    
     # Additional comments
     additional_comments: Optional[str] = None
 
@@ -368,6 +486,44 @@ class AssignmentZeroSaveProgressSchema(BaseModel):
     
     # Math Topics
     math_topics: Optional[List[str]] = None
+    
+    # IELTS Fields
+    ielts_target_date: Optional[str] = None
+    has_passed_ielts_before: Optional[bool] = None
+    previous_ielts_score: Optional[str] = None
+    ielts_target_score: Optional[str] = None
+    
+    # IELTS Listening Assessment
+    ielts_listening_main_idea: Optional[int] = None
+    ielts_listening_details: Optional[int] = None
+    ielts_listening_opinion: Optional[int] = None
+    ielts_listening_accents: Optional[int] = None
+    
+    # IELTS Reading Assessment
+    ielts_reading_skimming: Optional[int] = None
+    ielts_reading_scanning: Optional[int] = None
+    ielts_reading_vocabulary: Optional[int] = None
+    ielts_reading_inference: Optional[int] = None
+    ielts_reading_matching: Optional[int] = None
+    
+    # IELTS Writing Assessment
+    ielts_writing_task1_graphs: Optional[int] = None
+    ielts_writing_task1_process: Optional[int] = None
+    ielts_writing_task2_structure: Optional[int] = None
+    ielts_writing_task2_arguments: Optional[int] = None
+    ielts_writing_grammar: Optional[int] = None
+    ielts_writing_vocabulary: Optional[int] = None
+    
+    # IELTS Speaking Assessment
+    ielts_speaking_fluency: Optional[int] = None
+    ielts_speaking_vocabulary: Optional[int] = None
+    ielts_speaking_grammar: Optional[int] = None
+    ielts_speaking_pronunciation: Optional[int] = None
+    ielts_speaking_part2: Optional[int] = None
+    ielts_speaking_part3: Optional[int] = None
+    
+    # IELTS Weak Topics
+    ielts_weak_topics: Optional[List[str]] = None
     
     # Additional comments
     additional_comments: Optional[str] = None

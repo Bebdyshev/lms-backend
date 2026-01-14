@@ -8,7 +8,7 @@ from src.config import get_db
 from src.schemas.models import (
     UserInDB, AssignmentZeroSubmission, 
     AssignmentZeroSubmissionSchema, AssignmentZeroSubmitSchema,
-    AssignmentZeroSaveProgressSchema
+    AssignmentZeroSaveProgressSchema, Group, GroupStudent
 )
 from src.routes.auth import get_current_user_dependency
 
@@ -33,7 +33,8 @@ async def get_assignment_zero_status(
         return {
             "needs_completion": False,
             "completed": True,
-            "message": "Assignment Zero is only for students"
+            "message": "Assignment Zero is only for students",
+            "user_groups": []
         }
     
     # Check for draft submission
@@ -42,12 +43,27 @@ async def get_assignment_zero_status(
         AssignmentZeroSubmission.is_draft == True
     ).first()
     
+    # Get user's groups with names
+    user_group_students = db.query(GroupStudent).filter(
+        GroupStudent.student_id == current_user.id
+    ).all()
+    
+    user_groups = []
+    for gs in user_group_students:
+        group = db.query(Group).filter(Group.id == gs.group_id).first()
+        if group:
+            user_groups.append({
+                "id": group.id,
+                "name": group.name
+            })
+    
     return {
         "needs_completion": not current_user.assignment_zero_completed,
         "completed": current_user.assignment_zero_completed,
         "completed_at": current_user.assignment_zero_completed_at,
         "has_draft": draft is not None,
-        "last_saved_step": draft.last_saved_step if draft else None
+        "last_saved_step": draft.last_saved_step if draft else None,
+        "user_groups": user_groups
     }
 
 @router.get("/my-submission", response_model=AssignmentZeroSubmissionSchema)
@@ -114,7 +130,7 @@ async def save_assignment_zero_progress(
             recent_practice_test_score=data.recent_practice_test_score or "",
             bluebook_practice_test_5_score=data.bluebook_practice_test_5_score or "",
             screenshot_url=data.screenshot_url,
-            # Assessment fields
+            # SAT Assessment fields
             grammar_punctuation=data.grammar_punctuation,
             grammar_noun_clauses=data.grammar_noun_clauses,
             grammar_relative_clauses=data.grammar_relative_clauses,
@@ -133,6 +149,33 @@ async def save_assignment_zero_progress(
             passages_science=data.passages_science,
             passages_poetry=data.passages_poetry,
             math_topics=data.math_topics,
+            # IELTS fields
+            ielts_target_date=data.ielts_target_date,
+            has_passed_ielts_before=data.has_passed_ielts_before or False,
+            previous_ielts_score=data.previous_ielts_score,
+            ielts_target_score=data.ielts_target_score,
+            ielts_listening_main_idea=data.ielts_listening_main_idea,
+            ielts_listening_details=data.ielts_listening_details,
+            ielts_listening_opinion=data.ielts_listening_opinion,
+            ielts_listening_accents=data.ielts_listening_accents,
+            ielts_reading_skimming=data.ielts_reading_skimming,
+            ielts_reading_scanning=data.ielts_reading_scanning,
+            ielts_reading_vocabulary=data.ielts_reading_vocabulary,
+            ielts_reading_inference=data.ielts_reading_inference,
+            ielts_reading_matching=data.ielts_reading_matching,
+            ielts_writing_task1_graphs=data.ielts_writing_task1_graphs,
+            ielts_writing_task1_process=data.ielts_writing_task1_process,
+            ielts_writing_task2_structure=data.ielts_writing_task2_structure,
+            ielts_writing_task2_arguments=data.ielts_writing_task2_arguments,
+            ielts_writing_grammar=data.ielts_writing_grammar,
+            ielts_writing_vocabulary=data.ielts_writing_vocabulary,
+            ielts_speaking_fluency=data.ielts_speaking_fluency,
+            ielts_speaking_vocabulary=data.ielts_speaking_vocabulary,
+            ielts_speaking_grammar=data.ielts_speaking_grammar,
+            ielts_speaking_pronunciation=data.ielts_speaking_pronunciation,
+            ielts_speaking_part2=data.ielts_speaking_part2,
+            ielts_speaking_part3=data.ielts_speaking_part3,
+            ielts_weak_topics=data.ielts_weak_topics,
             additional_comments=data.additional_comments,
             # Draft status
             is_draft=True,
@@ -181,7 +224,7 @@ async def submit_assignment_zero(
         existing.recent_practice_test_score = data.recent_practice_test_score
         existing.bluebook_practice_test_5_score = data.bluebook_practice_test_5_score
         existing.screenshot_url = data.screenshot_url
-        # Assessment fields
+        # SAT Assessment fields
         existing.grammar_punctuation = data.grammar_punctuation
         existing.grammar_noun_clauses = data.grammar_noun_clauses
         existing.grammar_relative_clauses = data.grammar_relative_clauses
@@ -200,6 +243,33 @@ async def submit_assignment_zero(
         existing.passages_science = data.passages_science
         existing.passages_poetry = data.passages_poetry
         existing.math_topics = data.math_topics
+        # IELTS fields
+        existing.ielts_target_date = data.ielts_target_date
+        existing.has_passed_ielts_before = data.has_passed_ielts_before
+        existing.previous_ielts_score = data.previous_ielts_score
+        existing.ielts_target_score = data.ielts_target_score
+        existing.ielts_listening_main_idea = data.ielts_listening_main_idea
+        existing.ielts_listening_details = data.ielts_listening_details
+        existing.ielts_listening_opinion = data.ielts_listening_opinion
+        existing.ielts_listening_accents = data.ielts_listening_accents
+        existing.ielts_reading_skimming = data.ielts_reading_skimming
+        existing.ielts_reading_scanning = data.ielts_reading_scanning
+        existing.ielts_reading_vocabulary = data.ielts_reading_vocabulary
+        existing.ielts_reading_inference = data.ielts_reading_inference
+        existing.ielts_reading_matching = data.ielts_reading_matching
+        existing.ielts_writing_task1_graphs = data.ielts_writing_task1_graphs
+        existing.ielts_writing_task1_process = data.ielts_writing_task1_process
+        existing.ielts_writing_task2_structure = data.ielts_writing_task2_structure
+        existing.ielts_writing_task2_arguments = data.ielts_writing_task2_arguments
+        existing.ielts_writing_grammar = data.ielts_writing_grammar
+        existing.ielts_writing_vocabulary = data.ielts_writing_vocabulary
+        existing.ielts_speaking_fluency = data.ielts_speaking_fluency
+        existing.ielts_speaking_vocabulary = data.ielts_speaking_vocabulary
+        existing.ielts_speaking_grammar = data.ielts_speaking_grammar
+        existing.ielts_speaking_pronunciation = data.ielts_speaking_pronunciation
+        existing.ielts_speaking_part2 = data.ielts_speaking_part2
+        existing.ielts_speaking_part3 = data.ielts_speaking_part3
+        existing.ielts_weak_topics = data.ielts_weak_topics
         existing.additional_comments = data.additional_comments
         # Mark as submitted
         existing.is_draft = False
@@ -227,7 +297,7 @@ async def submit_assignment_zero(
             recent_practice_test_score=data.recent_practice_test_score,
             bluebook_practice_test_5_score=data.bluebook_practice_test_5_score,
             screenshot_url=data.screenshot_url,
-            # Assessment fields
+            # SAT Assessment fields
             grammar_punctuation=data.grammar_punctuation,
             grammar_noun_clauses=data.grammar_noun_clauses,
             grammar_relative_clauses=data.grammar_relative_clauses,
@@ -246,6 +316,33 @@ async def submit_assignment_zero(
             passages_science=data.passages_science,
             passages_poetry=data.passages_poetry,
             math_topics=data.math_topics,
+            # IELTS fields
+            ielts_target_date=data.ielts_target_date,
+            has_passed_ielts_before=data.has_passed_ielts_before,
+            previous_ielts_score=data.previous_ielts_score,
+            ielts_target_score=data.ielts_target_score,
+            ielts_listening_main_idea=data.ielts_listening_main_idea,
+            ielts_listening_details=data.ielts_listening_details,
+            ielts_listening_opinion=data.ielts_listening_opinion,
+            ielts_listening_accents=data.ielts_listening_accents,
+            ielts_reading_skimming=data.ielts_reading_skimming,
+            ielts_reading_scanning=data.ielts_reading_scanning,
+            ielts_reading_vocabulary=data.ielts_reading_vocabulary,
+            ielts_reading_inference=data.ielts_reading_inference,
+            ielts_reading_matching=data.ielts_reading_matching,
+            ielts_writing_task1_graphs=data.ielts_writing_task1_graphs,
+            ielts_writing_task1_process=data.ielts_writing_task1_process,
+            ielts_writing_task2_structure=data.ielts_writing_task2_structure,
+            ielts_writing_task2_arguments=data.ielts_writing_task2_arguments,
+            ielts_writing_grammar=data.ielts_writing_grammar,
+            ielts_writing_vocabulary=data.ielts_writing_vocabulary,
+            ielts_speaking_fluency=data.ielts_speaking_fluency,
+            ielts_speaking_vocabulary=data.ielts_speaking_vocabulary,
+            ielts_speaking_grammar=data.ielts_speaking_grammar,
+            ielts_speaking_pronunciation=data.ielts_speaking_pronunciation,
+            ielts_speaking_part2=data.ielts_speaking_part2,
+            ielts_speaking_part3=data.ielts_speaking_part3,
+            ielts_weak_topics=data.ielts_weak_topics,
             additional_comments=data.additional_comments,
             # Mark as submitted
             is_draft=False
