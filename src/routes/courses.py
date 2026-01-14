@@ -614,8 +614,11 @@ async def get_course_modules(
                 # SEQUENTIAL ACCESS LOGIC: Determine if lesson is accessible
                 # If viewing for a specific student OR current user is a student
                 if current_user.role == "student" or student_id:
+                    # Check if lesson is marked as initially unlocked by admin
+                    if lesson.is_initially_unlocked:
+                        lesson_dict["is_accessible"] = True
                     # Check if explicitly unlocked by redirect or assignment
-                    if lesson.id in unlocked_by_redirect_ids or lesson.id in unlocked_by_assignment_ids:
+                    elif lesson.id in unlocked_by_redirect_ids or lesson.id in unlocked_by_assignment_ids:
                         lesson_dict["is_accessible"] = True
                     # First lesson is always accessible
                     elif lesson_idx == 0:
@@ -921,7 +924,8 @@ async def create_lesson(
         description=lesson_data.description,
         duration_minutes=lesson_data.duration_minutes,
         order_index=calculated_order_index,
-        next_lesson_id=lesson_data.next_lesson_id
+        next_lesson_id=lesson_data.next_lesson_id,
+        is_initially_unlocked=lesson_data.is_initially_unlocked
     )
     
     db.add(new_lesson)
@@ -996,6 +1000,10 @@ async def check_lesson_access(
     
     # Teachers and admins can access any lesson
     if current_user.role != "student":
+        return {"accessible": True}
+    
+    # Check if lesson is marked as initially unlocked by admin
+    if lesson.is_initially_unlocked:
         return {"accessible": True}
     
     # Check if this lesson is assigned as homework (priority access) - optimized lookup
@@ -1186,6 +1194,8 @@ async def update_lesson(
     lesson.next_lesson_id = lesson_data.next_lesson_id
     # Always update order_index (can be 0 for first item)
     lesson.order_index = lesson_data.order_index
+    # Update is_initially_unlocked flag
+    lesson.is_initially_unlocked = lesson_data.is_initially_unlocked
     
     db.commit()
     db.refresh(lesson)

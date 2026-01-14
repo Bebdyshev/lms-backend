@@ -622,6 +622,8 @@ class Lesson(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     # Explicit next-lesson pointer within the same course
     next_lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)
+    # Flag to mark lesson as initially unlocked (bypasses sequential access)
+    is_initially_unlocked = Column(Boolean, default=False)
     
     # Relationships
     module = relationship("Module", back_populates="lessons")
@@ -710,6 +712,7 @@ class BaseLessonSchema(BaseModel):
     order_index: int
     created_at: datetime
     next_lesson_id: Optional[int] = None
+    is_initially_unlocked: Optional[bool] = False
     steps: Optional[List[StepSchema]] = None
     is_completed: Optional[bool] = False
     
@@ -753,6 +756,7 @@ class LessonCreateSchema(BaseModel):
     duration_minutes: int = 0
     order_index: int = 0
     next_lesson_id: Optional[int] = None
+    is_initially_unlocked: bool = False
 
 class LessonMaterialSchema(BaseModel):
     id: int
