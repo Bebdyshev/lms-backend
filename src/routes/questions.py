@@ -147,10 +147,23 @@ async def get_error_reports(
         course_info = None
         
         if report.step:
+            # Calculate step number (1-based index based on order in lesson)
+            step_number = 1
+            try:
+                # Count steps in the same lesson with lower order_index
+                prev_steps_count = db.query(Step).filter(
+                    Step.lesson_id == report.step.lesson_id,
+                    Step.order_index < report.step.order_index
+                ).count()
+                step_number = prev_steps_count + 1
+            except Exception:
+                pass
+
             step_info = {
                 "id": report.step.id,
                 "title": report.step.title,
                 "content_type": report.step.content_type,
+                "step_number": step_number
             }
             
             # Get course info through relationships
@@ -245,7 +258,19 @@ async def get_error_report_detail(
     
     # Get course hierarchy
     course_info = None
+    step_number = 1
+
     if report.step:
+        # Calculate step number
+        try:
+            prev_steps_count = db.query(Step).filter(
+                Step.lesson_id == report.step.lesson_id,
+                Step.order_index < report.step.order_index
+            ).count()
+            step_number = prev_steps_count + 1
+        except Exception:
+            pass
+
         step = db.query(Step).options(
             joinedload(Step.lesson).joinedload(Lesson.module).joinedload(Module.course)
         ).filter(Step.id == report.step_id).first()
@@ -285,6 +310,7 @@ async def get_error_report_detail(
             "title": report.step.title,
             "content_type": report.step.content_type,
             "original_image_url": report.step.original_image_url,
+            "step_number": step_number,
         } if report.step else None,
         "quiz_settings": quiz_settings,
         "question_data": question_data,
