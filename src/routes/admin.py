@@ -1575,6 +1575,7 @@ async def get_all_events(
     # Eager load relationships to avoid N+1
     query = query.options(
         joinedload(Event.creator),
+        joinedload(Event.teacher),
         joinedload(Event.event_groups).joinedload(EventGroup.group)
     )
     
@@ -1601,6 +1602,9 @@ async def get_all_events(
         
         # Add creator name from eager loaded relationship
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
+        
+        # Add teacher name
+        event_data.teacher_name = event.teacher.name if event.teacher else None
         
         # Add group names from eager loaded relationship
         group_names = [eg.group.name for eg in event.event_groups if eg.group]
@@ -1656,7 +1660,9 @@ async def create_event(
         is_recurring=event_data.is_recurring,
         recurrence_pattern=event_data.recurrence_pattern,
         recurrence_end_date=event_data.recurrence_end_date,
-        max_participants=event_data.max_participants
+        max_participants=event_data.max_participants,
+        lesson_id=event_data.lesson_id,
+        teacher_id=event_data.teacher_id
     )
     
     db.add(event)
@@ -1686,6 +1692,11 @@ async def create_event(
     result = EventSchema.from_orm(event)
     creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
     result.creator_name = creator.name if creator else "Unknown"
+    
+    if event.teacher_id:
+        teacher = db.query(UserInDB).filter(UserInDB.id == event.teacher_id).first()
+        result.teacher_name = teacher.name if teacher else None
+    
     result.groups = [eg.group.name for eg in event.event_groups if eg.group]
     result.courses = [ec.course.title for ec in event.event_courses if ec.course]
     
@@ -1766,6 +1777,10 @@ async def update_event(
     creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
     result.creator_name = creator.name if creator else "Unknown"
     
+    if event.teacher_id:
+        teacher = db.query(UserInDB).filter(UserInDB.id == event.teacher_id).first()
+        result.teacher_name = teacher.name if teacher else None
+    
     return result
 
 @router.delete("/events/{event_id}")
@@ -1787,6 +1802,28 @@ async def delete_event(
     db.commit()
     
     return {"detail": "Event deleted successfully"}
+
+@router.post("/events/bulk-delete")
+async def bulk_delete_events(
+    event_ids: List[int],
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """Bulk delete events (admin only)"""
+    if not event_ids:
+        return {"detail": "No events provided"}
+    
+    # Soft delete
+    db.query(Event).filter(
+        Event.id.in_(event_ids)
+    ).update({
+        Event.is_active: False,
+        Event.updated_at: datetime.utcnow()
+    }, synchronize_session=False)
+    
+    db.commit()
+    
+    return {"detail": f"Successfully deleted {len(event_ids)} events"}
 
 @router.post("/events/bulk", response_model=List[EventSchema])
 async def create_bulk_events(

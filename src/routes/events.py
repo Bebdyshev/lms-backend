@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, desc, and_, or_
+from sqlalchemy import func, desc, and_, or_, select
 from typing import List, Optional
 from datetime import datetime, date, timedelta
 
@@ -8,7 +8,7 @@ from src.config import get_db
 from src.schemas.models import (
     UserInDB, Event, EventGroup, EventParticipant, Group, GroupStudent,
     EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course,
-    CreateEventRequest
+    CreateEventRequest, Assignment, Lesson, Module
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role
@@ -113,7 +113,8 @@ async def get_my_events(
     query = query.options(
         joinedload(Event.creator),
         joinedload(Event.event_groups).joinedload(EventGroup.group),
-        joinedload(Event.event_courses).joinedload(EventCourse.course)
+        joinedload(Event.event_courses).joinedload(EventCourse.course),
+        joinedload(Event.lesson)
     )
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
@@ -217,10 +218,13 @@ async def get_calendar_events(
         print(f"DEBUG: No groups or courses for user {current_user.id}")
         return []
     
+    import sys
+    
     print(f"DEBUG: Calendar request - User: {current_user.id}, Role: {current_user.role}")
     print(f"DEBUG: Groups: {user_group_ids}")
     print(f"DEBUG: Courses: {user_course_ids}")
     print(f"DEBUG: Date Range: {start_date} to {end_date}")
+    sys.stdout.flush()
 
     # Get events for the month with eager loading
     # 1. Get standard events in range
@@ -340,8 +344,6 @@ async def get_calendar_events(
     all_events = standard_events + generated_events
     all_events.sort(key=lambda x: x.start_datetime)
     
-    if not all_events:
-        return []
 
     # Batch fetch participant counts (only for real events)
     real_event_ids = [e.id for e in standard_events]
@@ -377,6 +379,95 @@ async def get_calendar_events(
         event_data.participant_count = count_map.get(event.id, 0)
         
         result.append(event_data)
+    
+    # 3. Get Assignments as Events
+    # Use split queries to ensure robustness and easy debugging
+    
+    found_assignments = []
+    
+    # 3a. Fetch by Group
+    if user_group_ids:
+        group_assignments = db.query(Assignment).filter(
+            Assignment.is_active == True,
+            Assignment.due_date >= start_date,
+            Assignment.due_date <= end_date,
+            or_(Assignment.is_hidden == False, Assignment.is_hidden == None),
+            Assignment.group_id.in_(user_group_ids)
+        ).all()
+        found_assignments.extend(group_assignments)
+        print(f"DEBUG: Found {len(group_assignments)} assignments via Group ID")
+        
+    # 3b. Fetch by Course -> Lesson
+    # First get lesson IDs for user's courses to avoid subquery issues
+    course_lesson_ids = []
+    if user_course_ids:
+        lesson_rows = db.query(Lesson.id).join(Module).filter(
+            Module.course_id.in_(user_course_ids)
+        ).all()
+        course_lesson_ids = [r[0] for r in lesson_rows]
+        
+    if course_lesson_ids:
+        lesson_assignments = db.query(Assignment).filter(
+            Assignment.is_active == True,
+            Assignment.due_date >= start_date,
+            Assignment.due_date <= end_date,
+            or_(Assignment.is_hidden == False, Assignment.is_hidden == None),
+            Assignment.lesson_id.in_(course_lesson_ids)
+        ).all()
+        found_assignments.extend(lesson_assignments)
+        print(f"DEBUG: Found {len(lesson_assignments)} assignments via Course/Lesson IDs")
+        
+    # Deduplicate assignments by ID
+    assignments = list({a.id: a for a in found_assignments}.values())
+    print(f"DEBUG: Total unique assignments found: {len(assignments)}")
+    
+    for a in assignments:
+        print(f"DEBUG: Assignment {a.id}: {a.title} (Due: {a.due_date})")
+    
+    if not assignments and user_group_ids:
+        # Extra debug: check raw count of assignments for this group globally
+        raw_count = db.query(Assignment).filter(Assignment.group_id.in_(user_group_ids)).count()
+        print(f"DEBUG: Total assignments for User Groups {user_group_ids} (ignoring dates): {raw_count}")
+        
+    sys.stdout.flush()
+    
+    # Convert assignments to Event schema
+    for assignment in assignments:
+        # Create a virtual event for the assignment deadline
+        # ID logic: maybe use negative ID to avoid collision or string ID?
+        # But schema requires integer ID.
+        # We can offset ID by a large number, e.g. 1000000000 + assignment.id
+        
+        assign_event_id = 1000000000 + assignment.id
+        
+        # Determine duration (e.g. 1 hour ending at due_date)
+        end_dt = assignment.due_date
+        start_dt = end_dt - timedelta(hours=1)
+        
+        assign_event = EventSchema(
+            id=assign_event_id,
+            title=f"Deadline: {assignment.title}",
+            description=assignment.description,
+            event_type="assignment", # Custom type for frontend
+            start_datetime=start_dt,
+            end_datetime=end_dt,
+            location="LMS",
+            is_online=True,
+            created_by=0, # System
+            creator_name="System",
+            is_active=True,
+            is_recurring=False,
+            participant_count=0,
+            created_at=assignment.created_at,
+            updated_at=assignment.created_at,
+            groups=[], # We could fetch, but might be slow
+            courses=[]
+        )
+        
+        result.append(assign_event)
+        
+    # Sort again by start date
+    result.sort(key=lambda x: x.start_datetime)
     
     return result
 
@@ -552,6 +643,11 @@ async def get_event_details(
     # Add creator name
     creator = db.query(UserInDB).filter(UserInDB.id == event.created_by).first()
     event_data.creator_name = creator.name if creator else "Unknown"
+
+    # Add teacher name
+    if event.teacher_id:
+        teacher = db.query(UserInDB).filter(UserInDB.id == event.teacher_id).first()
+        event_data.teacher_name = teacher.name if teacher else None
     
     # Add group names
     event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
@@ -711,7 +807,9 @@ async def create_curator_event(
         is_recurring=event_data.is_recurring,
         recurrence_pattern=event_data.recurrence_pattern,
         recurrence_end_date=event_data.recurrence_end_date,
-        max_participants=event_data.max_participants
+        max_participants=event_data.max_participants,
+        lesson_id=event_data.lesson_id,
+        teacher_id=event_data.teacher_id
     )
     
     db.add(event)

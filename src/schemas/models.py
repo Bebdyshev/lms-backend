@@ -1492,6 +1492,8 @@ class Event(Base):
     recurrence_pattern = Column(String, nullable=True)  # "weekly", "daily"
     recurrence_end_date = Column(Date, nullable=True)  # Когда заканчивается повторение
     max_participants = Column(Integer, nullable=True)  # Для вебинаров
+    lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)  # Link to specific lesson
+    teacher_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Assigned teacher
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -1500,6 +1502,8 @@ class Event(Base):
     event_groups = relationship("EventGroup", back_populates="event", cascade="all, delete-orphan")
     event_courses = relationship("EventCourse", back_populates="event", cascade="all, delete-orphan")
     event_participants = relationship("EventParticipant", back_populates="event", cascade="all, delete-orphan")
+    lesson = relationship("Lesson")
+    teacher = relationship("UserInDB", foreign_keys=[teacher_id])
 
 class EventGroup(Base):
     __tablename__ = "event_groups"
@@ -1572,6 +1576,9 @@ class EventSchema(BaseModel):
     recurrence_pattern: Optional[str] = None
     recurrence_end_date: Optional[date] = None
     max_participants: Optional[int] = None
+    lesson_id: Optional[int] = None
+    teacher_id: Optional[int] = None
+    teacher_name: Optional[str] = None
     participant_count: int = 0
     groups: Optional[List[str]] = None  # List of group names
     courses: Optional[List[str]] = None # List of course names
@@ -1596,6 +1603,8 @@ class CreateEventRequest(BaseModel):
     recurrence_pattern: Optional[str] = None  # "weekly", "daily"
     recurrence_end_date: Optional[date] = None
     max_participants: Optional[int] = None
+    lesson_id: Optional[int] = None
+    teacher_id: Optional[int] = None
     group_ids: List[int] = []  # List of group IDs to assign event to
     course_ids: List[int] = [] # List of course IDs to assign event to
 
@@ -1613,6 +1622,8 @@ class UpdateEventRequest(BaseModel):
     recurrence_pattern: Optional[str] = None
     recurrence_end_date: Optional[date] = None
     max_participants: Optional[int] = None
+    lesson_id: Optional[int] = None
+    teacher_id: Optional[int] = None
     group_ids: Optional[List[int]] = None
     course_ids: Optional[List[int]] = None
 

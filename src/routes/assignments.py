@@ -15,6 +15,8 @@ from src.schemas.models import (
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, check_course_access
 from src.utils.assignment_checker import check_assignment_answers
+from src.services.email_service import send_homework_notification
+from src.schemas.models import GroupStudent
 
 router = APIRouter()
 
@@ -67,6 +69,26 @@ async def get_assignments(
         # Check course access
         if not check_course_access(course_id, current_user, db):
             raise HTTPException(status_code=403, detail="Access denied to this course")
+    elif current_user.role in ["teacher", "curator"]:
+        # Teachers and Curators see assignments from their groups by default if no filters are provided
+        from src.schemas.models import Group
+        
+        # Determine accessible groups
+        if current_user.role == "teacher":
+            user_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
+        else:
+            user_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+            
+        user_group_ids = [g.id for g in user_groups]
+        
+        # If no group_id/course_id filter is provided, restrict to their groups
+        if not group_id and not course_id and current_user.role != "admin":
+            if user_group_ids:
+                query = query.filter(Assignment.group_id.in_(user_group_ids))
+            else:
+                # If they have no groups, they see no assignments (unless filtered specifically, but here we cover default)
+                return []
+    
     elif current_user.role == "student":
         # Students see only assignments from their enrolled courses and groups
         from src.schemas.models import Enrollment, GroupStudent
@@ -263,7 +285,102 @@ async def create_assignment(
         sync_assignment_linked_lessons(a, db)
     
     # Return the first one to satisfy response model
-    return AssignmentSchema.from_orm(created_assignments[0])
+    result_assignment = AssignmentSchema.from_orm(created_assignments[0])
+    
+    # Send email notifications
+    try:
+        # Collect student emails
+        student_emails = []
+        course_title = "Course"
+        
+        # If lesson_id (Course assignment)
+        if target_lesson_id:
+            lesson = db.query(Lesson).filter(Lesson.id == target_lesson_id).first()
+            if lesson:
+                module = db.query(Module).filter(Module.id == lesson.module_id).first()
+                if module:
+                    course = db.query(Course).filter(Course.id == module.course_id).first()
+                    if course:
+                        course_title = course.title
+                        # Get enrolled students
+                        course_title = course.title
+                        # Get students via CourseGroupAccess (Groups linked to Course)
+                        from src.schemas.models import CourseGroupAccess
+                        
+                        # 1. Find all groups that have access to this course
+                        course_groups = db.query(CourseGroupAccess).filter(
+                            CourseGroupAccess.course_id == course.id,
+                            CourseGroupAccess.is_active == True
+                        ).all()
+                        
+                        group_ids = [cg.group_id for cg in course_groups]
+                        
+                        if group_ids:
+                            # 2. Get all students in these groups
+                            group_students = db.query(GroupStudent).filter(
+                                GroupStudent.group_id.in_(group_ids)
+                            ).all()
+                            
+                            student_ids = [gs.student_id for gs in group_students]
+                            
+                            if student_ids:
+                                users = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
+                                student_emails.extend([u.email for u in users])
+        
+        # If specific groups
+        if target_group_ids:
+            # Fallback: if course_title is still "Course", try to get it from the group
+            if course_title == "Course" and target_group_ids:
+                first_group_id = target_group_ids[0]
+                # Try to find course via CourseGroupAccess
+                from src.schemas.models import CourseGroupAccess, Group
+                
+                # Check for linked course first
+                cga = db.query(CourseGroupAccess).filter(
+                    CourseGroupAccess.group_id == first_group_id,
+                    CourseGroupAccess.is_active == True
+                ).first()
+                
+                if cga:
+                    linked_course = db.query(Course).filter(Course.id == cga.course_id).first()
+                    if linked_course:
+                        course_title = linked_course.title
+                
+                # If still "Course", use Group Name
+                if course_title == "Course":
+                    group = db.query(Group).filter(Group.id == first_group_id).first()
+                    if group:
+                        course_title = group.name
+
+            group_student_ids = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(target_group_ids)
+            ).all()
+            ids = [bg[0] for bg in group_student_ids]
+            if ids:
+                users = db.query(UserInDB).filter(UserInDB.id.in_(ids)).all()
+                student_emails.extend([u.email for u in users])
+        
+        # Deduplicate
+        student_emails = list(set(student_emails))
+        
+        if student_emails:
+            # Format due date
+            due_str = "No deadline"
+            if assignment_data.due_date:
+                due_str = assignment_data.due_date.strftime("%d %B %Y, %H:%M")
+                
+            send_homework_notification(
+                student_emails,
+                assignment_data.title,
+                course_title,
+                due_str,
+                action="created"
+            )
+            
+    except Exception as e:
+        print(f"Failed to send email notifications: {e}")
+
+    return result_assignment
 
 @router.get("/{assignment_id}", response_model=AssignmentSchema)
 async def get_assignment(
@@ -379,7 +496,56 @@ async def update_assignment(
     # Sync linked lessons for fast lookup
     sync_assignment_linked_lessons(assignment, db)
     
-    return AssignmentSchema.from_orm(assignment)
+    result_assignment = AssignmentSchema.from_orm(assignment)
+    
+    # Send email notification if significant changes (e.g. due date)
+    try:
+        # Collect emails
+        student_emails = []
+        course_title = "Course"
+        
+        if assignment.lesson_id:
+            lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
+            if lesson:
+                module = db.query(Module).filter(Module.id == lesson.module_id).first()
+                if module:
+                    course = db.query(Course).filter(Course.id == module.course_id).first()
+                    if course:
+                        course_title = course.title
+                        enrollments = db.query(Enrollment).filter(
+                            Enrollment.course_id == course.id, 
+                            Enrollment.is_active == True
+                        ).all()
+                        user_ids = [e.user_id for e in enrollments]
+                        if user_ids:
+                            users = db.query(UserInDB).filter(UserInDB.id.in_(user_ids)).all()
+                            student_emails.extend([u.email for u in users])
+                            
+        if assignment.group_id:
+             group_student_ids = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id == assignment.group_id
+            ).all()
+             ids = [bg[0] for bg in group_student_ids]
+             if ids:
+                users = db.query(UserInDB).filter(UserInDB.id.in_(ids)).all()
+                student_emails.extend([u.email for u in users])
+        
+        student_emails = list(set(student_emails))
+        
+        if student_emails and assignment_data.due_date:
+             due_str = assignment_data.due_date.strftime("%d %B %Y, %H:%M")
+             send_homework_notification(
+                student_emails,
+                assignment.title,
+                course_title,
+                due_str,
+                action="updated"
+            )
+            
+    except Exception as e:
+        print(f"Failed to send update notification: {e}")
+
+    return result_assignment
 
 @router.delete("/{assignment_id}")
 async def delete_assignment(
@@ -959,6 +1125,55 @@ async def grade_submission(
         await emit_unseen_graded_update(submission.user_id)
     except Exception as e:
         print(f"Failed to emit socket update: {e}")
+    
+    # Send email notification to student
+    try:
+        from src.services.email_service import send_submission_graded_notification
+        
+        # Get student email
+        student = db.query(UserInDB).filter(UserInDB.id == submission.user_id).first()
+        if student and student.email:
+            # Resolve course name
+            course_name = "Course"
+            
+            # Try via lesson -> module -> course
+            if assignment.lesson_id:
+                lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
+                if lesson:
+                    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+                    if module:
+                        course = db.query(Course).filter(Course.id == module.course_id).first()
+                        if course:
+                            course_name = course.title
+            
+            # Fallback: try via group -> CourseGroupAccess
+            if course_name == "Course" and assignment.group_id:
+                from src.schemas.models import CourseGroupAccess
+                cga = db.query(CourseGroupAccess).filter(
+                    CourseGroupAccess.group_id == assignment.group_id,
+                    CourseGroupAccess.is_active == True
+                ).first()
+                if cga:
+                    linked_course = db.query(Course).filter(Course.id == cga.course_id).first()
+                    if linked_course:
+                        course_name = linked_course.title
+                
+                # Final fallback: use group name
+                if course_name == "Course":
+                    group = db.query(Group).filter(Group.id == assignment.group_id).first()
+                    if group:
+                        course_name = group.name
+            
+            send_submission_graded_notification(
+                student_email=student.email,
+                assignment_title=assignment.title,
+                course_name=course_name,
+                score=grade_data.score,
+                max_score=assignment.max_score,
+                feedback=grade_data.feedback
+            )
+    except Exception as e:
+        print(f"Failed to send grading email notification: {e}")
     
     # Enhance submission with names
     submission_data = AssignmentSubmissionSchema.from_orm(submission)
