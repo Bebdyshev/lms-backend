@@ -1222,6 +1222,134 @@ class ProgressSnapshot(Base):
         UniqueConstraint('user_id', 'course_id', 'snapshot_date', name='uq_progress_snapshot'),
     )
 
+# =============================================================================
+# CACHE MODELS - Pre-computed summaries for efficient analytics
+# =============================================================================
+
+class StudentCourseSummary(Base):
+    """Pre-computed summary of student progress per course - updated on step completion.
+    
+    This table eliminates N+1 queries in analytics endpoints by caching:
+    - Progress metrics (steps completed, completion percentage)
+    - Time tracking (total time spent)
+    - Assignment metrics (completed, scores)
+    - Last activity information
+    """
+    __tablename__ = "student_course_summaries"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
+    
+    # Progress metrics (updated incrementally on step completion)
+    total_steps = Column(Integer, default=0)
+    completed_steps = Column(Integer, default=0)
+    completion_percentage = Column(Float, default=0.0)
+    
+    # Time tracking
+    total_time_spent_minutes = Column(Integer, default=0)
+    
+    # Assignment metrics
+    total_assignments = Column(Integer, default=0)
+    completed_assignments = Column(Integer, default=0)
+    total_assignment_score = Column(Float, default=0.0)
+    max_possible_score = Column(Float, default=0.0)
+    average_assignment_percentage = Column(Float, default=0.0)
+    
+    # Last activity tracking
+    last_activity_at = Column(DateTime, nullable=True)
+    last_lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="SET NULL"), nullable=True)
+    last_lesson_title = Column(String, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = relationship("UserInDB")
+    course = relationship("Course")
+    last_lesson = relationship("Lesson")
+    
+    __table_args__ = (
+        UniqueConstraint('user_id', 'course_id', name='uq_user_course_summary'),
+        Index('idx_user_course_summary', 'user_id', 'course_id'),
+    )
+
+
+class CourseAnalyticsCache(Base):
+    """Pre-computed course analytics - updated periodically or on-demand.
+    
+    Caches aggregate metrics for course-level dashboards:
+    - Student enrollment counts
+    - Average progress across all students
+    - Content counts (modules, lessons, steps)
+    """
+    __tablename__ = "course_analytics_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), unique=True, nullable=False)
+    
+    # Student counts
+    total_enrolled = Column(Integer, default=0)
+    active_students_7d = Column(Integer, default=0)  # Active in last 7 days
+    active_students_30d = Column(Integer, default=0)  # Active in last 30 days
+    
+    # Aggregate progress metrics
+    average_completion_percentage = Column(Float, default=0.0)
+    average_assignment_score = Column(Float, default=0.0)
+    
+    # Content counts (denormalized for fast lookups)
+    total_modules = Column(Integer, default=0)
+    total_lessons = Column(Integer, default=0)
+    total_steps = Column(Integer, default=0)
+    total_assignments = Column(Integer, default=0)
+    
+    # Timestamps
+    last_calculated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    course = relationship("Course")
+
+
+# Pydantic schemas for cache models
+class StudentCourseSummarySchema(BaseModel):
+    id: int
+    user_id: int
+    course_id: int
+    total_steps: int
+    completed_steps: int
+    completion_percentage: float
+    total_time_spent_minutes: int
+    total_assignments: int
+    completed_assignments: int
+    average_assignment_percentage: float
+    last_activity_at: Optional[datetime] = None
+    last_lesson_title: Optional[str] = None
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class CourseAnalyticsCacheSchema(BaseModel):
+    id: int
+    course_id: int
+    total_enrolled: int
+    active_students_7d: int
+    active_students_30d: int
+    average_completion_percentage: float
+    average_assignment_score: float
+    total_modules: int
+    total_lessons: int
+    total_steps: int
+    total_assignments: int
+    last_calculated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
 class QuizAttempt(Base):
     """Модель для хранения попыток прохождения квизов"""
     __tablename__ = "quiz_attempts"

@@ -708,56 +708,6 @@ async def submit_assignment(
     return AssignmentSubmissionSchema.from_orm(submission)
 
 
-@router.get("/{assignment_id}/debug-submissions")
-async def debug_submissions(
-    assignment_id: int,
-    current_user: UserInDB = Depends(get_current_user_dependency),
-    db: Session = Depends(get_db)
-):
-    """Debug endpoint to check submissions for an assignment"""
-    submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id == assignment_id,
-        AssignmentSubmission.user_id == current_user.id
-    ).all()
-    
-    return {
-        "assignment_id": assignment_id,
-        "user_id": current_user.id,
-        "submissions_count": len(submissions),
-        "submissions": [
-            {
-                "id": s.id,
-                "submitted_at": s.submitted_at,
-                "answers": s.answers,
-                "file_url": s.file_url,
-                "submitted_file_name": s.submitted_file_name
-            }
-            for s in submissions
-        ]
-    }
-
-
-@router.delete("/{assignment_id}/debug-delete-submission/{submission_id}")
-async def debug_delete_submission(
-    assignment_id: int,
-    submission_id: int,
-    current_user: UserInDB = Depends(get_current_user_dependency),
-    db: Session = Depends(get_db)
-):
-    """Debug endpoint to delete a submission (for testing purposes)"""
-    submission = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.id == submission_id,
-        AssignmentSubmission.assignment_id == assignment_id,
-        AssignmentSubmission.user_id == current_user.id
-    ).first()
-    
-    if not submission:
-        raise HTTPException(status_code=404, detail="Submission not found")
-    
-    db.delete(submission)
-    db.commit()
-    
-    return {"message": f"Submission {submission_id} deleted successfully"}
 
 @router.get("/{assignment_id}/submissions", response_model=List[AssignmentSubmissionSchema])
 async def get_assignment_submissions(
