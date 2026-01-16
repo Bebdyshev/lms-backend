@@ -270,6 +270,7 @@ async def get_course_analytics_overview(
     ).all()
     
     total_assignments_count = len(assignments)
+    logger.info(f"Course {course_id}: Found {total_assignments_count} assignments")
 
     # Pre-fetch lesson titles to map lesson_id -> title
     # We can get all lessons in the course via Module
@@ -421,9 +422,19 @@ async def get_course_analytics_overview(
                                  if sp.lesson_id == c_lesson_id and sp.status == "completed"])
                 current_lesson_progress = (l_completed / l_total_steps) * 100
         
-        # Get assignment performance (filtered for this student)
-        # Note: 'assignments' list is already pre-fetched outside loop
-        student_assignments_total = len(assignments)
+        # Get assignment performance for THIS STUDENT
+        # Use group-based assignments (teacher-assigned homework)
+        student_group_ids = [gs.group_id for gs in db.query(GroupStudent.group_id).filter(
+            GroupStudent.student_id == student.id
+        ).all()]
+        
+        # Find assignments assigned to this student's groups
+        student_group_assignments = db.query(Assignment).filter(
+            Assignment.group_id.in_(student_group_ids),
+            Assignment.is_active == True
+        ).all() if student_group_ids else []
+        
+        student_assignments_total = len(student_group_assignments)
         student_assignments_completed = 0
         total_score = 0
         max_possible_score = 0
@@ -431,7 +442,7 @@ async def get_course_analytics_overview(
         last_test_res = None
         last_submission_date = None
         
-        for assignment in assignments:
+        for assignment in student_group_assignments:
             submission = db.query(AssignmentSubmission).filter(
                 AssignmentSubmission.assignment_id == assignment.id,
                 AssignmentSubmission.user_id == student.id
