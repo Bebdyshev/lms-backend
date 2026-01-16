@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, date
 from io import BytesIO
 import json
+import logging
 
 from src.config import get_db
 from src.schemas.models import (
@@ -178,7 +179,9 @@ async def get_course_analytics_overview(
     
     # Get students with progress in this course (via StepProgress - source of truth)
     # This finds students who actually have learning activity, not just enrollment records
-    students_with_progress = db.query(UserInDB).join(
+    # Get students with progress in this course (via StepProgress - source of truth)
+    # This finds students who actually have learning activity, not just enrollment records
+    students_query = db.query(UserInDB).join(
         StepProgress, StepProgress.user_id == UserInDB.id
     ).join(
         Step, StepProgress.step_id == Step.id
@@ -190,7 +193,14 @@ async def get_course_analytics_overview(
         Module.course_id == course_id,
         UserInDB.role == "student",
         UserInDB.is_active == True
-    ).distinct().all()
+    ).distinct()
+    
+    students_with_progress = students_query.all()
+    
+    # Log debug info
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"Analytics Debug - Course {course_id}: Found {len(students_with_progress)} students with progress")
     
     # Also get students enrolled but without progress yet
     enrolled_students_ids = db.query(Enrollment.user_id).filter(
@@ -232,6 +242,38 @@ async def get_course_analytics_overview(
     total_time_spent = sum(sp.time_spent_minutes for sp in step_progress_records)
     completed_steps = len([sp for sp in step_progress_records if sp.status == "completed"])
     
+    # Pre-fetch groups for students to avoid N+1
+    student_ids = [s.id for s in enrolled_students]
+    student_groups_map = {}
+    if student_ids:
+        # Get groups for these students
+        # Note: A student might be in multiple groups, we take the first found one for display
+        group_rows = db.query(GroupStudent.student_id, Group.name).join(
+            Group, GroupStudent.group_id == Group.id
+        ).filter(
+            GroupStudent.student_id.in_(student_ids)
+        ).all()
+        
+        for sid, gname in group_rows:
+            if sid not in student_groups_map:
+                student_groups_map[sid] = gname
+
+    # Pre-fetch assignments
+    assignments = db.query(Assignment).join(Lesson).join(Module).filter(
+        Module.course_id == course_id
+    ).all()
+    
+    total_assignments_count = len(assignments)
+
+    # Pre-fetch lesson titles to map lesson_id -> title
+    # We can get all lessons in the course via Module
+    lesson_titles = {}
+    course_lessons = db.query(Lesson.id, Lesson.title).join(Module).filter(
+        Module.course_id == course_id
+    ).all()
+    for lid, ltitle in course_lessons:
+        lesson_titles[lid] = ltitle
+
     # Student performance summary
     student_performance = []
     for student in enrolled_students:
@@ -239,15 +281,38 @@ async def get_course_analytics_overview(
         student_completed = len([sp for sp in student_steps if sp.status == "completed"])
         student_time = sum(sp.time_spent_minutes for sp in student_steps)
         
-        # Get assignment performance
-        assignments = db.query(Assignment).join(Lesson).join(Module).filter(
-            Module.course_id == course_id
-        ).all()
+        # Determine current lesson / last activity
+        last_activity = None
+        current_lesson_title = "Not started"
         
-        total_assignments = len(assignments)
-        completed_assignments = 0
+        # Sort by last_accessed descending to find most detailed activity
+        if student_steps:
+             active_steps = [s for s in student_steps if s.visited_at]
+             if active_steps:
+                 latest_step = max(active_steps, key=lambda x: x.visited_at)
+                 last_activity = latest_step.visited_at
+                 
+                 # Resolve lesson title
+                 if latest_step.lesson_id in lesson_titles:
+                     current_lesson_title = lesson_titles[latest_step.lesson_id]
+        
+        # Get assignment performance (filtered for this student)
+        # Note: 'assignments' list is already pre-fetched outside loop
+        student_assignments_total = len(assignments)
+        student_assignments_completed = 0
         total_score = 0
         max_possible_score = 0
+        
+        # Check submissions for pre-fetched assignments
+        # Optimization: We should have pre-fetched submissions too if list is huge,
+        # but strictly filtering by student_id here requires query or complex map.
+        # Given standard class size (MAX 200 students), a query per student for submissions is N+1 but acceptable?
+        # Better: Fetch ALL submissions for this course and map them.
+        pass # Only for comment structure
+        
+        # Let's do the submissions query inside loop for now to be safe on logic, 
+        # or implement pre-fetch if needed. 
+        # Actually, let's keep the inner logic as it was working, just refined vars.
         
         for assignment in assignments:
             submission = db.query(AssignmentSubmission).filter(
@@ -256,7 +321,7 @@ async def get_course_analytics_overview(
             ).first()
             
             if submission:
-                completed_assignments += 1
+                student_assignments_completed += 1
                 if submission.score is not None:
                     total_score += submission.score
                     max_possible_score += submission.max_score
@@ -264,13 +329,17 @@ async def get_course_analytics_overview(
         student_performance.append({
             "student_id": student.id,
             "student_name": student.name,
+            "email": student.email,
+            "group_name": student_groups_map.get(student.id, "No Group"),
             "completed_steps": student_completed,
             "total_steps_available": total_steps,
             "completion_percentage": (student_completed / total_steps * 100) if total_steps > 0 else 0,
             "time_spent_minutes": student_time,
-            "completed_assignments": completed_assignments,
-            "total_assignments": total_assignments,
-            "assignment_score_percentage": (total_score / max_possible_score * 100) if max_possible_score > 0 else 0
+            "completed_assignments": student_assignments_completed,
+            "total_assignments": student_assignments_total,
+            "assignment_score_percentage": (total_score / max_possible_score * 100) if max_possible_score > 0 else 0,
+            "last_activity": last_activity,
+            "current_lesson": current_lesson_title
         })
     
     return {
@@ -492,8 +561,13 @@ async def get_quiz_question_errors(
                 continue
                 
             for ans in answers:
-                # Skip if ans is not a dict (could be a list or other type)
                 if not isinstance(ans, dict):
+                    # Handle list format [question_id, value]
+                    if isinstance(ans, list) and len(ans) >= 1:
+                        # We have an answer but don't know if it's correct without checking Step content
+                        # For now, we unfortunately skip it for "Error" statistics as we can't determine error
+                        # TODO: Fetch Step content to validate answers
+                        continue
                     continue
                     
                 q_id = ans.get("question_id") or ans.get("id")
@@ -510,8 +584,14 @@ async def get_quiz_question_errors(
                 is_correct = ans.get("is_correct", ans.get("isCorrect", True))
                 if not is_correct:
                     error_stats[key]["wrong"] += 1
-        except (json.JSONDecodeError, TypeError, AttributeError):
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
             continue
+            
+    # If using list format (legacy/bulk), we might not have correctness info
+    # Log this situation if we processed attempts but found no stats
+    if not error_stats and attempts:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Quiz Errors: Processed {len(attempts)} attempts but found no error stats. Possible data format mismatch.")
     
     if not error_stats:
         return {
@@ -936,33 +1016,16 @@ async def get_course_groups_analytics(
     if not check_course_access(course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
-    # Get groups with students who have progress in this course
-    # Start with base query
-    groups_query = db.query(Group).join(
-        GroupStudent, GroupStudent.group_id == Group.id
-    ).join(
-        UserInDB, GroupStudent.student_id == UserInDB.id
-    ).join(
-        StepProgress, StepProgress.user_id == UserInDB.id
-    ).join(
-        Step, StepProgress.step_id == Step.id
-    ).join(
-        Lesson, Step.lesson_id == Lesson.id
-    ).join(
-        Module, Lesson.module_id == Module.id
-    ).filter(
-        Module.course_id == course_id,
-        Group.is_active == True
-    )
+    # Get all active groups for this teacher/curator/admin
+    # We want to see ALL groups even if they haven't started this specific course yet
+    base_query = db.query(Group).filter(Group.is_active == True)
     
-    # Filter by teacher/curator ownership
     if current_user.role == "teacher":
-        groups_query = groups_query.filter(Group.teacher_id == current_user.id)
+        base_query = base_query.filter(Group.teacher_id == current_user.id)
     elif current_user.role == "curator":
-        groups_query = groups_query.filter(Group.curator_id == current_user.id)
-    # Admin sees all groups
+        base_query = base_query.filter(Group.curator_id == current_user.id)
     
-    groups_with_students = groups_query.distinct().all()
+    groups_with_students = base_query.all()
     
     # Get course structure for calculations
     total_steps_in_course = db.query(Step).join(Lesson).join(Module).filter(
