@@ -11,7 +11,7 @@ from src.config import get_db
 from src.schemas.models import (
     StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
     UserInDB, AssignmentSubmission, StepProgress, Step, GroupStudent,
-    Group, ProgressSnapshot
+    Group, ProgressSnapshot, QuizAttempt
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access
@@ -436,6 +436,140 @@ async def get_quiz_performance_analytics(
             "total_quiz_assignments": len(quiz_assignments)
         }
     }
+
+@router.get("/course/{course_id}/quiz-errors")
+async def get_quiz_question_errors(
+    course_id: int,
+    group_id: Optional[int] = None,
+    limit: int = Query(20, description="Max number of questions to return"),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Get questions with the most errors for a course.
+    Helps teachers identify difficult questions students struggle with.
+    """
+    
+    if current_user.role not in ["teacher", "curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not check_course_access(course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this course")
+    
+    # Build query for quiz attempts
+    query = db.query(QuizAttempt).filter(
+        QuizAttempt.course_id == course_id,
+        QuizAttempt.is_draft == False,
+        QuizAttempt.answers.isnot(None)
+    )
+    
+    # Filter by group if specified
+    if group_id:
+        group_student_ids = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id == group_id
+        ).subquery()
+        query = query.filter(QuizAttempt.user_id.in_(group_student_ids))
+    
+    attempts = query.all()
+    
+    if not attempts:
+        return {
+            "course_id": course_id,
+            "total_attempts_analyzed": 0,
+            "questions": []
+        }
+    
+    # Aggregate errors by (step_id, question_id)
+    from collections import defaultdict
+    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "question_id": None})
+    
+    for attempt in attempts:
+        try:
+            answers = json.loads(attempt.answers) if attempt.answers else []
+            for ans in answers:
+                q_id = ans.get("question_id") or ans.get("id")
+                if not q_id:
+                    continue
+                
+                key = (attempt.step_id, q_id)
+                error_stats[key]["step_id"] = attempt.step_id
+                error_stats[key]["question_id"] = q_id
+                error_stats[key]["lesson_id"] = attempt.lesson_id
+                error_stats[key]["total"] += 1
+                
+                # Check if answer was wrong
+                is_correct = ans.get("is_correct", ans.get("isCorrect", True))
+                if not is_correct:
+                    error_stats[key]["wrong"] += 1
+        except (json.JSONDecodeError, TypeError):
+            continue
+    
+    if not error_stats:
+        return {
+            "course_id": course_id,
+            "total_attempts_analyzed": len(attempts),
+            "questions": []
+        }
+    
+    # Calculate error rates and sort
+    error_list = []
+    for key, stats in error_stats.items():
+        if stats["total"] > 0:
+            error_rate = (stats["wrong"] / stats["total"]) * 100
+            error_list.append({
+                "step_id": stats["step_id"],
+                "lesson_id": stats.get("lesson_id"),
+                "question_id": stats["question_id"],
+                "total_attempts": stats["total"],
+                "wrong_answers": stats["wrong"],
+                "error_rate": round(error_rate, 1),
+                "question_text": None,  # Will be enriched below
+                "lesson_title": None,
+                "step_title": None
+            })
+    
+    # Sort by error rate descending, then by wrong count
+    error_list.sort(key=lambda x: (-x["error_rate"], -x["wrong_answers"]))
+    error_list = error_list[:limit]
+    
+    # Enrich with question text from Steps
+    step_ids = list(set(item["step_id"] for item in error_list))
+    steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
+    step_map = {}
+    for step in steps:
+        try:
+            content = json.loads(step.content_text) if step.content_text else {}
+            questions = content.get("questions", [])
+            question_map = {q.get("id"): q.get("question_text", "") for q in questions}
+            step_map[step.id] = {
+                "title": step.title,
+                "lesson_id": step.lesson_id,
+                "questions": question_map
+            }
+        except (json.JSONDecodeError, TypeError):
+            step_map[step.id] = {"title": step.title, "lesson_id": step.lesson_id, "questions": {}}
+    
+    # Fetch lesson titles
+    lesson_ids = list(set(item["lesson_id"] for item in error_list if item["lesson_id"]))
+    lessons = db.query(Lesson).filter(Lesson.id.in_(lesson_ids)).all()
+    lesson_map = {l.id: l.title for l in lessons}
+    
+    # Enrich error list
+    for item in error_list:
+        step_info = step_map.get(item["step_id"], {})
+        item["step_title"] = step_info.get("title", "Unknown")
+        item["lesson_title"] = lesson_map.get(item["lesson_id"], "Unknown")
+        q_text = step_info.get("questions", {}).get(item["question_id"], "")
+        # Truncate long question text
+        item["question_text"] = q_text[:200] + "..." if len(q_text) > 200 else q_text
+    
+    return {
+        "course_id": course_id,
+        "group_id": group_id,
+        "total_attempts_analyzed": len(attempts),
+        "questions": error_list
+    }
+
 
 @router.get("/students/all")
 async def get_all_students_analytics(
