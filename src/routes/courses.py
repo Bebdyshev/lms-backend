@@ -120,15 +120,31 @@ async def get_courses(
     
     courses = query.offset(skip).limit(limit).all()
     
+    if not courses:
+        return []
+
+    # Batch fetch teachers
+    teacher_ids = list(set(c.teacher_id for c in courses if c.teacher_id))
+    teachers = {
+        t.id: t.name 
+        for t in db.query(UserInDB).filter(UserInDB.id.in_(teacher_ids)).all()
+    } if teacher_ids else {}
+
+    # Batch fetch module counts
+    course_ids = [c.id for c in courses]
+    module_counts = dict(
+        db.query(Module.course_id, func.count(Module.id))
+        .filter(Module.course_id.in_(course_ids))
+        .group_by(Module.course_id)
+        .all()
+    )
+    
     # Enrich with teacher names and module counts
     courses_data = []
     for course in courses:
-        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
-        module_count = db.query(Module).filter(Module.course_id == course.id).count()
-        
         course_data = CourseSchema.from_orm(course)
-        course_data.teacher_name = teacher.name if teacher else "Unknown"
-        course_data.total_modules = module_count
+        course_data.teacher_name = teachers.get(course.teacher_id, "Unknown")
+        course_data.total_modules = module_counts.get(course.id, 0)
         # Map is_active to user-friendly status for frontend (draft/active)
         course_data.status = 'active' if course.is_active else 'draft'
         courses_data.append(course_data)
@@ -181,15 +197,32 @@ async def get_my_courses(
             Course.is_active == True
         ).all()
     
+    
+    if not courses:
+        return []
+
+    # Batch fetch teachers
+    teacher_ids = list(set(c.teacher_id for c in courses if c.teacher_id))
+    teachers = {
+        t.id: t.name 
+        for t in db.query(UserInDB).filter(UserInDB.id.in_(teacher_ids)).all()
+    } if teacher_ids else {}
+
+    # Batch fetch module counts
+    course_ids = [c.id for c in courses]
+    module_counts = dict(
+        db.query(Module.course_id, func.count(Module.id))
+        .filter(Module.course_id.in_(course_ids))
+        .group_by(Module.course_id)
+        .all()
+    )
+
     # Enrich with teacher names and module counts
     courses_data = []
     for course in courses:
-        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
-        module_count = db.query(Module).filter(Module.course_id == course.id).count()
-        
         course_data = CourseSchema.from_orm(course)
-        course_data.teacher_name = teacher.name if teacher else "Unknown"
-        course_data.total_modules = module_count
+        course_data.teacher_name = teachers.get(course.teacher_id, "Unknown")
+        course_data.total_modules = module_counts.get(course.id, 0)
         course_data.status = 'active' if course.is_active else 'draft'
         courses_data.append(course_data)
     

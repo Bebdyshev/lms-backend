@@ -42,6 +42,10 @@ init_db()
 # Set global logging level to WARNING to reduce noise
 logging.basicConfig(level=logging.WARNING)
 
+# Gzip middleware for compressing large responses (e.g. quizzes)
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,

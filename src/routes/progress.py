@@ -1,19 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, and_, select
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, date
 
 from src.config import get_db
 from src.schemas.models import (
-    StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
-    UserInDB, AssignmentSubmission, ProgressSchema, StepProgress,
-    StepProgressSchema, StepProgressCreateSchema, Step, GroupStudent,
-    ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema,
-    QuizAttemptGradeSchema, QuizAttemptUpdateSchema
+    UserInDB, StudentProgress, Course, Module, Lesson, Step, 
+    StepProgress, StepProgressSchema, StepProgressCreateSchema,
+    Assignment, AssignmentSubmission, Enrollment,
+    GroupStudent, CourseGroupAccess
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access, require_teacher_or_admin
+from src.services.summary_cache import update_student_course_summary, update_summary_for_assignment
 from src.schemas.models import GroupStudent
 
 router = APIRouter()
@@ -1037,16 +1037,19 @@ async def mark_step_started(
 ):
     """Отметить начало изучения шага"""
     # Получаем информацию о шаге
-    step = db.query(Step).filter(Step.id == step_id).first()
+    # Получаем информацию о шаге, уроке и модуле одним запросом для оптимизации
+    step = db.query(Step).options(
+        joinedload(Step.lesson).joinedload(Lesson.module)
+    ).filter(Step.id == step_id).first()
+    
     if not step:
         raise HTTPException(status_code=404, detail="Step not found")
     
-    # Получаем урок и модуль
-    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    lesson = step.lesson
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
-    
-    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+        
+    module = lesson.module
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
     
@@ -1100,16 +1103,19 @@ async def mark_step_visited(
         raise HTTPException(status_code=403, detail="Only students can mark steps as visited")
     
     # Получаем информацию о шаге
-    step = db.query(Step).filter(Step.id == step_id).first()
+    # Получаем информацию о шаге, уроке и модуле одним запросом
+    step = db.query(Step).options(
+        joinedload(Step.lesson).joinedload(Lesson.module)
+    ).filter(Step.id == step_id).first()
+    
     if not step:
         raise HTTPException(status_code=404, detail="Step not found")
     
-    # Получаем информацию об уроке и курсе
-    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+    lesson = step.lesson
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
-    
-    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+        
+    module = lesson.module
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
     
@@ -1156,6 +1162,18 @@ async def mark_step_visited(
     update_daily_streak(current_user, db)
     
     # Обновляем общий прогресс студента по курсу
+    # Обновляем общий прогресс в кэше (быстрее)
+    update_student_course_summary(
+        user_id=current_user.id,
+        course_id=module.course_id,
+        db=db,
+        step_completed=True,
+        time_spent_delta=step_data.time_spent_minutes,
+        lesson_id=lesson.id,
+        lesson_title=lesson.title
+    )
+    
+    # Обновляем старый StudentProgress для совместимости (пока не мигрировали всё)
     update_student_progress(current_user.id, module.course_id, db)
     
     # Создаем снимок прогресса (если еще нет на сегодня)
