@@ -486,7 +486,16 @@ async def get_quiz_question_errors(
     for attempt in attempts:
         try:
             answers = json.loads(attempt.answers) if attempt.answers else []
+            
+            # Handle different JSON structures
+            if not isinstance(answers, list):
+                continue
+                
             for ans in answers:
+                # Skip if ans is not a dict (could be a list or other type)
+                if not isinstance(ans, dict):
+                    continue
+                    
                 q_id = ans.get("question_id") or ans.get("id")
                 if not q_id:
                     continue
@@ -501,7 +510,7 @@ async def get_quiz_question_errors(
                 is_correct = ans.get("is_correct", ans.get("isCorrect", True))
                 if not is_correct:
                     error_stats[key]["wrong"] += 1
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError, AttributeError):
             continue
     
     if not error_stats:

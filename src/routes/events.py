@@ -415,19 +415,13 @@ async def get_calendar_events(
             Assignment.lesson_id.in_(course_lesson_ids)
         ).all()
         found_assignments.extend(lesson_assignments)
-        print(f"DEBUG: Found {len(lesson_assignments)} assignments via Course/Lesson IDs")
         
     # Deduplicate assignments by ID
     assignments = list({a.id: a for a in found_assignments}.values())
-    print(f"DEBUG: Total unique assignments found: {len(assignments)}")
-    
-    for a in assignments:
-        print(f"DEBUG: Assignment {a.id}: {a.title} (Due: {a.due_date})")
     
     if not assignments and user_group_ids:
         # Extra debug: check raw count of assignments for this group globally
         raw_count = db.query(Assignment).filter(Assignment.group_id.in_(user_group_ids)).count()
-        print(f"DEBUG: Total assignments for User Groups {user_group_ids} (ignoring dates): {raw_count}")
         
     sys.stdout.flush()
     
