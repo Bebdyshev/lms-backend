@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, date
 from io import BytesIO
 import json
 import logging
+import httpx
+import os
 
 from src.config import get_db
 from src.schemas.models import (
@@ -315,16 +317,8 @@ async def get_course_analytics_overview(
         total_score = 0
         max_possible_score = 0
         
-        # Check submissions for pre-fetched assignments
-        # Optimization: We should have pre-fetched submissions too if list is huge,
-        # but strictly filtering by student_id here requires query or complex map.
-        # Given standard class size (MAX 200 students), a query per student for submissions is N+1 but acceptable?
-        # Better: Fetch ALL submissions for this course and map them.
-        pass # Only for comment structure
-        
-        # Let's do the submissions query inside loop for now to be safe on logic, 
-        # or implement pre-fetch if needed. 
-        # Actually, let's keep the inner logic as it was working, just refined vars.
+        last_test_res = None
+        last_submission_date = None
         
         for assignment in assignments:
             submission = db.query(AssignmentSubmission).filter(
@@ -333,16 +327,32 @@ async def get_course_analytics_overview(
             ).first()
             
             if submission:
-                student_assignments_completed += 1
-                if submission.score is not None:
-                    total_score += submission.score
-                    max_possible_score += submission.max_score
-        
+                if submission.is_graded:
+                     student_assignments_completed += 1
+                     if submission.score is not None:
+                        total_score += submission.score
+                        max_possible_score += assignment.max_score or 0
+                
+                # Track last submission for "Last Test" column
+                # assuming submission.created_at is available or we use id if time missing, but created_at is better
+                # Check model: usually created_at or submitted_at
+                s_date = submission.submitted_at or submission.created_at
+                if s_date:
+                    if last_submission_date is None or s_date > last_submission_date:
+                        last_submission_date = s_date
+                        pct = (submission.score / assignment.max_score * 100) if (submission.score is not None and assignment.max_score) else 0
+                        last_test_res = {
+                            "title": assignment.title,
+                            "score": submission.score,
+                            "max_score": assignment.max_score,
+                            "percentage": round(pct, 1)
+                        }
+
         student_performance.append({
             "student_id": student.id,
             "student_name": student.name,
             "email": student.email,
-            "group_name": student_groups_map.get(student.id, "No Group"),
+            "group_name": student.group_name if hasattr(student, 'group_name') else student_groups_map.get(student.id, "No Group"),
             "completed_steps": student_completed,
             "total_steps_available": total_steps,
             "completion_percentage": (student_completed / total_steps * 100) if total_steps > 0 else 0,
@@ -352,7 +362,8 @@ async def get_course_analytics_overview(
             "assignment_score_percentage": (total_score / max_possible_score * 100) if max_possible_score > 0 else 0,
             "last_activity": last_activity,
             "current_lesson": current_lesson_title,
-            "current_lesson_progress": current_lesson_progress
+            "current_lesson_progress": current_lesson_progress,
+            "last_test_result": last_test_res
         })
     
     return {
@@ -2710,3 +2721,58 @@ async def export_analytics_to_excel(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to export to Excel: {str(e)}")
+
+@router.get("/student/{student_id}/sat-scores")
+async def get_student_sat_scores(
+    student_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get SAT scores for a student from external platform"""
+    
+    # Check permissions
+    if current_user.role not in ["teacher", "curator", "admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Verify student exists
+    student = db.query(UserInDB).filter(
+        UserInDB.id == student_id, 
+        UserInDB.role == "student"
+    ).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    
+    # Check access rights based on role using centralized permission check
+    if current_user.role != "admin" and not check_student_access(student_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied to this student")
+    
+    # External API Call
+    api_key = os.getenv("MASTEREDU_API_KEY", "LMS_MasterEd_2025_SecureKey_XyZ789")
+    url = f"https://api.mastereducation.kz/api/lms/students/{student.email}/test-results"
+    
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    logger = logging.getLogger(__name__)
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            logger.info(f"Fetching SAT scores for {student.email}")
+            response = await client.get(url, headers=headers, timeout=30.0)
+            
+            if response.status_code == 404:
+                return {"testResults": []}
+            
+            if response.status_code != 200:
+                logger.error(f"SAT API Error: {response.status_code} {response.text}")
+                # Return empty list on error to avoid breaking the page
+                return {"testResults": [], "error": "External API error"}
+            
+            data = response.json()
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error fetching SAT scores: {str(e)}")
+            return {"testResults": [], "error": str(e)}
