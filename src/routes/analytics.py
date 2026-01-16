@@ -12,7 +12,7 @@ from src.config import get_db
 from src.schemas.models import (
     StudentProgress, Course, Module, Lesson, Assignment, Enrollment, 
     UserInDB, AssignmentSubmission, StepProgress, Step, GroupStudent,
-    Group, ProgressSnapshot, QuizAttempt
+    Group, ProgressSnapshot, QuizAttempt, StudentCourseSummary, CourseGroupAccess
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access
@@ -227,12 +227,14 @@ async def get_course_analytics_overview(
     total_lessons = 0
     total_steps = 0
     
+    lesson_step_counts = {}
     for module in modules:
         lessons = db.query(Lesson).filter(Lesson.module_id == module.id).all()
         total_lessons += len(lessons)
         for lesson in lessons:
             steps = db.query(Step).filter(Step.lesson_id == lesson.id).all()
             total_steps += len(steps)
+            lesson_step_counts[lesson.id] = len(steps)
     
     # Calculate engagement metrics
     step_progress_records = db.query(StepProgress).filter(
@@ -296,6 +298,16 @@ async def get_course_analytics_overview(
                  if latest_step.lesson_id in lesson_titles:
                      current_lesson_title = lesson_titles[latest_step.lesson_id]
         
+        # Calculate progress in current lesson
+        current_lesson_progress = 0
+        if last_activity and latest_step:
+            c_lesson_id = latest_step.lesson_id
+            l_total_steps = lesson_step_counts.get(c_lesson_id, 0)
+            if l_total_steps > 0:
+                l_completed = len([sp for sp in student_steps 
+                                 if sp.lesson_id == c_lesson_id and sp.status == "completed"])
+                current_lesson_progress = (l_completed / l_total_steps) * 100
+        
         # Get assignment performance (filtered for this student)
         # Note: 'assignments' list is already pre-fetched outside loop
         student_assignments_total = len(assignments)
@@ -339,7 +351,8 @@ async def get_course_analytics_overview(
             "total_assignments": student_assignments_total,
             "assignment_score_percentage": (total_score / max_possible_score * 100) if max_possible_score > 0 else 0,
             "last_activity": last_activity,
-            "current_lesson": current_lesson_title
+            "current_lesson": current_lesson_title,
+            "current_lesson_progress": current_lesson_progress
         })
     
     return {
@@ -1018,14 +1031,21 @@ async def get_course_groups_analytics(
     
     # Get all active groups for this teacher/curator/admin
     # We want to see ALL groups even if they haven't started this specific course yet
-    base_query = db.query(Group).filter(Group.is_active == True)
+    # Get active groups for this teacher/curator/admin that have explicit access to this course
+    base_query = db.query(Group).join(
+        CourseGroupAccess, Group.id == CourseGroupAccess.group_id
+    ).filter(
+        Group.is_active == True,
+        CourseGroupAccess.course_id == course_id,
+        CourseGroupAccess.is_active == True
+    )
     
     if current_user.role == "teacher":
         base_query = base_query.filter(Group.teacher_id == current_user.id)
     elif current_user.role == "curator":
         base_query = base_query.filter(Group.curator_id == current_user.id)
     
-    groups_with_students = base_query.all()
+    groups_with_students = base_query.distinct().all()
     
     # Get course structure for calculations
     total_steps_in_course = db.query(Step).join(Lesson).join(Module).filter(
