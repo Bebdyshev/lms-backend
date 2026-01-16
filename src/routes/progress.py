@@ -9,12 +9,14 @@ from src.schemas.models import (
     UserInDB, StudentProgress, Course, Module, Lesson, Step, 
     StepProgress, StepProgressSchema, StepProgressCreateSchema,
     Assignment, AssignmentSubmission, Enrollment,
-    GroupStudent, CourseGroupAccess
+    GroupStudent, CourseGroupAccess, ProgressSchema,
+    ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema,
+    QuizAttemptGradeSchema, QuizAttemptUpdateSchema
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access, require_teacher_or_admin
 from src.services.summary_cache import update_student_course_summary, update_summary_for_assignment
-from src.schemas.models import GroupStudent
+
 
 router = APIRouter()
 
