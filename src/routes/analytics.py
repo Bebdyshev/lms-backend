@@ -879,9 +879,6 @@ async def get_quiz_question_errors(
     # --- 1. Internal Quiz Attempts Processing ---
     attempts = query.all()
     
-    logger = logging.getLogger(__name__)
-    logger.info(f"CALCULATION LOG: Starting quiz-level failure calculation for course {course_id}, group {group_id}")
-    logger.info(f"CALCULATION LOG: Found {len(attempts)} specialized quiz attempts to analyze")
     
     if not attempts:
         return {
@@ -901,7 +898,7 @@ async def get_quiz_question_errors(
         error_stats[key]["total"] += 1
         error_stats[key]["wrong"] += error_pct
             
-        logger.info(f"CALCULATION LOG: Attempt {attempt.id} User {attempt.user_id} | Quiz {attempt.step_id}: Error {error_pct}% (Score: {attempt.score_percentage}%)")
+        
 
     if not error_stats:
         return {
@@ -934,7 +931,7 @@ async def get_quiz_question_errors(
                 "lesson_title": stats.get("lesson_title"),
                 "step_title": stats.get("step_title")
             })
-            logger.info(f"CALCULATION LOG: Final Result -> Quiz in Step {stats['step_id']}: {stats['total']} attempts, Average Error Rate: {error_rate:.1f}%")
+            
     
     # Sort by error rate descending, then by wrong count
     error_list.sort(key=lambda x: (-x["error_rate"], -x["wrong_answers"]))
