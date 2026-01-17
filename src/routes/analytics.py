@@ -247,6 +247,23 @@ async def get_course_analytics_overview(
     
     enrolled_students = list(enrolled_students_set.values())
     
+    # Privacy Filter: If teacher is not course owner, restrict to their own groups
+    # This prevents specialized teachers from seeing students outside their jurisdiction
+    if current_user.role == "teacher" and course.teacher_id != current_user.id:
+        teacher_group_ids = [g.id for g in db.query(Group.id).filter(Group.teacher_id == current_user.id).all()]
+        if teacher_group_ids:
+            # Find students in these groups
+            allowed_student_ids = [gs.student_id for gs in db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(teacher_group_ids)
+            ).all()]
+            allowed_student_ids_set = set(allowed_student_ids)
+            
+            # Filter the final list
+            enrolled_students = [s for s in enrolled_students if s.id in allowed_student_ids_set]
+        else:
+            # Teacher has no groups? Then they see no students.
+            enrolled_students = []
+    
     # Get course structure
     modules = db.query(Module).filter(Module.course_id == course_id).order_by(Module.order_index).all()
     total_lessons = 0
