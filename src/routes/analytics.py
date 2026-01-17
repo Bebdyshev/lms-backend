@@ -9,6 +9,7 @@ import json
 import logging
 import httpx
 import os
+import re
 
 from src.config import get_db
 from src.config import get_db
@@ -792,6 +793,29 @@ async def get_quiz_performance_analytics(
         }
     }
 
+def extract_correct_answers_from_gaps(text: str, separator: str = ',') -> List[str]:
+    if not text:
+        return []
+    
+    # Matches [[...]]
+    matches = re.findall(r'\[\[(.*?)\]\]', text)
+    if not matches:
+        return []
+    
+    results = []
+    for match in matches:
+        options = [o.strip() for o in match.split(separator.strip())]
+        
+        # If an option ends with *, it's the correct answer
+        starred = next((o for o in options if o.endswith('*')), None)
+        if starred:
+            results.append(starred[:-1])
+        else:
+            # Otherwise the first option is correct
+            results.append(options[0])
+            
+    return results
+
 @router.get("/course/{course_id}/quiz-errors")
 async def get_quiz_question_errors(
     course_id: int,
@@ -850,18 +874,23 @@ async def get_quiz_question_errors(
         try:
             content = json.loads(step.content_text) if step.content_text else {}
             for q in content.get("questions", []):
-                q_id = q.get("id")
+                q_id = str(q.get("id"))
                 # Extract correct answer based on type
                 correct_val = None
                 q_type = q.get("type", "single_choice")
                 
                 if q_type in ["single_choice", "true_false"]:
-                    correct_opts = [o.get("id") for o in q.get("options", []) if o.get("isCorrect")]
+                    correct_opts = [str(o.get("id")) for o in q.get("options", []) if o.get("isCorrect")]
                     correct_val = correct_opts[0] if correct_opts else None
                 elif q_type == "multiple_choice":
-                    correct_val = sorted([o.get("id") for o in q.get("options", []) if o.get("isCorrect")])
+                    correct_val = sorted([str(o.get("id")) for o in q.get("options", []) if o.get("isCorrect")])
                 elif q_type == "short_answer":
                     correct_val = q.get("correct_answer")
+                elif q_type in ["fill_blank", "text_completion"]:
+                    # Try to find text in various common fields
+                    text = q.get("content_text") or q.get("question_text") or q.get("text", "")
+                    sep = q.get("gap_separator", ",")
+                    correct_val = extract_correct_answers_from_gaps(text, sep)
                 
                 question_key_map[(step.id, q_id)] = {
                     "type": q_type,
@@ -882,9 +911,9 @@ async def get_quiz_question_errors(
                 q_id = None
                 is_correct = True
                 
-                # Format 1: List [q_id, value] (Legacy)
+                # Format 1: List [q_id, value] (Legacy/Standard)
                 if isinstance(ans, list) and len(ans) >= 2:
-                    q_id = ans[0]
+                    q_id = str(ans[0])
                     user_val = ans[1]
                     
                     # Validate against pre-fetched key
@@ -894,18 +923,24 @@ async def get_quiz_question_errors(
                         correct_val = q_data['correct']
                         # Simple comparison logic
                         if q_data['type'] == 'multiple_choice':
-                            u_list = sorted(user_val) if isinstance(user_val, list) else [user_val] if user_val else []
+                            u_list = sorted([str(v) for v in user_val]) if isinstance(user_val, list) else [str(user_val)] if user_val else []
                             c_list = correct_val or []
                             is_correct = (str(u_list) == str(c_list))
+                        elif q_data['type'] in ['fill_blank', 'text_completion']:
+                            u_list = [str(v).strip().lower() for v in user_val] if isinstance(user_val, list) else []
+                            c_list = [str(v).strip().lower() for v in (correct_val or [])]
+                            is_correct = (u_list == c_list) if u_list and c_list else False
                         else:
-                            # String comparison for varying types (int vs str)
-                            is_correct = (str(user_val) == str(correct_val))
+                            # String comparison for varying types
+                            u_val_norm = str(user_val).strip().lower()
+                            c_val_norm = str(correct_val).strip().lower()
+                            is_correct = (u_val_norm == c_val_norm)
                     else:
                         continue # Can't validate without step content (or mismatched ID)
 
-                # Format 2: Dict {question_id: ..., is_correct: ...} (Modern)
+                # Format 2: Dict {question_id: ..., is_correct: ...} (Alternative)
                 elif isinstance(ans, dict):
-                    q_id = ans.get("question_id") or ans.get("id")
+                    q_id = str(ans.get("question_id") or ans.get("id") or "")
                     is_correct = ans.get("is_correct", ans.get("isCorrect", True))
                 
                 if not q_id:
