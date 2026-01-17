@@ -324,103 +324,149 @@ async def get_course_analytics_overview(
     # Fetch SAT scores for all students in parallel
     # This is required because "Latest Test" refers to the external SAT system, not internal Quizzes
     
-    api_key = os.getenv("MASTEREDU_API_KEY", "LMS_MasterEd_2025_SecureKey_XyZ789")
+    api_key = os.getenv("MASTEREDU_API_KEY")
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json"
     }
     
     student_sat_map = {} # student_id -> latest_test_result
-
-    async def fetch_sat_for_student(student_obj, client_session):
-        try:
-            url = f"https://api.mastereducation.kz/api/lms/students/{student_obj.email}/test-results"
-            response = await client_session.get(url, headers=headers, timeout=10.0)
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("testResults", [])
-                if results:
-                    # Find latest Math test and latest Verbal test separately
-                    math_tests = [r for r in results if "[Math]" in r.get("testName", "")]
-                    verbal_tests = [r for r in results if "[Verbal]" in r.get("testName", "")]
-                    
-                    math_pct = 0
-                    verbal_pct = 0
-                    math_correct = 0
-                    math_max = 0
-                    verbal_correct = 0
-                    verbal_max = 0
-                    title = "SAT Practice"
-                    
-                    # Get latest Math test
-                    if math_tests:
-                        math_tests.sort(key=lambda x: x.get("completedAt", ""), reverse=True)
-                        latest_math = math_tests[0]
-                        questions = latest_math.get("questions", [])
-                        math_q = [q for q in questions if q.get("questionType") == "Math"]
-                        math_correct = len([q for q in math_q if q.get("isCorrect")])
-                        math_max = len(math_q)
-                        math_pct = (math_correct / math_max * 100) if math_max > 0 else 0
-                        title = latest_math.get("testName", "SAT Practice")
-                        logger.info(f"Latest Math test for {student_obj.email}: {math_correct}/{math_max} = {math_pct:.1f}%")
-                    
-                    # Get latest Verbal test
-                    if verbal_tests:
-                        verbal_tests.sort(key=lambda x: x.get("completedAt", ""), reverse=True)
-                        latest_verbal = verbal_tests[0]
-                        questions = latest_verbal.get("questions", [])
-                        verbal_q = [q for q in questions if q.get("questionType") == "Verbal"]
-                        verbal_correct = len([q for q in verbal_q if q.get("isCorrect")])
-                        verbal_max = len(verbal_q)
-                        verbal_pct = (verbal_correct / verbal_max * 100) if verbal_max > 0 else 0
-                        # Use verbal test name if no math test
-                        if not math_tests:
-                            title = latest_verbal.get("testName", "SAT Practice")
-                        logger.info(f"Latest Verbal test for {student_obj.email}: {verbal_correct}/{verbal_max} = {verbal_pct:.1f}%")
-                    
-                    # Calculate overall percentage (average of both if both exist)
-                    if math_pct > 0 and verbal_pct > 0:
-                        overall_pct = (math_pct + verbal_pct) / 2
-                    elif math_pct > 0:
-                        overall_pct = math_pct
-                    elif verbal_pct > 0:
-                        overall_pct = verbal_pct
-                    else:
-                        overall_pct = 0
-                    
-                    return student_obj.id, {
-                        "title": title,
-                        "score": 0,  # Combined score not meaningful
-                        "max_score": 1600,
-                        "percentage": round(overall_pct, 1),
-                        "type": "sat",
-                        "math_percent": round(math_pct, 1),
-                        "verbal_percent": round(verbal_pct, 1),
-                        "math_score": math_correct,
-                        "math_max": math_max,
-                        "verbal_score": verbal_correct,
-                        "verbal_max": verbal_max,
-                        "date": None
-                    }
-        except Exception as e:
-            logger.warning(f"Failed to fetch SAT for {student_obj.email}: {e}")
-            pass
-        return student_obj.id, None
-
-    # internal QuizAttempts logic removed/minimized in favor of external if present
-    # But we keep fetching internal quizzes for non-SAT context courses just in case? 
-    # User said "Latest Test IS NOT connected to lessons". So we prioritize External.
     
-    # Use asyncio to fetch in parallel
-    async with httpx.AsyncClient() as client:
-        tasks = [fetch_sat_for_student(s, client) for s in enrolled_students]
-        # Use semaphore if needed, but for <100 students direct gather is usually fine.
-        sat_results = await asyncio.gather(*tasks)
+    # Main fetching logic
+    if enrolled_students:
+        email_to_student = {s.email.lower(): s for s in enrolled_students}
+        emails = list(email_to_student.keys())
         
-        for sid, res in sat_results:
-            if res:
-                student_sat_map[sid] = res
+        async def fetch_sat_for_student(student_obj, client_session):
+            """Helper for single student fetch (fallback)"""
+            email = student_obj.email.lower()
+            try:
+                # Try latest-test-details first (efficient)
+                url = f"https://api.mastereducation.kz/api/lms/students/{email}/latest-test-details"
+                response = await client_session.get(url, headers=headers, timeout=10.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    if "error" not in data:
+                        return student_obj.id, data
+                    else:
+                        logger.warning(f"latest-test-details failed for {email}: {data.get('error')}")
+                
+                # If that failed or returned error, try full test-results (robust)
+                url_history = f"https://api.mastereducation.kz/api/lms/students/{email}/test-results"
+                response = await client_session.get(url_history, headers=headers, timeout=15.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    # test-results returns { "testPairs": [...] }
+                    pairs = data.get("testPairs", [])
+                    if pairs and len(pairs) > 0:
+                        # Extract most recent pair and format it to look like latest-test-details
+                        latest = pairs[0]
+                        return student_obj.id, {
+                            "mathTest": latest.get("mathTest"),
+                            "verbalTest": latest.get("verbalTest"),
+                            "combinedScore": latest.get("combinedScore")
+                        }
+            except Exception as e:
+                logger.error(f"Fallback SAT fetch for {email} failed: {e}")
+            return student_obj.id, None
 
+        def parse_sat_data(student_obj_id, data):
+            """Helper to parse raw SAT data into our format"""
+            if not data: return None
+            
+            math_test = data.get("mathTest")
+            verbal_test = data.get("verbalTest")
+            total_sat_score = data.get("combinedScore") or 0
+            
+            # Fallback for combinedScore if missing but math/verbal exist
+            if not total_sat_score:
+                total_sat_score = (math_test.get("score") or 0) if math_test else 0
+                total_sat_score += (verbal_test.get("score") or 0) if verbal_test else 0
+
+            math_pct = 0
+            verbal_pct = 0
+            math_correct = 0
+            math_max = 0
+            verbal_correct = 0
+            verbal_max = 0
+            title = "SAT Practice"
+            
+            if math_test:
+                questions = math_test.get("questions", [])
+                math_q = [q for q in questions if q.get("questionType") == "Math"] or questions
+                math_correct = len([q for q in math_q if q.get("isCorrect")])
+                math_max = len(math_q)
+                math_pct = (math_correct / math_max * 100) if math_max > 0 else 0
+                title = math_test.get("testName") or title
+            
+            if verbal_test:
+                questions = verbal_test.get("questions", [])
+                verbal_q = [q for q in questions if q.get("questionType") == "Verbal"] or questions
+                verbal_correct = len([q for q in verbal_q if q.get("isCorrect")])
+                verbal_max = len(verbal_q)
+                verbal_pct = (verbal_correct / verbal_max * 100) if verbal_max > 0 else 0
+                if not math_test: title = verbal_test.get("testName") or title
+
+            if math_pct > 0 and verbal_pct > 0:
+                overall_pct = (math_pct + verbal_pct) / 2
+            else:
+                overall_pct = math_pct or verbal_pct or 0
+            
+            # Crucial: if we have NO scores yet date is missing, return None to avoid overwriting 
+            # legit internal quiz results with an empty SAT record
+            sat_date = (math_test.get("completedAt") or math_test.get("date")) if math_test else (verbal_test.get("completedAt") or verbal_test.get("date")) if verbal_test else None
+            if not sat_date and math_correct == 0 and verbal_correct == 0:
+                return None
+
+            return {
+                "title": title,
+                "score": total_sat_score,
+                "max_score": 1600,
+                "percentage": round(overall_pct, 1),
+                "type": "sat",
+                "math_percent": round(math_pct, 1),
+                "verbal_percent": round(verbal_pct, 1),
+                "math_score": math_correct,
+                "math_max": math_max,
+                "verbal_score": verbal_correct,
+                "verbal_max": verbal_max,
+                "date": sat_date
+            }
+
+        async with httpx.AsyncClient() as client:
+            batch_success = False
+            try:
+                batch_url = "https://api.mastereducation.kz/api/lms/students/latest-test-details"
+                response = await client.post(batch_url, headers=headers, json={"emails": emails, "limit": 100}, timeout=15.0)
+                
+                if response.status_code == 200:
+                    batch_data = response.json()
+                    # If batch failed globally (MasterEDU crash)
+                    if "error" in batch_data and not batch_data.get("results"):
+                        logger.warning(f"Batch SAT API returned global error: {batch_data['error']}")
+                    else:
+                        results = batch_data.get("results", [])
+                        for item in results:
+                            email = item.get("email", "").lower()
+                            data = item.get("data")
+                            student_obj = email_to_student.get(email)
+                            if student_obj and data:
+                                parsed = parse_sat_data(student_obj.id, data)
+                                if parsed: student_sat_map[student_obj.id] = parsed
+                        batch_success = True
+            except Exception as e:
+                logger.error(f"Batch SAT request failed: {e}")
+
+            # SURGICAL FALLBACK: Fetch individual results for anyone STILL missing
+            missing_students = [s for s in enrolled_students if s.id not in student_sat_map]
+            if missing_students:
+                logger.info(f"Surgical fallback: Fetching individual SAT for {len(missing_students)} missing students (e.g. {missing_students[0].email})")
+                tasks = [fetch_sat_for_student(s, client) for s in missing_students]
+                individual_results = await asyncio.gather(*tasks)
+                for sid, data in individual_results:
+                    if data:
+                        parsed = parse_sat_data(sid, data)
+                        if parsed: student_sat_map[sid] = parsed
     # Pre-fetch Quiz Attempts (Internal) as fallback (optional, or remove if strictly separated)
     # Keeping it compatible with previous logic but External overrides
     quiz_attempts_query = db.query(QuizAttempt).filter(
@@ -3025,6 +3071,45 @@ async def export_analytics_to_excel(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to export to Excel: {str(e)}")
 
+def merge_sat_pair(pair: dict) -> Optional[dict]:
+    """Helper to merge mathTest and verbalTest into a single entry for the frontend"""
+    m = pair.get("mathTest")
+    v = pair.get("verbalTest")
+    
+    if not m and not v:
+        return None
+        
+    combined = {
+        "testId": m.get("testId") if m else v.get("testId") if v else "latest",
+        "testName": pair.get("weekPeriod") or (m.get("testName") if m else v.get("testName") if v else "Latest SAT Results"),
+        "completedAt": m.get("completedAt") if m else v.get("completedAt") if v else None,
+        "questions": [],
+        "score": (pair.get("combinedScore") or 0) if "combinedScore" in pair else 0,
+        "percentage": 0,
+        "correctCount": 0,
+        "totalQuestions": 0
+    }
+    
+    if m:
+        combined["questions"].extend(m.get("questions", []))
+        if not combined["score"] and m.get("score"):
+            combined["score"] += m["score"]
+        combined["correctCount"] += m.get("correctCount") or 0
+        combined["totalQuestions"] += m.get("totalQuestions") or 0
+    
+    if v:
+        combined["questions"].extend(v.get("questions", []))
+        if v.get("score"):
+            combined["score"] += v["score"]
+        combined["correctCount"] += v.get("correctCount") or 0
+        combined["totalQuestions"] += v.get("totalQuestions") or 0
+    
+    # Calculate aggregate percentage
+    if combined["totalQuestions"] > 0:
+        combined["percentage"] = round((combined["correctCount"] / combined["totalQuestions"]) * 100, 2)
+        
+    return combined
+
 @router.get("/student/{student_id}/sat-scores")
 async def get_student_sat_scores(
     student_id: int,
@@ -3050,7 +3135,7 @@ async def get_student_sat_scores(
         raise HTTPException(status_code=403, detail="Access denied to this student")
     
     # External API Call
-    api_key = os.getenv("MASTEREDU_API_KEY", "LMS_MasterEd_2025_SecureKey_XyZ789")
+    api_key = os.getenv("MASTEREDU_API_KEY")
     url = f"https://api.mastereducation.kz/api/lms/students/{student.email}/test-results"
     
     headers = {
@@ -3074,6 +3159,25 @@ async def get_student_sat_scores(
                 return {"testResults": [], "error": "External API error"}
             
             data = response.json()
+            
+            # Normalize for frontend if using the new format
+            # Can be at top level or in testPairs list
+            if ("mathTest" in data or "verbalTest" in data or "testPairs" in data) and "testResults" not in data:
+                data["testResults"] = []
+                
+                # Case 1: Wrapped in testPairs (array of pairs)
+                if "testPairs" in data:
+                    for pair in data["testPairs"]:
+                        combined = merge_sat_pair(pair)
+                        if combined:
+                            data["testResults"].append(combined)
+                
+                # Case 2: Top level (single pair)
+                elif "mathTest" in data or "verbalTest" in data:
+                    combined = merge_sat_pair(data)
+                    if combined:
+                        data["testResults"].append(combined)
+            
             return data
             
         except Exception as e:
