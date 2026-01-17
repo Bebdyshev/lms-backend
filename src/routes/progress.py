@@ -1155,10 +1155,14 @@ async def mark_step_visited(
         if step_progress.started_at is None:
             step_progress.started_at = datetime.utcnow()
         
+        if step_progress.time_spent_minutes is None:
+            step_progress.time_spent_minutes = 0
         step_progress.time_spent_minutes += step_data.time_spent_minutes
     
     # Обновляем общее время изучения пользователя
-    current_user.total_study_time_minutes += step_data.time_spent_minutes
+    if current_user.total_study_time_minutes is None:
+        current_user.total_study_time_minutes = 0
+    current_user.total_study_time_minutes += (step_data.time_spent_minutes or 0)
     
     # Обновляем daily streak при посещении шага
     update_daily_streak(current_user, db)

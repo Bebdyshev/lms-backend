@@ -68,9 +68,17 @@ def update_student_course_summary(
             user_id=user_id,
             course_id=course_id,
             total_steps=total_steps,
-            total_assignments=total_assignments
+            total_assignments=total_assignments,
+            completed_steps=0,
+            completed_assignments=0,
+            total_time_spent_minutes=0
         )
         db.add(summary)
+    
+    # Normalize potentially None values from existing records
+    if summary.completed_steps is None: summary.completed_steps = 0
+    if summary.total_steps is None: summary.total_steps = 0
+    if summary.total_time_spent_minutes is None: summary.total_time_spent_minutes = 0
     
     # Increment counters
     if step_completed:
@@ -120,6 +128,11 @@ def update_summary_for_assignment(
     if not summary:
         # Create new summary (shouldn't normally happen)
         summary = update_student_course_summary(user_id, course_id, db)
+    
+    # Normalize potentially None values from existing records
+    if summary.completed_assignments is None: summary.completed_assignments = 0
+    if summary.total_assignment_score is None: summary.total_assignment_score = 0.0
+    if summary.max_possible_score is None: summary.max_possible_score = 0.0
     
     # Update assignment metrics
     summary.completed_assignments += 1

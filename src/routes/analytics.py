@@ -849,12 +849,16 @@ async def get_quiz_question_errors(
         ).subquery()
         query = query.filter(QuizAttempt.user_id.in_(group_student_ids))
     
-    # Aggregate errors by (step_id, question_id) or (source, question_text)
-    from collections import defaultdict
-    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "question_id": None, "text": None, "lesson_title": "Internal Quiz", "step_title": "Quiz"})
+    # Aggregate by step_id (Quiz level)
+    # key: step_id
+    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "lesson_id": None, "lesson_title": "Internal Quiz", "step_title": "Quiz"})
 
     # --- 1. Internal Quiz Attempts Processing ---
     attempts = query.all()
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"CALCULATION LOG: Starting quiz-level failure calculation for course {course_id}, group {group_id}")
+    logger.info(f"CALCULATION LOG: Found {len(attempts)} specialized quiz attempts to analyze")
     
     if not attempts:
         return {
@@ -863,106 +867,20 @@ async def get_quiz_question_errors(
             "questions": []
         }
 
-    # Pre-fetch Step content to validate legacy/list-format answers
-    step_ids = set(a.step_id for a in attempts)
-    steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
-    
-    # Map: (step_id, question_id) -> validation_data
-    question_key_map = {}
-    
-    for step in steps:
-        try:
-            content = json.loads(step.content_text) if step.content_text else {}
-            for q in content.get("questions", []):
-                q_id = str(q.get("id"))
-                # Extract correct answer based on type
-                correct_val = None
-                q_type = q.get("type", "single_choice")
-                
-                if q_type in ["single_choice", "true_false"]:
-                    correct_opts = [str(o.get("id")) for o in q.get("options", []) if o.get("isCorrect")]
-                    correct_val = correct_opts[0] if correct_opts else None
-                elif q_type == "multiple_choice":
-                    correct_val = sorted([str(o.get("id")) for o in q.get("options", []) if o.get("isCorrect")])
-                elif q_type == "short_answer":
-                    correct_val = q.get("correct_answer")
-                elif q_type in ["fill_blank", "text_completion"]:
-                    # Try to find text in various common fields
-                    text = q.get("content_text") or q.get("question_text") or q.get("text", "")
-                    sep = q.get("gap_separator", ",")
-                    correct_val = extract_correct_answers_from_gaps(text, sep)
-                
-                question_key_map[(step.id, q_id)] = {
-                    "type": q_type,
-                    "correct": correct_val
-                }
-        except (json.JSONDecodeError, TypeError):
-            continue
-    
     for attempt in attempts:
-        try:
-            answers = json.loads(attempt.answers) if attempt.answers else []
+        # A "wrong" attempt is a failed quiz (score < 50%)
+        # This matches the user's request to look "by quizzes inside lessons"
+        is_failed = (attempt.score_percentage or 0) < 50.0
+        
+        key = attempt.step_id
+        error_stats[key]["step_id"] = attempt.step_id
+        error_stats[key]["lesson_id"] = attempt.lesson_id
+        error_stats[key]["total"] += 1
+        if is_failed:
+            error_stats[key]["wrong"] += 1
             
-            # Handle different JSON structures
-            if not isinstance(answers, list):
-                continue
-                
-            for ans in answers:
-                q_id = None
-                is_correct = True
-                
-                # Format 1: List [q_id, value] (Legacy/Standard)
-                if isinstance(ans, list) and len(ans) >= 2:
-                    q_id = str(ans[0])
-                    user_val = ans[1]
-                    
-                    # Validate against pre-fetched key
-                    key = (attempt.step_id, q_id)
-                    q_data = question_key_map.get(key)
-                    if q_data:
-                        correct_val = q_data['correct']
-                        # Simple comparison logic
-                        if q_data['type'] == 'multiple_choice':
-                            u_list = sorted([str(v) for v in user_val]) if isinstance(user_val, list) else [str(user_val)] if user_val else []
-                            c_list = correct_val or []
-                            is_correct = (str(u_list) == str(c_list))
-                        elif q_data['type'] in ['fill_blank', 'text_completion']:
-                            u_list = [str(v).strip().lower() for v in user_val] if isinstance(user_val, list) else []
-                            c_list = [str(v).strip().lower() for v in (correct_val or [])]
-                            is_correct = (u_list == c_list) if u_list and c_list else False
-                        else:
-                            # String comparison for varying types
-                            u_val_norm = str(user_val).strip().lower()
-                            c_val_norm = str(correct_val).strip().lower()
-                            is_correct = (u_val_norm == c_val_norm)
-                    else:
-                        continue # Can't validate without step content (or mismatched ID)
+        logger.info(f"CALCULATION LOG: Attempt {attempt.id} User {attempt.user_id} | Quiz {attempt.step_id}: {'FAILED' if is_failed else 'PASSED'} (Score: {attempt.score_percentage}%)")
 
-                # Format 2: Dict {question_id: ..., is_correct: ...} (Alternative)
-                elif isinstance(ans, dict):
-                    q_id = str(ans.get("question_id") or ans.get("id") or "")
-                    is_correct = ans.get("is_correct", ans.get("isCorrect", True))
-                
-                if not q_id:
-                    continue
-                
-                # Update Stats
-                key = (attempt.step_id, q_id)
-                error_stats[key]["step_id"] = attempt.step_id
-                error_stats[key]["question_id"] = q_id
-                error_stats[key]["lesson_id"] = attempt.lesson_id
-                error_stats[key]["total"] += 1
-                if not is_correct:
-                    error_stats[key]["wrong"] += 1
-        except (json.JSONDecodeError, TypeError, AttributeError) as e:
-            continue
-            
-    # If using list format (legacy/bulk), we might not have correctness info
-    # Log this situation if we processed attempts but found no stats
-    if not error_stats and attempts:
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Quiz Errors: Processed {len(attempts)} attempts but found no error stats. Possible data format mismatch.")
-    
     if not error_stats:
         return {
             "course_id": course_id,
@@ -978,14 +896,15 @@ async def get_quiz_question_errors(
             error_list.append({
                 "step_id": stats["step_id"],
                 "lesson_id": stats.get("lesson_id"),
-                "question_id": stats["question_id"],
+                "question_id": "quiz_total", # Representing the quiz as a whole
                 "total_attempts": stats["total"],
                 "wrong_answers": stats["wrong"],
                 "error_rate": round(error_rate, 1),
-                "question_text": stats.get("text"), # Pre-fill from SAT/stats if available
+                "question_text": "General Quiz Performance",
                 "lesson_title": stats.get("lesson_title"),
                 "step_title": stats.get("step_title")
             })
+            logger.info(f"CALCULATION LOG: Final Result -> Quiz in Step {stats['step_id']}: {stats['wrong']}/{stats['total']} failed attempts ({error_rate:.1f}%)")
     
     # Sort by error rate descending, then by wrong count
     error_list.sort(key=lambda x: (-x["error_rate"], -x["wrong_answers"]))
@@ -1020,8 +939,13 @@ async def get_quiz_question_errors(
             step_info = step_map.get(item["step_id"], {})
             item["step_title"] = step_info.get("title", "Unknown")
             item["lesson_title"] = lesson_map.get(item["lesson_id"], "Unknown")
-            q_text = step_info.get("questions", {}).get(item["question_id"], "")
-            item["question_text"] = q_text
+            
+            if item["question_id"] == "quiz_total":
+                # For quiz-level aggregation, use the step title (quiz title)
+                item["question_text"] = f"Quiz: {item['step_title']}"
+            else:
+                q_text = step_info.get("questions", {}).get(item["question_id"], "")
+                item["question_text"] = q_text
             
     # Final truncation for all items
     for item in error_list:
