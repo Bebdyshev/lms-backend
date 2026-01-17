@@ -825,6 +825,11 @@ async def get_quiz_question_errors(
         ).subquery()
         query = query.filter(QuizAttempt.user_id.in_(group_student_ids))
     
+    # Aggregate errors by (step_id, question_id) or (source, question_text)
+    from collections import defaultdict
+    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "question_id": None, "text": None, "lesson_title": "Internal Quiz", "step_title": "Quiz"})
+
+    # --- 1. Internal Quiz Attempts Processing ---
     attempts = query.all()
     
     if not attempts:
@@ -833,10 +838,37 @@ async def get_quiz_question_errors(
             "total_attempts_analyzed": 0,
             "questions": []
         }
+
+    # Pre-fetch Step content to validate legacy/list-format answers
+    step_ids = set(a.step_id for a in attempts)
+    steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
     
-    # Aggregate errors by (step_id, question_id)
-    from collections import defaultdict
-    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "question_id": None})
+    # Map: (step_id, question_id) -> validation_data
+    question_key_map = {}
+    
+    for step in steps:
+        try:
+            content = json.loads(step.content_text) if step.content_text else {}
+            for q in content.get("questions", []):
+                q_id = q.get("id")
+                # Extract correct answer based on type
+                correct_val = None
+                q_type = q.get("type", "single_choice")
+                
+                if q_type in ["single_choice", "true_false"]:
+                    correct_opts = [o.get("id") for o in q.get("options", []) if o.get("isCorrect")]
+                    correct_val = correct_opts[0] if correct_opts else None
+                elif q_type == "multiple_choice":
+                    correct_val = sorted([o.get("id") for o in q.get("options", []) if o.get("isCorrect")])
+                elif q_type == "short_answer":
+                    correct_val = q.get("correct_answer")
+                
+                question_key_map[(step.id, q_id)] = {
+                    "type": q_type,
+                    "correct": correct_val
+                }
+        except (json.JSONDecodeError, TypeError):
+            continue
     
     for attempt in attempts:
         try:
@@ -847,27 +879,44 @@ async def get_quiz_question_errors(
                 continue
                 
             for ans in answers:
-                if not isinstance(ans, dict):
-                    # Handle list format [question_id, value]
-                    if isinstance(ans, list) and len(ans) >= 1:
-                        # We have an answer but don't know if it's correct without checking Step content
-                        # For now, we unfortunately skip it for "Error" statistics as we can't determine error
-                        # TODO: Fetch Step content to validate answers
-                        continue
-                    continue
+                q_id = None
+                is_correct = True
+                
+                # Format 1: List [q_id, value] (Legacy)
+                if isinstance(ans, list) and len(ans) >= 2:
+                    q_id = ans[0]
+                    user_val = ans[1]
                     
-                q_id = ans.get("question_id") or ans.get("id")
+                    # Validate against pre-fetched key
+                    key = (attempt.step_id, q_id)
+                    q_data = question_key_map.get(key)
+                    if q_data:
+                        correct_val = q_data['correct']
+                        # Simple comparison logic
+                        if q_data['type'] == 'multiple_choice':
+                            u_list = sorted(user_val) if isinstance(user_val, list) else [user_val] if user_val else []
+                            c_list = correct_val or []
+                            is_correct = (str(u_list) == str(c_list))
+                        else:
+                            # String comparison for varying types (int vs str)
+                            is_correct = (str(user_val) == str(correct_val))
+                    else:
+                        continue # Can't validate without step content (or mismatched ID)
+
+                # Format 2: Dict {question_id: ..., is_correct: ...} (Modern)
+                elif isinstance(ans, dict):
+                    q_id = ans.get("question_id") or ans.get("id")
+                    is_correct = ans.get("is_correct", ans.get("isCorrect", True))
+                
                 if not q_id:
                     continue
                 
+                # Update Stats
                 key = (attempt.step_id, q_id)
                 error_stats[key]["step_id"] = attempt.step_id
                 error_stats[key]["question_id"] = q_id
                 error_stats[key]["lesson_id"] = attempt.lesson_id
                 error_stats[key]["total"] += 1
-                
-                # Check if answer was wrong
-                is_correct = ans.get("is_correct", ans.get("isCorrect", True))
                 if not is_correct:
                     error_stats[key]["wrong"] += 1
         except (json.JSONDecodeError, TypeError, AttributeError) as e:
@@ -898,45 +947,51 @@ async def get_quiz_question_errors(
                 "total_attempts": stats["total"],
                 "wrong_answers": stats["wrong"],
                 "error_rate": round(error_rate, 1),
-                "question_text": None,  # Will be enriched below
-                "lesson_title": None,
-                "step_title": None
+                "question_text": stats.get("text"), # Pre-fill from SAT/stats if available
+                "lesson_title": stats.get("lesson_title"),
+                "step_title": stats.get("step_title")
             })
     
     # Sort by error rate descending, then by wrong count
     error_list.sort(key=lambda x: (-x["error_rate"], -x["wrong_answers"]))
     error_list = error_list[:limit]
     
-    # Enrich with question text from Steps
-    step_ids = list(set(item["step_id"] for item in error_list))
-    steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
-    step_map = {}
-    for step in steps:
-        try:
-            content = json.loads(step.content_text) if step.content_text else {}
-            questions = content.get("questions", [])
-            question_map = {q.get("id"): q.get("question_text", "") for q in questions}
-            step_map[step.id] = {
-                "title": step.title,
-                "lesson_id": step.lesson_id,
-                "questions": question_map
-            }
-        except (json.JSONDecodeError, TypeError):
-            step_map[step.id] = {"title": step.title, "lesson_id": step.lesson_id, "questions": {}}
-    
-    # Fetch lesson titles
-    lesson_ids = list(set(item["lesson_id"] for item in error_list if item["lesson_id"]))
-    lessons = db.query(Lesson).filter(Lesson.id.in_(lesson_ids)).all()
-    lesson_map = {l.id: l.title for l in lessons}
-    
-    # Enrich error list
+    # Enrich with question text from Steps (only for internal quizzes with step_id)
+    internal_items = [item for item in error_list if item["step_id"]]
+    if internal_items:
+        step_ids = list(set(item["step_id"] for item in internal_items))
+        steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
+        step_map = {}
+        for step in steps:
+            try:
+                content = json.loads(step.content_text) if step.content_text else {}
+                questions = content.get("questions", [])
+                question_map = {q.get("id"): q.get("question_text", "") for q in questions}
+                step_map[step.id] = {
+                    "title": step.title,
+                    "lesson_id": step.lesson_id,
+                    "questions": question_map
+                }
+            except (json.JSONDecodeError, TypeError):
+                step_map[step.id] = {"title": step.title, "lesson_id": step.lesson_id, "questions": {}}
+        
+        # Fetch lesson titles
+        lesson_ids = list(set(item["lesson_id"] for item in internal_items if item["lesson_id"]))
+        lessons = db.query(Lesson).filter(Lesson.id.in_(lesson_ids)).all()
+        lesson_map = {l.id: l.title for l in lessons}
+        
+        # Enrich error list (Internal items only)
+        for item in internal_items:
+            step_info = step_map.get(item["step_id"], {})
+            item["step_title"] = step_info.get("title", "Unknown")
+            item["lesson_title"] = lesson_map.get(item["lesson_id"], "Unknown")
+            q_text = step_info.get("questions", {}).get(item["question_id"], "")
+            item["question_text"] = q_text
+            
+    # Final truncation for all items
     for item in error_list:
-        step_info = step_map.get(item["step_id"], {})
-        item["step_title"] = step_info.get("title", "Unknown")
-        item["lesson_title"] = lesson_map.get(item["lesson_id"], "Unknown")
-        q_text = step_info.get("questions", {}).get(item["question_id"], "")
-        # Truncate long question text
-        item["question_text"] = q_text[:200] + "..." if len(q_text) > 200 else q_text
+        if item["question_text"] and len(item["question_text"]) > 200:
+            item["question_text"] = item["question_text"][:200] + "..."
     
     return {
         "course_id": course_id,
