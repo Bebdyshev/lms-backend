@@ -10,8 +10,8 @@ import logging
 import httpx
 import os
 import re
+from collections import defaultdict
 
-from src.config import get_db
 from src.config import get_db
 import asyncio
 from src.schemas.models import (
@@ -820,7 +820,7 @@ def extract_correct_answers_from_gaps(text: str, separator: str = ',') -> List[s
 async def get_quiz_question_errors(
     course_id: int,
     group_id: Optional[int] = None,
-    limit: int = Query(20, description="Max number of questions to return"),
+    limit: int = Query(500, description="Max number of questions to return"),
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -851,6 +851,7 @@ async def get_quiz_question_errors(
     
     # Aggregate by step_id (Quiz level)
     # key: step_id
+    from collections import defaultdict
     error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "lesson_id": None, "lesson_title": "Internal Quiz", "step_title": "Quiz"})
 
     # --- 1. Internal Quiz Attempts Processing ---
@@ -868,18 +869,17 @@ async def get_quiz_question_errors(
         }
 
     for attempt in attempts:
-        # A "wrong" attempt is a failed quiz (score < 50%)
-        # This matches the user's request to look "by quizzes inside lessons"
-        is_failed = (attempt.score_percentage or 0) < 50.0
+        # Calculate error percentage for this attempt (100% - score%)
+        error_pct = 100.0 - (attempt.score_percentage or 0)
+        if error_pct < 0: error_pct = 0 # Safety for scores > 100%
         
         key = attempt.step_id
         error_stats[key]["step_id"] = attempt.step_id
         error_stats[key]["lesson_id"] = attempt.lesson_id
         error_stats[key]["total"] += 1
-        if is_failed:
-            error_stats[key]["wrong"] += 1
+        error_stats[key]["wrong"] += error_pct
             
-        logger.info(f"CALCULATION LOG: Attempt {attempt.id} User {attempt.user_id} | Quiz {attempt.step_id}: {'FAILED' if is_failed else 'PASSED'} (Score: {attempt.score_percentage}%)")
+        logger.info(f"CALCULATION LOG: Attempt {attempt.id} User {attempt.user_id} | Quiz {attempt.step_id}: Error {error_pct}% (Score: {attempt.score_percentage}%)")
 
     if not error_stats:
         return {
@@ -892,19 +892,27 @@ async def get_quiz_question_errors(
     error_list = []
     for key, stats in error_stats.items():
         if stats["total"] > 0:
-            error_rate = (stats["wrong"] / stats["total"]) * 100
+            # Average Error Percentage
+            error_rate = stats["wrong"] / stats["total"]
+            
+            # Skip items with zero or negligible error to keep the list manageable
+            if error_rate < 1.0:
+                continue
+                
             error_list.append({
                 "step_id": stats["step_id"],
                 "lesson_id": stats.get("lesson_id"),
                 "question_id": "quiz_total", # Representing the quiz as a whole
                 "total_attempts": stats["total"],
-                "wrong_answers": stats["wrong"],
+                # Trick: wrong_answers = avg_error * total / 100
+                # When frontend does (wrong / total) * 100, it gets avg_error
+                "wrong_answers": stats["wrong"] / 100.0, 
                 "error_rate": round(error_rate, 1),
                 "question_text": "General Quiz Performance",
                 "lesson_title": stats.get("lesson_title"),
                 "step_title": stats.get("step_title")
             })
-            logger.info(f"CALCULATION LOG: Final Result -> Quiz in Step {stats['step_id']}: {stats['wrong']}/{stats['total']} failed attempts ({error_rate:.1f}%)")
+            logger.info(f"CALCULATION LOG: Final Result -> Quiz in Step {stats['step_id']}: {stats['total']} attempts, Average Error Rate: {error_rate:.1f}%")
     
     # Sort by error rate descending, then by wrong count
     error_list.sort(key=lambda x: (-x["error_rate"], -x["wrong_answers"]))
