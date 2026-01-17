@@ -866,6 +866,7 @@ def extract_correct_answers_from_gaps(text: str, separator: str = ',') -> List[s
 async def get_quiz_question_errors(
     course_id: int,
     group_id: Optional[int] = None,
+    lesson_id: Optional[int] = None,
     limit: int = Query(500, description="Max number of questions to return"),
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
@@ -888,6 +889,9 @@ async def get_quiz_question_errors(
         QuizAttempt.answers.isnot(None)
     )
     
+    if lesson_id:
+        query = query.filter(QuizAttempt.lesson_id == lesson_id)
+
     # Role-based filtering (Teacher/Curator should only see their own groups if no specific group is selected)
     if not group_id and current_user.role != "admin":
         if current_user.role == "teacher":
@@ -917,14 +921,13 @@ async def get_quiz_question_errors(
         ).subquery()
         query = query.filter(QuizAttempt.user_id.in_(group_student_ids))
     
-    # Aggregate by step_id (Quiz level)
-    # key: step_id
+    # Aggregate by question_id
+    # key: (step_id, question_id)
     from collections import defaultdict
-    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "lesson_id": None, "lesson_title": "Internal Quiz", "step_title": "Quiz"})
+    error_stats = defaultdict(lambda: {"total": 0, "wrong": 0, "step_id": None, "lesson_id": None, "question_text": "", "lesson_title": ""})
 
     # --- 1. Internal Quiz Attempts Processing ---
     attempts = query.all()
-    
     
     if not attempts:
         return {
@@ -933,98 +936,202 @@ async def get_quiz_question_errors(
             "questions": []
         }
 
-    for attempt in attempts:
-        # Calculate error percentage for this attempt (100% - score%)
-        error_pct = 100.0 - (attempt.score_percentage or 0)
-        if error_pct < 0: error_pct = 0 # Safety for scores > 100%
-        
-        key = attempt.step_id
-        error_stats[key]["step_id"] = attempt.step_id
-        error_stats[key]["lesson_id"] = attempt.lesson_id
-        error_stats[key]["total"] += 1
-        error_stats[key]["wrong"] += error_pct
-            
-        
-
-    if not error_stats:
-        return {
-            "course_id": course_id,
-            "total_attempts_analyzed": len(attempts),
-            "questions": []
-        }
+    # Pre-fetch all referenced steps to verify correct answers
+    step_ids = list(set(a.step_id for a in attempts))
+    steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
     
+    # helper to check if answer is correct
+    def get_answer_error_score(step_id, step_content, question_id, user_answer):
+        """Returns error score from 0.0 (perfect) to 1.0 (all wrong). None if unverifiable."""
+        try:
+            if not step_content: return None
+            questions = step_content.get("questions", [])
+            for q in questions:
+                if str(q.get("id")) == str(question_id):
+                    q_type = q.get("question_type")
+                    if q_type == "long_text":
+                        return None # Non-gradable
+                    
+                    # Try different possible keys for correct answer
+                    actual_correct = q.get("correct_answer")
+                    if actual_correct is None:
+                        actual_correct = q.get("correctAnswer")
+                    
+                    def norm_val(v):
+                        if v is None: return ""
+                        s = str(v).strip().lower()
+                        # Replace comma with dot for international numbers
+                        s = s.replace(",", ".")
+                        # Remove all whitespace to handle "1 / 16"
+                        s = "".join(s.split())
+                        if s.startswith("[") and s.endswith("]") and "," not in s:
+                            s = s[1:-1].strip()
+                        return s
+
+                    def to_float(s):
+                        try:
+                            if "/" in s:
+                                parts = s.split("/")
+                                if len(parts) == 2:
+                                    return float(parts[0]) / float(parts[1])
+                            return float(s)
+                        except:
+                            return None
+
+                    def check_match(u, a):
+                        u_norm = norm_val(u)
+                        a_str = str(a).strip().lower()
+                        # Support multiple options separated by |
+                        options = [norm_val(o) for o in a_str.split("|")]
+                        
+                        # Direct string match
+                        if u_norm in options:
+                            return True
+                            
+                        # Try numeric evaluation (e.g. 0.0625 == 1/16)
+                        u_float = to_float(u_norm)
+                        if u_float is not None:
+                            for opt in options:
+                                o_float = to_float(opt)
+                                if o_float is not None and abs(u_float - o_float) < 0.0001:
+                                    return True
+                        return False
+
+                    # CHECK IF VERIFIABLE
+                    if actual_correct is None: return None
+                    if isinstance(actual_correct, str) and not actual_correct.strip(): return None
+                    if isinstance(actual_correct, list) and len(actual_correct) == 0: return None
+                    if isinstance(actual_correct, list) and all(not norm_val(x) for x in actual_correct): return None
+
+                    # Handle lists (multiple gaps or multiple choice)
+                    if isinstance(actual_correct, list):
+                        u_list = user_answer if isinstance(user_answer, list) else [user_answer]
+                        
+                        # Partial credit: count how many are WRONG
+                        base_size = max(len(actual_correct), 1)
+                        mismatches = 0
+                        
+                        # For fill_blank, order matters strictly
+                        for i in range(len(actual_correct)):
+                            u_v = u_list[i] if i < len(u_list) else ""
+                            if not check_match(u_v, actual_correct[i]):
+                                mismatches += 1
+                        
+                        if len(u_list) > len(actual_correct):
+                            mismatches += (len(u_list) - len(actual_correct))
+                            
+                        return min(mismatches / base_size, 1.0)
+                    
+                    # Single value comparison
+                    u_val = user_answer
+                    if isinstance(user_answer, list) and len(user_answer) > 0:
+                        u_val = user_answer[0]
+                    
+                    is_correct = check_match(u_val, actual_correct)
+                    return 0.0 if is_correct else 1.0
+                    
+            return None # Question not matching this ID
+        except:
+            return None
+
+    step_data_cache = {}
+    for s in steps:
+        try:
+            step_data_cache[s.id] = json.loads(s.content_text) if s.content_text else {}
+        except:
+            step_data_cache[s.id] = {}
+
+    for attempt in attempts:
+        try:
+            answers_data = attempt.answers
+            if isinstance(answers_data, str):
+                answers_data = json.loads(answers_data)
+            
+            sid = attempt.step_id
+            s_content = step_data_cache.get(sid, {})
+            
+            def process_q_error(qid, val):
+                err = get_answer_error_score(sid, s_content, qid, val)
+                if err is not None:
+                    key = (sid, str(qid))
+                    error_stats[key]["step_id"] = sid
+                    error_stats[key]["lesson_id"] = attempt.lesson_id
+                    error_stats[key]["total"] += 1
+                    error_stats[key]["wrong"] += err
+
+            if isinstance(answers_data, list):
+                for ans in answers_data:
+                    if isinstance(ans, list) and len(ans) >= 2:
+                        process_q_error(ans[0], ans[1])
+            elif isinstance(answers_data, dict):
+                for q_id, val in answers_data.items():
+                    process_q_error(q_id, val)
+        except:
+            continue
+
     # Calculate error rates and sort
     error_list = []
-    for key, stats in error_stats.items():
+    for (step_id, q_id), stats in error_stats.items():
         if stats["total"] > 0:
-            # Average Error Percentage
-            error_rate = stats["wrong"] / stats["total"]
+            error_rate = (stats["wrong"] / stats["total"]) * 100
             
-            # Skip items with zero or negligible error to keep the list manageable
-            if error_rate < 1.0:
+            # Filter negligible errors unless specifically viewing a lesson
+            if not lesson_id and error_rate < 5.0:
                 continue
                 
             error_list.append({
-                "step_id": stats["step_id"],
+                "step_id": step_id,
                 "lesson_id": stats.get("lesson_id"),
-                "question_id": "quiz_total", # Representing the quiz as a whole
+                "question_id": q_id,
                 "total_attempts": stats["total"],
-                # Trick: wrong_answers = avg_error * total / 100
-                # When frontend does (wrong / total) * 100, it gets avg_error
-                "wrong_answers": stats["wrong"] / 100.0, 
+                "wrong_answers": stats["wrong"],
                 "error_rate": round(error_rate, 1),
-                "question_text": "General Quiz Performance",
-                "lesson_title": stats.get("lesson_title"),
-                "step_title": stats.get("step_title")
+                "question_text": "Question " + str(q_id),
+                "lesson_title": "Internal",
+                "step_title": "Quiz"
             })
             
-    
-    # Sort by error rate descending, then by wrong count
-    error_list.sort(key=lambda x: (-x["error_rate"], -x["wrong_answers"]))
+    error_list.sort(key=lambda x: (-x["error_rate"], -x["total_attempts"]))
     error_list = error_list[:limit]
     
-    # Enrich with question text from Steps (only for internal quizzes with step_id)
-    internal_items = [item for item in error_list if item["step_id"]]
-    if internal_items:
-        step_ids = list(set(item["step_id"] for item in internal_items))
-        steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
-        step_map = {}
-        for step in steps:
+    # Enrichment
+    step_ids = list(set(item["step_id"] for item in error_list))
+    steps = db.query(Step).filter(Step.id.in_(step_ids)).all()
+    step_map = {s.id: s for s in steps}
+    
+    lesson_ids = list(set(s.lesson_id for s in steps))
+    lessons = db.query(Lesson).filter(Lesson.id.in_(lesson_ids)).all()
+    lesson_map = {l.id: l.title for l in lessons}
+
+    for item in error_list:
+        step = step_map.get(item["step_id"])
+        if step:
+            item["step_title"] = step.title
+            l_title = lesson_map.get(step.lesson_id, "Unknown Lesson")
+            item["lesson_title"] = l_title
+            
+            # Since we filtered out quiz_total above, all items are individual questions
             try:
                 content = json.loads(step.content_text) if step.content_text else {}
                 questions = content.get("questions", [])
-                question_map = {q.get("id"): q.get("question_text", "") for q in questions}
-                step_map[step.id] = {
-                    "title": step.title,
-                    "lesson_id": step.lesson_id,
-                    "questions": question_map
-                }
-            except (json.JSONDecodeError, TypeError):
-                step_map[step.id] = {"title": step.title, "lesson_id": step.lesson_id, "questions": {}}
-        
-        # Fetch lesson titles
-        lesson_ids = list(set(item["lesson_id"] for item in internal_items if item["lesson_id"]))
-        lessons = db.query(Lesson).filter(Lesson.id.in_(lesson_ids)).all()
-        lesson_map = {l.id: l.title for l in lessons}
-        
-        # Enrich error list (Internal items only)
-        for item in internal_items:
-            step_info = step_map.get(item["step_id"], {})
-            item["step_title"] = step_info.get("title", "Unknown")
-            item["lesson_title"] = lesson_map.get(item["lesson_id"], "Unknown")
-            
-            if item["question_id"] == "quiz_total":
-                # For quiz-level aggregation, use the step title (quiz title)
-                item["question_text"] = f"Quiz: {item['step_title']}"
-            else:
-                q_text = step_info.get("questions", {}).get(item["question_id"], "")
-                item["question_text"] = q_text
-            
-    # Final truncation for all items
-    for item in error_list:
-        if item["question_text"] and len(item["question_text"]) > 200:
-            item["question_text"] = item["question_text"][:200] + "..."
-    
+                
+                # Find the actual question text in the step content
+                found = False
+                for q in questions:
+                    if str(q.get("id")) == str(item["question_id"]):
+                        # Try multiple possible fields for text
+                        q_text = q.get("question_text") or q.get("text") or q.get("content")
+                        if q_text:
+                            item["question_text"] = q_text
+                            found = True
+                        break
+                
+                if not found and item["question_text"].startswith("Question "):
+                    # Fallback to make non-titled questions more descriptive
+                    item["question_text"] = f"{item['question_text']} (in {step.title})"
+            except:
+                pass
+
     return {
         "course_id": course_id,
         "group_id": group_id,
