@@ -1087,6 +1087,7 @@ async def get_quiz_question_errors(
                 "wrong_answers": stats["wrong"],
                 "error_rate": round(error_rate, 1),
                 "question_text": "Question " + str(q_id),
+                "question_type": "unknown",
                 "lesson_title": "Internal",
                 "step_title": "Quiz"
             })
@@ -1123,6 +1124,7 @@ async def get_quiz_question_errors(
                         q_text = q.get("question_text") or q.get("text") or q.get("content")
                         if q_text:
                             item["question_text"] = q_text
+                            item["question_type"] = q.get("question_type") or "unknown"
                             found = True
                         break
                 
