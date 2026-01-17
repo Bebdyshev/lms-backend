@@ -328,6 +328,10 @@ async def get_course_analytics_overview(
                     
                     math_pct = 0
                     verbal_pct = 0
+                    math_correct = 0
+                    math_max = 0
+                    verbal_correct = 0
+                    verbal_max = 0
                     title = "SAT Practice"
                     
                     # Get latest Math test
@@ -337,9 +341,10 @@ async def get_course_analytics_overview(
                         questions = latest_math.get("questions", [])
                         math_q = [q for q in questions if q.get("questionType") == "Math"]
                         math_correct = len([q for q in math_q if q.get("isCorrect")])
-                        math_pct = (math_correct / len(math_q) * 100) if math_q else 0
+                        math_max = len(math_q)
+                        math_pct = (math_correct / math_max * 100) if math_max > 0 else 0
                         title = latest_math.get("testName", "SAT Practice")
-                        logger.info(f"Latest Math test for {student_obj.email}: {math_correct}/{len(math_q)} = {math_pct:.1f}%")
+                        logger.info(f"Latest Math test for {student_obj.email}: {math_correct}/{math_max} = {math_pct:.1f}%")
                     
                     # Get latest Verbal test
                     if verbal_tests:
@@ -348,11 +353,12 @@ async def get_course_analytics_overview(
                         questions = latest_verbal.get("questions", [])
                         verbal_q = [q for q in questions if q.get("questionType") == "Verbal"]
                         verbal_correct = len([q for q in verbal_q if q.get("isCorrect")])
-                        verbal_pct = (verbal_correct / len(verbal_q) * 100) if verbal_q else 0
+                        verbal_max = len(verbal_q)
+                        verbal_pct = (verbal_correct / verbal_max * 100) if verbal_max > 0 else 0
                         # Use verbal test name if no math test
                         if not math_tests:
                             title = latest_verbal.get("testName", "SAT Practice")
-                        logger.info(f"Latest Verbal test for {student_obj.email}: {verbal_correct}/{len(verbal_q)} = {verbal_pct:.1f}%")
+                        logger.info(f"Latest Verbal test for {student_obj.email}: {verbal_correct}/{verbal_max} = {verbal_pct:.1f}%")
                     
                     # Calculate overall percentage (average of both if both exist)
                     if math_pct > 0 and verbal_pct > 0:
@@ -373,9 +379,9 @@ async def get_course_analytics_overview(
                         "math_percent": round(math_pct, 1),
                         "verbal_percent": round(verbal_pct, 1),
                         "math_score": math_correct,
-                        "math_max": len(math_q),
+                        "math_max": math_max,
                         "verbal_score": verbal_correct,
-                        "verbal_max": len(verbal_q),
+                        "verbal_max": verbal_max,
                         "date": None
                     }
         except Exception as e:
@@ -413,6 +419,33 @@ async def get_course_analytics_overview(
 
     # Student performance summary
     student_performance = []
+    
+    # Bulk fetch student groups and group assignments to avoid N+1 in loop
+    student_group_ids_map = {} # student_id -> list of group_ids
+    all_group_ids = set()
+    
+    if enrolled_students:
+        s_ids = [s.id for s in enrolled_students]
+        gs_rows = db.query(GroupStudent.student_id, GroupStudent.group_id).filter(
+            GroupStudent.student_id.in_(s_ids)
+        ).all()
+        for sid, gid in gs_rows:
+            if sid not in student_group_ids_map:
+                student_group_ids_map[sid] = []
+            student_group_ids_map[sid].append(gid)
+            all_group_ids.add(gid)
+            
+    group_assignments_map = {} # group_id -> list of assignments
+    if all_group_ids:
+        g_assignments = db.query(Assignment).filter(
+            Assignment.group_id.in_(list(all_group_ids)),
+            Assignment.is_active == True
+        ).all()
+        for asm in g_assignments:
+            if asm.group_id not in group_assignments_map:
+                group_assignments_map[asm.group_id] = []
+            group_assignments_map[asm.group_id].append(asm)
+
     for student in enrolled_students:
         student_steps = [sp for sp in step_progress_records if sp.user_id == student.id]
         student_completed = len([sp for sp in student_steps if sp.status == "completed"])
@@ -453,15 +486,17 @@ async def get_course_analytics_overview(
         
         # Get assignment performance for THIS STUDENT
         # Use group-based assignments (teacher-assigned homework)
-        student_group_ids = [gs.group_id for gs in db.query(GroupStudent.group_id).filter(
-            GroupStudent.student_id == student.id
-        ).all()]
+        # Get assignment performance for THIS STUDENT
+        # Use bulk fetched data
+        current_s_group_ids = student_group_ids_map.get(student.id, [])
+        student_group_assignments = []
+        for gid in current_s_group_ids:
+            if gid in group_assignments_map:
+                student_group_assignments.extend(group_assignments_map[gid])
         
-        # Find assignments assigned to this student's groups
-        student_group_assignments = db.query(Assignment).filter(
-            Assignment.group_id.in_(student_group_ids),
-            Assignment.is_active == True
-        ).all() if student_group_ids else []
+        # Deduplicate assignments by ID just in case
+        unique_assignments = {a.id: a for a in student_group_assignments}
+        student_group_assignments = list(unique_assignments.values())
         
         student_assignments_total = len(student_group_assignments)
         student_assignments_completed = 0
