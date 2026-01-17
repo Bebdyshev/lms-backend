@@ -2,8 +2,8 @@
 set -e
 
 # --- Configuration ---
-BACKEND_DIR="/path/to/backend" # Update this to your production path
-BACKUP_DIR="./backups"
+BACKEND_DIR="~/projects/lms/" # Update this to your production path
+BACKUP_DIR="~/projects/lms/backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 echo "🚀 Starting deployment at $TIMESTAMP..."
