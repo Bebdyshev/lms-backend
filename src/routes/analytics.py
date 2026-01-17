@@ -842,8 +842,30 @@ async def get_quiz_question_errors(
         QuizAttempt.answers.isnot(None)
     )
     
-    # Filter by group if specified
-    if group_id:
+    # Role-based filtering (Teacher/Curator should only see their own groups if no specific group is selected)
+    if not group_id and current_user.role != "admin":
+        if current_user.role == "teacher":
+            # Teacher's groups or courses they teach
+            teacher_groups = db.query(Group.id).filter(Group.teacher_id == current_user.id).subquery()
+            teacher_courses = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
+            
+            group_student_ids = db.query(GroupStudent.student_id).filter(GroupStudent.group_id.in_(teacher_groups)).subquery()
+            course_student_ids = db.query(Enrollment.user_id).filter(Enrollment.course_id.in_(teacher_courses)).subquery()
+            
+            query = query.filter(
+                or_(
+                    QuizAttempt.user_id.in_(group_student_ids),
+                    QuizAttempt.user_id.in_(course_student_ids)
+                )
+            )
+        elif current_user.role == "curator":
+            # Curator's groups
+            curator_groups = db.query(Group.id).filter(Group.curator_id == current_user.id).subquery()
+            group_student_ids = db.query(GroupStudent.student_id).filter(GroupStudent.group_id.in_(curator_groups)).subquery()
+            query = query.filter(QuizAttempt.user_id.in_(group_student_ids))
+            
+    # Explicit group filter
+    elif group_id:
         group_student_ids = db.query(GroupStudent.student_id).filter(
             GroupStudent.group_id == group_id
         ).subquery()
