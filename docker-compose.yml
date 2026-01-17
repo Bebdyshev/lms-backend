@@ -41,17 +41,6 @@ services:
     expose:
       - "8000"
 
-  migration:
-    build: .
-    container_name: lms-migration
-    command: alembic upgrade head
-    environment:
-      - POSTGRES_URL=${POSTGRES_URL}
-    depends_on:
-      - postgres
-    networks:
-      - proxy
-
 volumes:
   postgres_data:
 
