@@ -14,7 +14,7 @@ router = APIRouter(prefix="/questions", tags=["Questions"])
 
 
 class ReportErrorRequest(BaseModel):
-    question_id: int
+    question_id: str
     message: str
     step_id: Optional[int] = None
     suggested_answer: Optional[str] = None
@@ -314,7 +314,7 @@ async def get_error_report_detail(
         } if report.step else None,
         "quiz_settings": quiz_settings,
         "question_data": question_data,
-        "question_index": next((i for i, q in enumerate(all_questions) if q.get("id") == report.question_id), -1),
+        "question_index": next((i for i, q in enumerate(all_questions) if str(q.get("id")) == str(report.question_id)), -1),
         "total_questions": len(all_questions),
     }
 
@@ -350,7 +350,7 @@ async def update_error_report(
 @router.put("/update-question/{step_id}/{question_id}")
 async def update_question(
     step_id: int,
-    question_id: int,
+    question_id: str,
     request: UpdateQuestionRequest,
     current_user: UserInDB = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -376,7 +376,7 @@ async def update_question(
         question_found = False
         updated_question = None
         for i, q in enumerate(questions):
-            if q.get("id") == question_id:
+            if str(q.get("id")) == str(question_id):
                 # Update the question with provided fields
                 if request.question_text is not None:
                     questions[i]["question_text"] = request.question_text

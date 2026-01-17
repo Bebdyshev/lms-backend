@@ -1861,7 +1861,7 @@ class QuestionErrorReport(Base):
     __tablename__ = "question_error_reports"
     
     id = Column(Integer, primary_key=True, index=True)
-    question_id = Column(BigInteger, nullable=False, index=True)  # ID of the question from quiz content (BigInteger for large IDs)
+    question_id = Column(String(255), nullable=False, index=True)  # ID of the question from quiz content (String to support alphanumeric IDs)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     step_id = Column(Integer, ForeignKey("steps.id", ondelete="SET NULL"), nullable=True)
     message = Column(Text, nullable=False)
