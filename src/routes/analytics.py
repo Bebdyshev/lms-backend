@@ -217,10 +217,31 @@ async def get_course_analytics_overview(
         UserInDB.role == "student",
         UserInDB.is_active == True
     ).all()
+
+    # also get students from GROUPS assigned to this course
+    # because they might not have explicit Enrollments yet
+    group_access_subquery = db.query(CourseGroupAccess.group_id).filter(
+        CourseGroupAccess.course_id == course_id,
+        CourseGroupAccess.is_active == True
+    ).subquery()
+
+    group_students_ids = db.query(GroupStudent.student_id).filter(
+        GroupStudent.group_id.in_(group_access_subquery)
+    ).subquery()
+
+    group_students_no_progress = db.query(UserInDB).filter(
+        UserInDB.id.in_(group_students_ids),
+        UserInDB.role == "student",
+        UserInDB.is_active == True
+    ).all()
     
-    # Combine both lists (students with progress + enrolled without progress)
+    # Combine all lists (students with progress + enrolled + group members)
     enrolled_students_set = {s.id: s for s in students_with_progress}
     for student in enrolled_no_progress:
+        if student.id not in enrolled_students_set:
+            enrolled_students_set[student.id] = student
+            
+    for student in group_students_no_progress:
         if student.id not in enrolled_students_set:
             enrolled_students_set[student.id] = student
     
@@ -421,6 +442,14 @@ async def get_course_analytics_overview(
                 l_completed = len([sp for sp in student_steps 
                                  if sp.lesson_id == c_lesson_id and sp.status == "completed"])
                 current_lesson_progress = (l_completed / l_total_steps) * 100
+                current_lesson_steps_completed = l_completed
+                current_lesson_steps_total = l_total_steps
+            else:
+                current_lesson_steps_completed = 0
+                current_lesson_steps_total = 0
+        else:
+            current_lesson_steps_completed = 0
+            current_lesson_steps_total = 0
         
         # Get assignment performance for THIS STUDENT
         # Use group-based assignments (teacher-assigned homework)
@@ -542,6 +571,8 @@ async def get_course_analytics_overview(
             "last_activity": last_activity,
             "current_lesson": current_lesson_title,
             "current_lesson_progress": current_lesson_progress,
+            "current_lesson_steps_completed": current_lesson_steps_completed,
+            "current_lesson_steps_total": current_lesson_steps_total,
             "last_test_result": last_test_res
         })
     
