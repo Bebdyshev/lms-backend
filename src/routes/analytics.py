@@ -2643,6 +2643,169 @@ async def get_student_detailed_progress(
             StepProgress.visited_at >= thirty_days_ago
         ).group_by(func.date(StepProgress.visited_at)).all()
         
+        # 1. Получаем сложные темы и вопросы
+        difficult_questions = []
+        difficult_topics_map = {} # lesson_id -> {title, error_count}
+        
+        # Получаем все завершенные попытки квизов студента в этом курсе
+        quiz_attempts = db.query(QuizAttempt, Step, Lesson).join(
+            Step, QuizAttempt.step_id == Step.id
+        ).join(
+            Lesson, Step.lesson_id == Lesson.id
+        ).filter(
+            QuizAttempt.user_id == student_id,
+            QuizAttempt.is_draft == False
+        )
+        
+        if course_id:
+            quiz_attempts = quiz_attempts.filter(QuizAttempt.course_id == course_id)
+            
+        quiz_attempts = quiz_attempts.order_by(QuizAttempt.created_at.desc()).all()
+        
+        seen_question_ids = set()
+        lesson_question_counts = {}  # Track count per lesson for diversity
+        
+        for attempt, step, lesson in quiz_attempts:
+            if attempt.score_percentage < 100:
+                # Добавляем в сложные темы
+                if lesson.id not in difficult_topics_map:
+                    difficult_topics_map[lesson.id] = {
+                        "id": lesson.id,
+                        "title": lesson.title,
+                        "error_count": 0
+                    }
+                difficult_topics_map[lesson.id]["error_count"] += 1
+                
+                # Извлекаем конкретные ошибки из ответов, если возможно
+                try:
+                    import json
+                    step_content = json.loads(step.content_text) if step.content_text else {}
+                    questions = step_content.get("questions", [])
+                    user_answers = json.loads(attempt.answers) if attempt.answers else {}
+                    
+                    # Если answers в формате списка [[id, val], ...]
+                    if isinstance(user_answers, list):
+                        user_answers = {str(k): v for k, v in user_answers}
+                    
+                    for q in questions:
+                        q_id = q.get("id")
+                        if not q_id or q_id in seen_question_ids:
+                            continue
+                            
+                        # Проверка на лимит (30) и разнообразие (макс 5 на урок)
+                        current_lesson_count = lesson_question_counts.get(lesson.id, 0)
+                        
+                        if len(difficult_questions) < 30 and current_lesson_count < 5:
+                            difficult_questions.append({
+                                "id": q_id,
+                                "text": q.get("question_text", "Unknown Question"),
+                                "type": q.get("question_type"),
+                                "lesson_id": lesson.id,
+                                "lesson_title": lesson.title,
+                                "step_id": step.id
+                            })
+                            seen_question_ids.add(q_id)
+                            lesson_question_counts[lesson.id] = current_lesson_count + 1
+                except:
+                    pass
+
+        # Сортируем сложные темы по количеству ошибок
+        difficult_topics = sorted(difficult_topics_map.values(), key=lambda x: x["error_count"], reverse=True)[:5]
+
+        # 2. Формируем историю активности
+        activity_history = []
+        
+        # Шаги (посещения и завершения)
+        for sp, step, lesson, module, course in progress_records:
+            if sp.visited_at:
+                activity_history.append({
+                    "type": "step_visited",
+                    "title": f"Visited: {step.title}",
+                    "context": f"{lesson.title} • {course.title}",
+                    "timestamp": sp.visited_at.isoformat(),
+                    "date": sp.visited_at.date()
+                })
+            if sp.completed_at:
+                activity_history.append({
+                    "type": "step_completed",
+                    "title": f"Completed: {step.title}",
+                    "context": f"{lesson.title} • {course.title}",
+                    "timestamp": sp.completed_at.isoformat(),
+                    "date": sp.completed_at.date()
+                })
+        
+        # Квизы (попытки)
+        for attempt, step, lesson in quiz_attempts:
+            activity_history.append({
+                "type": "quiz_attempt",
+                "title": f"Quiz: {attempt.quiz_title or step.title}",
+                "context": f"Score: {attempt.score_percentage}% • {lesson.title}",
+                "timestamp": attempt.created_at.isoformat(),
+                "date": attempt.created_at.date()
+            })
+            
+        # Сортируем историю по времени
+        activity_history.sort(key=lambda x: x["timestamp"], reverse=True)
+        # Ограничиваем последние 30 событий
+        activity_history = activity_history[:30]
+
+        # =====================================================================
+        # HOMEWORK (ASSIGNMENTS)
+        # =====================================================================
+        
+        # 1. Получаем список групп студента
+        from src.schemas.models import GroupStudent, Assignment, AssignmentSubmission, CourseGroupAccess
+        student_group_ids = [gs.group_id for gs in db.query(GroupStudent).filter(GroupStudent.student_id == student_id).all()]
+        
+        # 2. Получаем ID уроков в курсе (если course_id указан)
+        course_lesson_ids = []
+        if course_id:
+            course_lesson_ids = [l.id for l in db.query(Lesson.id).join(Module).filter(Module.course_id == course_id).all()]
+        
+        # 3. Запрос на все задания, доступные студенту
+        # Это задания, привязанные к урокам курса ИЛИ к группам студента
+        hw_query = db.query(Assignment).filter(Assignment.is_active == True)
+        
+        if course_id:
+            # Если указан курс, берем задания этого курса + задания групп этого студента, которые имеют доступ к этому курсу
+            group_ids_with_course = [cga.group_id for cga in db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.course_id == course_id,
+                CourseGroupAccess.group_id.in_(student_group_ids) if student_group_ids else False
+            ).all()]
+            
+            hw_query = hw_query.filter(
+                (Assignment.lesson_id.in_(course_lesson_ids)) | 
+                (Assignment.group_id.in_(group_ids_with_course))
+            )
+        else:
+            # Если курс не указан, берем все задания всех групп студента
+            hw_query = hw_query.filter(Assignment.group_id.in_(student_group_ids) if student_group_ids else False)
+
+        assignments = hw_query.all()
+        
+        # 4. Получаем все субмишны студента для этих заданий
+        submission_map = {
+            s.assignment_id: s 
+            for s in db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.user_id == student_id,
+                AssignmentSubmission.assignment_id.in_([a.id for a in assignments]) if assignments else False
+            ).all()
+        }
+        
+        homework_data = []
+        for a in assignments:
+            submission = submission_map.get(a.id)
+            homework_data.append({
+                "id": a.id,
+                "title": a.title,
+                "due_date": a.due_date.isoformat() if a.due_date else None,
+                "status": "submitted" if submission else "pending",
+                "score": submission.score if submission else None,
+                "max_score": a.max_score,
+                "submitted_at": submission.submitted_at.isoformat() if submission and hasattr(submission, 'submitted_at') else (submission.created_at.isoformat() if submission else None),
+                "is_graded": submission.is_graded if submission else False
+            })
+
         return {
             "student_info": {
                 "id": student.id,
@@ -2650,11 +2813,11 @@ async def get_student_detailed_progress(
                 "email": student.email,
                 "student_id": getattr(student, 'student_id', None)
             },
-            "summary": {
+            "total_stats": {
                 "total_steps": total_steps,
                 "completed_steps": completed_steps,
                 "completion_percentage": (completed_steps / total_steps * 100) if total_steps > 0 else 0,
-                "total_study_time_minutes": total_study_time,
+                "total_study_time": total_study_time,
                 "first_activity": first_activity.isoformat() if first_activity else None,
                 "last_activity": last_activity.isoformat() if last_activity else None,
                 "study_period_days": (last_activity - first_activity).days if first_activity and last_activity else 0
@@ -2667,7 +2830,11 @@ async def get_student_detailed_progress(
                 }
                 for activity in daily_activity
             ],
-            "courses_progress": courses_progress
+            "courses": courses_progress,
+            "difficult_topics": difficult_topics,
+            "difficult_questions": difficult_questions,
+            "activity_history": activity_history,
+            "homework": homework_data
         }
         
     except Exception as e:
