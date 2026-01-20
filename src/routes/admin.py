@@ -13,7 +13,7 @@ from src.schemas.models import (
     StepProgress, Step, Lesson
 )
 from src.utils.auth_utils import hash_password
-from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups
+from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups, require_teacher_curator_or_admin
 import secrets
 import string
 import logging
@@ -988,12 +988,24 @@ async def get_all_users(
     is_active: Optional[bool] = None,
     search: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: UserInDB = Depends(require_admin())
+    current_user: UserInDB = Depends(require_teacher_curator_or_admin())
 ):
-    """Get all users with filtering (admin only)"""
+    """Get all users with filtering (teachers/curators see only their students, admin sees all)"""
     
     query = db.query(UserInDB)
     
+    # Enforce role-based filtering for non-admins
+    if current_user.role == "teacher":
+        role = "student"  # Teachers can only see students
+        # Filter by students in groups taught by this teacher
+        teacher_group_student_ids = db.query(GroupStudent.student_id).join(Group).filter(Group.teacher_id == current_user.id).subquery()
+        query = query.filter(UserInDB.id.in_(teacher_group_student_ids))
+    elif current_user.role == "curator":
+        role = "student"  # Curators can only see students
+        # Filter by students in groups managed by this curator
+        curator_group_student_ids = db.query(GroupStudent.student_id).join(Group).filter(Group.curator_id == current_user.id).subquery()
+        query = query.filter(UserInDB.id.in_(curator_group_student_ids))
+
     # Apply filters
     if role:
         query = query.filter(UserInDB.role == role)

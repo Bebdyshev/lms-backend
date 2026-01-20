@@ -1068,6 +1068,17 @@ async def check_lesson_access(
     if is_assigned:
         print(f"DEBUG: Lesson {lesson_id} reached via active assignment")
         return {"accessible": True}
+    
+    # Check if manually unlocked by teacher/admin
+    is_manually_unlocked = db.query(ManualLessonUnlock).filter(
+        ManualLessonUnlock.lesson_id == lesson_id,
+        (ManualLessonUnlock.user_id == current_user.id) |
+        (ManualLessonUnlock.group_id.in_(student_group_ids))
+    ).first()
+
+    if is_manually_unlocked:
+        print(f"DEBUG: Lesson {lesson_id} reached via manual unlock")
+        return {"accessible": True}
 
     # First, find ALL lessons that redirect to this one
     redirect_sources = db.query(Lesson).filter(Lesson.next_lesson_id == lesson_id).all()
