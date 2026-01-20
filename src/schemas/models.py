@@ -1861,7 +1861,7 @@ class QuestionErrorReport(Base):
     __tablename__ = "question_error_reports"
     
     id = Column(Integer, primary_key=True, index=True)
-    question_id = Column(BigInteger, nullable=False, index=True)  # ID of the question from quiz content (BigInteger for large IDs)
+    question_id = Column(String(255), nullable=False, index=True)  # ID of the question from quiz content
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     step_id = Column(Integer, ForeignKey("steps.id", ondelete="SET NULL"), nullable=True)
     message = Column(Text, nullable=False)
@@ -1875,3 +1875,47 @@ class QuestionErrorReport(Base):
     user = relationship("UserInDB", foreign_keys=[user_id])
     step = relationship("Step", foreign_keys=[step_id])
     resolver = relationship("UserInDB", foreign_keys=[resolved_by])
+
+
+# =============================================================================
+# MANUAL LESSON UNLOCKS
+# =============================================================================
+
+class ManualLessonUnlock(Base):
+    """Model for tracking units (lessons) manually unlocked by teachers for students or groups."""
+    __tablename__ = "manual_lesson_unlocks"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+    granted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    lesson = relationship("Lesson")
+    user = relationship("UserInDB", foreign_keys=[user_id])
+    group = relationship("Group", foreign_keys=[group_id])
+    granter = relationship("UserInDB", foreign_keys=[granted_by])
+
+    __table_args__ = (
+        UniqueConstraint('lesson_id', 'user_id', name='uq_manual_unlock_user'),
+        UniqueConstraint('lesson_id', 'group_id', name='uq_manual_unlock_group'),
+    )
+
+class ManualLessonUnlockSchema(BaseModel):
+    id: int
+    lesson_id: int
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    granted_by: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ManualLessonUnlockCreateSchema(BaseModel):
+    lesson_id: int
+    user_id: Optional[int] = None
+    group_id: Optional[int] = None
+    unlock_all_teacher_groups: Optional[bool] = False

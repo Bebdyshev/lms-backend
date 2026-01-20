@@ -16,7 +16,7 @@ from src.schemas.models import (
     LessonMaterialSchema, UserInDB, QuizData,
     CourseGroupAccess, CourseGroupAccessSchema, Group, GroupStudent,
     Assignment, AssignmentLinkedLesson,
-    LegacyLessonSchema  # Keep for migration period
+    LegacyLessonSchema, ManualLessonUnlock  # Keep for migration period
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, require_admin, check_course_access
@@ -523,6 +523,7 @@ async def get_course_modules(
     steps_by_lesson = {}
     unlocked_by_redirect_ids = set()
     unlocked_by_assignment_ids = set()
+    manually_unlocked_lesson_ids = set()
 
     if include_lessons and modules:
         # Fetch all steps for these lessons in one lightweight query
@@ -563,6 +564,13 @@ async def get_course_modules(
             
             unlocked_by_assignment_ids = {a[0] for a in assigned_lesson_ids}
 
+            # Get manual unlocks for the user (individual and group-level)
+            manual_unlocks = db.query(ManualLessonUnlock.lesson_id).filter(
+                (ManualLessonUnlock.user_id == target_user_id) |
+                (ManualLessonUnlock.group_id.in_(student_group_ids))
+            ).all()
+            manually_unlocked_lesson_ids = {m[0] for m in manual_unlocks}
+            
             # If current user is student, calculate redirects
             # (Redirects logic depends on whether we are calculating for students)
             for mod in modules:
@@ -650,8 +658,10 @@ async def get_course_modules(
                     # Check if lesson is marked as initially unlocked by admin
                     if lesson.is_initially_unlocked:
                         lesson_dict["is_accessible"] = True
-                    # Check if explicitly unlocked by redirect or assignment
-                    elif lesson.id in unlocked_by_redirect_ids or lesson.id in unlocked_by_assignment_ids:
+                    # Check if explicitly unlocked by redirect, assignment, or manual
+                    elif (lesson.id in unlocked_by_redirect_ids or 
+                          lesson.id in unlocked_by_assignment_ids or
+                          lesson.id in manually_unlocked_lesson_ids):
                         lesson_dict["is_accessible"] = True
                     # First lesson is always accessible
                     elif lesson_idx == 0:

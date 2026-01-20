@@ -11,7 +11,9 @@ from src.schemas.models import (
     Assignment, AssignmentSubmission, Enrollment,
     GroupStudent, CourseGroupAccess, ProgressSchema,
     ProgressSnapshot, QuizAttempt, QuizAttemptSchema, QuizAttemptCreateSchema,
-    QuizAttemptGradeSchema, QuizAttemptUpdateSchema
+    QuizAttemptGradeSchema, QuizAttemptUpdateSchema,
+    ManualLessonUnlock, ManualLessonUnlockSchema, ManualLessonUnlockCreateSchema,
+    Group
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access, require_teacher_or_admin
@@ -2176,3 +2178,148 @@ async def get_ungraded_attempts(
         
     return results
 
+@router.post("/manual-unlock", response_model=List[ManualLessonUnlockSchema])
+async def manual_unlock_lesson(
+    unlock_data: ManualLessonUnlockCreateSchema,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually unlock a lesson for a student, a group, or all groups taught by the teacher.
+    """
+    lesson = db.query(Lesson).filter(Lesson.id == unlock_data.lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    target_group_ids = []
+    if unlock_data.unlock_all_teacher_groups:
+        if current_user.role == "admin":
+             # For admin, "all teacher groups" doesn't make much sense without a teacher_id, 
+             # but let's assume it means all groups in the course? 
+             # Actually, simpler: if admin wants all, they can specify groups.
+             # User specifically mentioned "all groups which he teaches".
+             teacher_groups = db.query(Group).all() # Admin sees everything
+             target_group_ids = [g.id for g in teacher_groups]
+        else:
+            teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
+            target_group_ids = [g.id for g in teacher_groups]
+    elif unlock_data.group_id:
+        target_group_ids = [unlock_data.group_id]
+    
+    results = []
+    
+    # 1. Handle group unlocks
+    for group_id in target_group_ids:
+        # Check permission to unlock for this group
+        if current_user.role != "admin":
+            group = db.query(Group).filter(Group.id == group_id).first()
+            if not group or group.teacher_id != current_user.id:
+                continue # Skip groups teacher doesn't teach
+        
+        # Check if already exists
+        existing = db.query(ManualLessonUnlock).filter(
+            ManualLessonUnlock.lesson_id == unlock_data.lesson_id,
+            ManualLessonUnlock.group_id == group_id
+        ).first()
+        
+        if not existing:
+            new_unlock = ManualLessonUnlock(
+                lesson_id=unlock_data.lesson_id,
+                group_id=group_id,
+                granted_by=current_user.id
+            )
+            db.add(new_unlock)
+            results.append(new_unlock)
+        else:
+            results.append(existing)
+
+    # 2. Handle individual student unlock
+    if unlock_data.user_id:
+        # Check permission to unlock for this student
+        if not check_student_access(unlock_data.user_id, current_user, db):
+            raise HTTPException(status_code=403, detail="Access denied to this student")
+            
+        existing = db.query(ManualLessonUnlock).filter(
+            ManualLessonUnlock.lesson_id == unlock_data.lesson_id,
+            ManualLessonUnlock.user_id == unlock_data.user_id
+        ).first()
+        
+        if not existing:
+            new_unlock = ManualLessonUnlock(
+                lesson_id=unlock_data.lesson_id,
+                user_id=unlock_data.user_id,
+                granted_by=current_user.id
+            )
+            db.add(new_unlock)
+            results.append(new_unlock)
+        else:
+            results.append(existing)
+            
+    db.commit()
+    for r in results:
+        db.refresh(r)
+        
+    return results
+
+@router.post("/manual-lock")
+async def manual_lock_lesson(
+    lock_data: ManualLessonUnlockCreateSchema, # Reuse schema, but ignoring unlock_all
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """
+    Remove a manual unlock for a student or a group.
+    """
+    query = db.query(ManualLessonUnlock).filter(
+        ManualLessonUnlock.lesson_id == lock_data.lesson_id
+    )
+    
+    if lock_data.user_id:
+        query = query.filter(ManualLessonUnlock.user_id == lock_data.user_id)
+    elif lock_data.group_id:
+        query = query.filter(ManualLessonUnlock.group_id == lock_data.group_id)
+    else:
+        raise HTTPException(status_code=400, detail="Either user_id or group_id must be provided")
+        
+    unlock_record = query.first()
+    if unlock_record:
+        # Check permission
+        if current_user.role != "admin" and unlock_record.granted_by != current_user.id:
+            # Also allow if it's the teacher of the group/student
+            has_access = False
+            if unlock_record.user_id:
+                has_access = check_student_access(unlock_record.user_id, current_user, db)
+            elif unlock_record.group_id:
+                from src.utils.permissions import check_group_access
+                has_access = check_group_access(unlock_record.group_id, current_user, db)
+            
+            if not has_access:
+                 raise HTTPException(status_code=403, detail="Access denied to remove this unlock")
+        
+        db.delete(unlock_record)
+        db.commit()
+        return {"detail": "Manual unlock removed"}
+    
+    return {"detail": "No manual unlock found"}
+
+@router.get("/manual-unlocks", response_model=List[ManualLessonUnlockSchema])
+async def get_manual_unlocks(
+    lesson_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    group_id: Optional[int] = None,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """
+    List manual unlocks based on filters.
+    """
+    query = db.query(ManualLessonUnlock)
+    
+    if lesson_id:
+        query = query.filter(ManualLessonUnlock.lesson_id == lesson_id)
+    if user_id:
+        query = query.filter(ManualLessonUnlock.user_id == user_id)
+    if group_id:
+        query = query.filter(ManualLessonUnlock.group_id == group_id)
+        
+    return query.all()
