@@ -688,6 +688,8 @@ class Step(Base):
     attachments = Column(Text, nullable=True)  # JSON array of file attachments
     order_index = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Quiz versioning: SHA-256 hash of quiz JSON content to detect changes
+    content_hash = Column(String(64), nullable=True)
     
     # Relationships
     lesson = relationship("Lesson", back_populates="steps")
@@ -704,6 +706,7 @@ class StepSchema(BaseModel):
     attachments: Optional[str] = None
     order_index: int
     created_at: datetime
+    content_hash: Optional[str] = None
     is_completed: Optional[bool] = False
     
     class Config:
@@ -717,6 +720,7 @@ class StepCreateSchema(BaseModel):
     original_image_url: Optional[str] = None
     attachments: Optional[str] = None
     order_index: int = 0
+    content_hash: Optional[str] = None
 
 # =============================================================================
 # COURSE MODELS - Структура: курс → модули → уроки → шаги
@@ -1372,6 +1376,9 @@ class QuizAttempt(Base):
     is_draft = Column(Boolean, default=False, nullable=False)  # True = in-progress, not submitted
     current_question_index = Column(Integer, default=0, nullable=True)  # Track progress position
     
+    # Quiz versioning: hash of quiz content at time of attempt
+    quiz_content_hash = Column(String(64), nullable=True)
+    
     # Grading fields
     is_graded = Column(Boolean, default=True)  # True for auto-graded, False for manual grading required
     feedback = Column(Text, nullable=True)
@@ -1452,6 +1459,7 @@ class QuizAttemptSchema(BaseModel):
     # Draft/In-progress support
     is_draft: bool = False
     current_question_index: Optional[int] = None
+    quiz_content_hash: Optional[str] = None
     
     # Grading fields
     is_graded: Optional[bool] = True
@@ -1480,6 +1488,7 @@ class QuizAttemptCreateSchema(BaseModel):
     is_graded: bool = True  # Default to True (auto-graded)
     is_draft: bool = False  # True = save as draft/in-progress
     current_question_index: Optional[int] = None  # Track progress position
+    quiz_content_hash: Optional[str] = None  # Hash of quiz content at attempt time
 
 
 class QuizAttemptUpdateSchema(BaseModel):

@@ -1252,12 +1252,14 @@ async def get_lesson_steps_progress(
     if current_user.role not in ["student", "teacher", "admin", "curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Получаем информацию об уроке
-    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    # Получаем информацию об уроке с модулем одним запросом
+    lesson = db.query(Lesson).options(
+        joinedload(Lesson.module)
+    ).filter(Lesson.id == lesson_id).first()
     if not lesson:
         raise HTTPException(status_code=404, detail="Lesson not found")
     
-    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    module = lesson.module
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
     
@@ -1268,13 +1270,22 @@ async def get_lesson_steps_progress(
     # Получаем все шаги урока
     steps = db.query(Step).filter(Step.lesson_id == lesson_id).order_by(Step.order_index).all()
     
-    # Получаем прогресс по всем шагам
+    # OPTIMIZATION: Batch fetch all step progress in a single query (fixes N+1)
+    step_ids = [step.id for step in steps]
+    existing_progress = db.query(StepProgress).filter(
+        StepProgress.user_id == current_user.id,
+        StepProgress.step_id.in_(step_ids)
+    ).all() if step_ids else []
+    
+    # Create lookup dictionary for O(1) access
+    progress_by_step_id = {p.step_id: p for p in existing_progress}
+    
+    # Build response, creating missing records
     steps_progress = []
+    new_records = []
+    
     for step in steps:
-        step_progress = db.query(StepProgress).filter(
-            StepProgress.user_id == current_user.id,
-            StepProgress.step_id == step.id
-        ).first()
+        step_progress = progress_by_step_id.get(step.id)
         
         if not step_progress:
             # Создаем запись с дефолтными значениями
@@ -1286,11 +1297,14 @@ async def get_lesson_steps_progress(
                 status="not_started",
                 time_spent_minutes=0
             )
-            db.add(step_progress)
-            db.commit()
-            db.refresh(step_progress)
+            new_records.append(step_progress)
         
         steps_progress.append(StepProgressSchema.from_orm(step_progress))
+    
+    # Batch commit all new records at once
+    if new_records:
+        db.add_all(new_records)
+        db.commit()
     
     return steps_progress
 
@@ -1548,12 +1562,33 @@ async def create_quiz_attempt(
 ):
     """Сохранить попытку прохождения квиза или обновить черновик"""
     try:
-        # Check if there's an existing draft for this step
+        # Draft expiration cutoff (7 days)
+        stale_cutoff = datetime.utcnow() - timedelta(days=7)
+        
+        # Delete stale drafts for this step (cleanup)
+        db.query(QuizAttempt).filter(
+            QuizAttempt.user_id == current_user.id,
+            QuizAttempt.step_id == attempt_data.step_id,
+            QuizAttempt.is_draft == True,
+            QuizAttempt.created_at < stale_cutoff
+        ).delete(synchronize_session=False)
+        
+        # Check if there's an existing valid (non-stale) draft for this step
         existing_draft = db.query(QuizAttempt).filter(
             QuizAttempt.user_id == current_user.id,
             QuizAttempt.step_id == attempt_data.step_id,
-            QuizAttempt.is_draft == True
+            QuizAttempt.is_draft == True,
+            QuizAttempt.created_at >= stale_cutoff
         ).first()
+        
+        if existing_draft:
+            # Check if quiz content hash matches (quiz hasn't changed)
+            if attempt_data.quiz_content_hash and existing_draft.quiz_content_hash:
+                if attempt_data.quiz_content_hash != existing_draft.quiz_content_hash:
+                    # Quiz changed, invalidate old draft
+                    db.delete(existing_draft)
+                    db.flush()
+                    existing_draft = None
         
         if existing_draft:
             # Update existing draft
@@ -1589,6 +1624,7 @@ async def create_quiz_attempt(
             is_graded=attempt_data.is_graded,
             is_draft=attempt_data.is_draft,
             current_question_index=attempt_data.current_question_index,
+            quiz_content_hash=attempt_data.quiz_content_hash,
             completed_at=None if attempt_data.is_draft else datetime.utcnow(),
             created_at=datetime.utcnow()
         )
