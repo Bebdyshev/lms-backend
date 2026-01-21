@@ -1280,16 +1280,13 @@ async def get_lesson_steps_progress(
     # Create lookup dictionary for O(1) access
     progress_by_step_id = {p.step_id: p for p in existing_progress}
     
-    # Build response, creating missing records
-    steps_progress = []
+    # First pass: Create missing records
     new_records = []
     
     for step in steps:
-        step_progress = progress_by_step_id.get(step.id)
-        
-        if not step_progress:
+        if step.id not in progress_by_step_id:
             # Создаем запись с дефолтными значениями
-            step_progress = StepProgress(
+            new_progress = StepProgress(
                 user_id=current_user.id,
                 course_id=module.course_id,
                 lesson_id=lesson.id,
@@ -1297,13 +1294,24 @@ async def get_lesson_steps_progress(
                 status="not_started",
                 time_spent_minutes=0
             )
-            new_records.append(step_progress)
-        
-        steps_progress.append(StepProgressSchema.from_orm(step_progress))
-    
-    # Batch commit all new records at once
+            new_records.append(new_progress)
+            progress_by_step_id[step.id] = new_progress # Add to map so we can use it later
+
+    # Batch save new records to generate IDs
     if new_records:
         db.add_all(new_records)
+        db.flush() # This populates IDs without committing transaction
+        for record in new_records:
+            db.refresh(record) # Ensure all attributes like ID are available
+
+    # Second pass: Build response using now-complete objects
+    steps_progress = []
+    for step in steps:
+        step_progress = progress_by_step_id[step.id]
+        steps_progress.append(StepProgressSchema.from_orm(step_progress))
+    
+    # Commit transaction
+    if new_records:
         db.commit()
     
     return steps_progress
