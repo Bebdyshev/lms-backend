@@ -428,7 +428,8 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "avatar_url": user.avatar_url
         },
         stats={
-            "assigned_students": total_students,
+            "total_students": total_students,
+            "total_groups": len(curator_groups),
             "total_courses_monitored": total_courses_monitored,
             "average_student_progress": round(sum(s["progress"] for s in students_with_progress) / len(students_with_progress)) if students_with_progress else 0
         },

@@ -3357,28 +3357,46 @@ def merge_sat_pair(pair: dict) -> Optional[dict]:
         
     combined = {
         "testId": m.get("testId") if m else v.get("testId") if v else "latest",
-        "testName": pair.get("weekPeriod") or (m.get("testName") if m else v.get("testName") if v else "Latest SAT Results"),
+        "testName": pair.get("weekPeriod") or (m.get("testName") if m and v else m.get("testName") if m else v.get("testName") if v else "Latest SAT Results"),
         "completedAt": m.get("completedAt") if m else v.get("completedAt") if v else None,
         "questions": [],
         "score": (pair.get("combinedScore") or 0) if "combinedScore" in pair else 0,
         "percentage": 0,
         "correctCount": 0,
-        "totalQuestions": 0
+        "totalQuestions": 0,
+        "math_score": 0,
+        "math_total": 0,
+        "math_pct": 0,
+        "verbal_score": 0,
+        "verbal_total": 0,
+        "verbal_pct": 0
     }
     
     if m:
         combined["questions"].extend(m.get("questions", []))
         if not combined["score"] and m.get("score"):
             combined["score"] += m["score"]
-        combined["correctCount"] += m.get("correctCount") or 0
-        combined["totalQuestions"] += m.get("totalQuestions") or 0
+        
+        m_correct = m.get("correctCount") or 0
+        m_total = m.get("totalQuestions") or 0
+        combined["correctCount"] += m_correct
+        combined["totalQuestions"] += m_total
+        combined["math_score"] = m_correct
+        combined["math_total"] = m_total
+        combined["math_pct"] = round((m_correct / m_total * 100), 2) if m_total > 0 else 0
     
     if v:
         combined["questions"].extend(v.get("questions", []))
         if v.get("score"):
             combined["score"] += v["score"]
-        combined["correctCount"] += v.get("correctCount") or 0
-        combined["totalQuestions"] += v.get("totalQuestions") or 0
+            
+        v_correct = v.get("correctCount") or 0
+        v_total = v.get("totalQuestions") or 0
+        combined["correctCount"] += v_correct
+        combined["totalQuestions"] += v_total
+        combined["verbal_score"] = v_correct
+        combined["verbal_total"] = v_total
+        combined["verbal_pct"] = round((v_correct / v_total * 100), 2) if v_total > 0 else 0
     
     # Calculate aggregate percentage
     if combined["totalQuestions"] > 0:
