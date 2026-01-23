@@ -1019,6 +1019,36 @@ class AssignmentExtension(Base):
     student = relationship("UserInDB", foreign_keys=[student_id], backref="assignment_extensions")
     granter = relationship("UserInDB", foreign_keys=[granted_by])
 
+class GroupAssignment(Base):
+    __tablename__ = "group_assignments"
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
+    lesson_schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="SET NULL"), nullable=True)
+    
+    assigned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    due_date = Column(DateTime, nullable=True)
+    
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    group = relationship("Group")
+    assignment = relationship("Assignment")
+    lesson_schedule = relationship("LessonSchedule")
+
+class GroupAssignmentSchema(BaseModel):
+    id: int
+    group_id: int
+    assignment_id: int
+    lesson_schedule_id: Optional[int] = None
+    assigned_at: datetime
+    due_date: Optional[datetime] = None
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
 class AssignmentSchema(BaseModel):
     id: int
     lesson_id: Optional[int] = None
@@ -1788,6 +1818,62 @@ class EventParticipantSchema(BaseModel):
 # =============================================================================
 # LEADERBOARD MODELS
 # =============================================================================
+# LEADERSHIP / CURATOR MODELS
+# =============================================================================
+
+class LessonSchedule(Base):
+    __tablename__ = "lesson_schedules"
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=False)
+    scheduled_at = Column(DateTime, nullable=False)
+    week_number = Column(Integer, nullable=False)
+    is_active = Column(Boolean, default=True)
+    
+    # Relationships
+    group = relationship("Group", backref="lesson_schedules")
+    lesson = relationship("Lesson")
+    attendances = relationship("Attendance", back_populates="lesson_schedule", cascade="all, delete-orphan")
+
+class Attendance(Base):
+    __tablename__ = "attendances"
+    id = Column(Integer, primary_key=True, index=True)
+    lesson_schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String, default="present") # present, absent, late, excused
+    score = Column(Integer, default=0) # 0, 5, 12, 15
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    lesson_schedule = relationship("LessonSchedule", back_populates="attendances")
+    user = relationship("UserInDB")
+
+class LessonScheduleSchema(BaseModel):
+    id: int
+    group_id: int
+    lesson_id: int
+    scheduled_at: datetime
+    week_number: int
+    is_active: bool
+    
+    class Config:
+        from_attributes = True
+
+class AttendanceSchema(BaseModel):
+    id: int
+    lesson_schedule_id: int
+    user_id: int
+    status: str
+    score: int
+    notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 
 class LeaderboardEntry(Base):
     __tablename__ = "leaderboard_entries"
