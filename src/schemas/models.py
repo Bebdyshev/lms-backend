@@ -105,7 +105,7 @@ class FavoriteFlashcard(Base):
     __tablename__ = "favorite_flashcards"
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    step_id = Column(Integer, ForeignKey("steps.id", ondelete="CASCADE"), nullable=False)
+    step_id = Column(Integer, ForeignKey("steps.id", ondelete="CASCADE"), nullable=True)
     flashcard_id = Column(String, nullable=False)  # ID карточки внутри flashcard set
     lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)
     course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=True)
@@ -124,7 +124,7 @@ class FavoriteFlashcard(Base):
 class FavoriteFlashcardSchema(BaseModel):
     id: int
     user_id: int
-    step_id: int
+    step_id: Optional[int] = None
     flashcard_id: str
     lesson_id: Optional[int] = None
     course_id: Optional[int] = None
@@ -135,7 +135,7 @@ class FavoriteFlashcardSchema(BaseModel):
         from_attributes = True
 
 class FavoriteFlashcardCreateSchema(BaseModel):
-    step_id: int
+    step_id: Optional[int] = None
     flashcard_id: str
     lesson_id: Optional[int] = None
     course_id: Optional[int] = None
@@ -565,6 +565,7 @@ class UserInDB(Base):
     total_study_time_minutes = Column(Integer, default=0, nullable=False)
     daily_streak = Column(Integer, default=0, nullable=False)  # Current daily streak count
     last_activity_date = Column(Date, nullable=True)  # Last date when student was active
+    activity_points = Column(BigInteger, default=0, nullable=False)  # Gamification: total XP points
     
     # Relationships
     groups = relationship("GroupStudent", back_populates="student", cascade="all, delete-orphan")
@@ -577,6 +578,40 @@ class UserInDB(Base):
     favorite_flashcards = relationship("FavoriteFlashcard", back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
     step_progress = relationship("StepProgress", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    point_history = relationship("PointHistory", back_populates="user", cascade="all, delete-orphan")
+
+# =============================================================================
+# POINT HISTORY MODEL - Gamification
+# =============================================================================
+
+class PointHistory(Base):
+    """Tracks every point transaction for leaderboard calculations."""
+    __tablename__ = "point_history"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = Column(Integer, nullable=False)  # Can be positive or negative
+    reason = Column(String, nullable=False)  # 'homework', 'quiz', 'teacher_bonus', 'streak_bonus', 'flashcard_review'
+    description = Column(String, nullable=True)  # Optional details
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    # Relationship
+    user = relationship("UserInDB", back_populates="point_history")
+    
+    # Index for efficient monthly queries
+    __table_args__ = (
+        Index('ix_point_history_user_created', 'user_id', 'created_at'),
+    )
+
+class PointHistorySchema(BaseModel):
+    id: int
+    user_id: int
+    amount: int
+    reason: str
+    description: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
@@ -601,6 +636,7 @@ class UserSchema(BaseModel):
     onboarding_completed_at: Optional[datetime] = None
     assignment_zero_completed: Optional[bool] = False
     assignment_zero_completed_at: Optional[datetime] = None
+    activity_points: Optional[int] = 0
     created_at: datetime
 
     class Config:

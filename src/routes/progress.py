@@ -18,6 +18,7 @@ from src.schemas.models import (
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import check_course_access, check_student_access, require_teacher_or_admin
 from src.services.summary_cache import update_student_course_summary, update_summary_for_assignment
+from src.routes.gamification import award_points
 
 
 router = APIRouter()
@@ -1612,6 +1613,12 @@ async def create_quiz_attempt(
                 existing_draft.score_percentage = attempt_data.score_percentage
                 existing_draft.is_graded = attempt_data.is_graded
                 existing_draft.completed_at = datetime.utcnow()
+                
+                # Award points for completion
+                try:
+                    award_points(db, current_user.id, 20, 'quiz', f'Completed quiz: {attempt_data.quiz_title}')
+                except Exception as e:
+                    print(f"Failed to award points: {e}")
             
             db.commit()
             db.refresh(existing_draft)
@@ -1640,6 +1647,13 @@ async def create_quiz_attempt(
         db.add(quiz_attempt)
         db.commit()
         db.refresh(quiz_attempt)
+
+        # Award points for completion (if not draft)
+        if not attempt_data.is_draft:
+            try:
+                award_points(db, current_user.id, 20, 'quiz', f'Completed quiz: {attempt_data.quiz_title}')
+            except Exception as e:
+                print(f"Failed to award points: {e}")
         
         return quiz_attempt
         
@@ -1675,7 +1689,14 @@ async def update_quiz_attempt(
         # Handle finalization
         if update_data.is_draft is not None and not update_data.is_draft:
             attempt.is_draft = False
+            attempt.is_draft = False
             attempt.completed_at = datetime.utcnow()
+            
+            # Award points for completion
+            try:
+                award_points(db, current_user.id, 20, 'quiz', f'Completed quiz: {attempt.quiz_title}')
+            except Exception as e:
+                print(f"Failed to award points: {e}")
             if update_data.total_questions is not None:
                 attempt.total_questions = update_data.total_questions
             if update_data.correct_answers is not None:

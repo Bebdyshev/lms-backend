@@ -17,6 +17,8 @@ from src.utils.permissions import require_teacher_or_admin, check_course_access
 from src.utils.assignment_checker import check_assignment_answers
 from src.services.email_service import send_homework_notification
 from src.schemas.models import GroupStudent
+from src.routes.events import router as events_router # Just a placeholder or remove it
+from src.routes.gamification import award_points
 
 router = APIRouter()
 
@@ -698,6 +700,12 @@ async def submit_assignment(
     db.add(submission)
     db.commit()
     db.refresh(submission)
+    
+    # Award points for completion
+    try:
+        award_points(db, current_user.id, 50, 'homework', f'Completed assignment: {assignment.title}')
+    except Exception as e:
+        print(f"Failed to award points: {e}") # Non-blocking error
     
     print(f"Submission created successfully: {submission.id}")
     

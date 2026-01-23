@@ -229,3 +229,106 @@ async def check_is_favorite(
     ).first()
     
     return {"is_favorite": favorite is not None, "favorite_id": favorite.id if favorite else None}
+
+
+# =============================================================================
+# QUICK CREATE - For vocabulary from Lookup
+# =============================================================================
+
+from pydantic import BaseModel
+from typing import Optional
+import uuid
+
+class QuickCreateFlashcardRequest(BaseModel):
+    word: str
+    translation: str
+    definition: Optional[str] = None
+    context: Optional[str] = None
+    phonetic: Optional[str] = None
+
+
+@router.post("/quick_create", status_code=status.HTTP_201_CREATED)
+async def quick_create_flashcard(
+    request: QuickCreateFlashcardRequest,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Quickly create a flashcard from the lookup feature.
+    Stores as a special "My Vocabulary" favorite flashcard with step_id=0.
+    """
+    # Generate unique ID for this flashcard
+    flashcard_id = f"vocab_{uuid.uuid4().hex[:8]}"
+    
+    # Build flashcard data JSON
+    flashcard_data = {
+        "id": flashcard_id,
+        "front_text": request.word,
+        "back_text": request.translation,
+        "front_image_url": None,
+        "back_image_url": None,
+        "difficulty": "normal",
+        "tags": ["vocabulary", "lookup"],
+        "order_index": 0,
+        # Extra fields for vocabulary cards
+        "definition": request.definition,
+        "context": request.context,
+        "phonetic": request.phonetic,
+        "source": "lookup"
+    }
+    
+    # Use step_id=0 as a special marker for "My Vocabulary" cards
+    # that don't belong to any specific lesson step
+    db_favorite = FavoriteFlashcard(
+        user_id=current_user.id,
+        step_id=None,  # NULL for vocabulary from lookup
+        flashcard_id=flashcard_id,
+        lesson_id=None,
+        course_id=None,
+        flashcard_data=json.dumps(flashcard_data)
+    )
+    
+    db.add(db_favorite)
+    db.commit()
+    db.refresh(db_favorite)
+    
+    return {
+        "success": True,
+        "message": f"Added '{request.word}' to your vocabulary",
+        "flashcard_id": flashcard_id,
+        "favorite_id": db_favorite.id
+    }
+
+
+@router.get("/vocabulary")
+async def get_vocabulary_cards(
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all vocabulary cards created from lookup (step_id=NULL).
+    """
+    favorites = db.query(FavoriteFlashcard).filter(
+        FavoriteFlashcard.user_id == current_user.id,
+        FavoriteFlashcard.step_id.is_(None)  # Vocabulary cards
+    ).order_by(FavoriteFlashcard.created_at.desc()).all()
+    
+    cards = []
+    for fav in favorites:
+        try:
+            card_data = json.loads(fav.flashcard_data)
+            cards.append({
+                "id": fav.id,
+                "flashcard_id": fav.flashcard_id,
+                "word": card_data.get("front_text"),
+                "translation": card_data.get("back_text"),
+                "definition": card_data.get("definition"),
+                "context": card_data.get("context"),
+                "phonetic": card_data.get("phonetic"),
+                "created_at": fav.created_at.isoformat() if fav.created_at else None
+            })
+        except:
+            continue
+    
+    return {"vocabulary": cards, "count": len(cards)}
+

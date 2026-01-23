@@ -20,6 +20,8 @@ from src.routes.flashcards import router as flashcards_router
 from src.routes.leaderboard import router as leaderboard_router
 from src.routes.assignment_zero import router as assignment_zero_router
 from src.routes.questions import router as questions_router
+from src.routes.gamification import router as gamification_router
+from src.routes.ai_tools import router as ai_tools_router
 from dotenv import load_dotenv
 import logging
 import os
@@ -99,6 +101,8 @@ app.include_router(flashcards_router, prefix="/flashcards", tags=["Flashcards"])
 app.include_router(leaderboard_router, prefix="/leaderboard", tags=["Leaderboard"])
 app.include_router(assignment_zero_router, prefix="/assignment-zero", tags=["Assignment Zero"])
 app.include_router(questions_router, tags=["Questions"])
+app.include_router(gamification_router, prefix="/gamification", tags=["Gamification"])
+app.include_router(ai_tools_router, prefix="/ai-tools", tags=["AI Tools"])
 
 # Root endpoint with ASCII art
 @app.get("/")
