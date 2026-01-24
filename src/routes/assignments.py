@@ -111,15 +111,9 @@ async def get_assignments(
             GroupStudent.student_id == current_user.id
         )
         group_ids_list = [g[0] for g in group_ids_query.all()]
-        print(f"DEBUG: Student {current_user.id} ({current_user.name}) belongs to groups: {group_ids_list}")
         
         group_ids = group_ids_query.subquery()
         
-        # Debug: show all active assignments
-        all_assignments = db.query(Assignment).filter(Assignment.is_active == True).all()
-        print(f"DEBUG: All active assignments: {[(a.id, a.title, a.group_id) for a in all_assignments]}")
-        
-        # Filter assignments by lessons OR groups
         query = query.filter(
             (Assignment.lesson_id.in_(select(lesson_ids))) | (Assignment.group_id.in_(select(group_ids)))
         )
@@ -134,7 +128,6 @@ async def get_assignments(
         from src.schemas.models import Group
         teacher_group_ids = db.query(Group.id).filter(Group.teacher_id == current_user.id).subquery()
         
-        # Filter assignments by lessons OR groups
         query = query.filter(
             (Assignment.lesson_id.in_(lesson_ids)) | (Assignment.group_id.in_(teacher_group_ids))
         )
