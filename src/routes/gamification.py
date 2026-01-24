@@ -48,6 +48,7 @@ class LeaderboardResponse(BaseModel):
     period: str  # 'monthly', 'all_time'
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    total_participants: int
     entries: List[LeaderboardEntry]
 
 
@@ -291,11 +292,21 @@ async def get_leaderboard(
                 points=int(points),
                 rank=rank
             ))
+            
+    # Calculate total participants for the context
+    # If filtered by group, count students in group
+    # If all students, count all students
+    total_participants = 0
+    if group_id:
+        total_participants = db.query(GroupStudent).filter(GroupStudent.group_id == group_id).count()
+    else:
+        total_participants = db.query(UserInDB).filter(UserInDB.role == 'student', UserInDB.is_active == True).count()
     
     return LeaderboardResponse(
         period=period,
         start_date=start_date,
         end_date=end_date,
+        total_participants=total_participants,
         entries=entries
     )
 

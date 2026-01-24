@@ -4,7 +4,13 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 
-from src.schemas.models import UserInDB, UserSchema
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime
+
+from src.schemas.models import UserInDB, UserSchema, Group, GroupStudent, GroupSchema
 from src.config import get_db
 from src.utils.auth_utils import verify_token
 from fastapi.security import OAuth2PasswordBearer
@@ -42,6 +48,62 @@ async def get_user_by_id(user_id: int, db: Session = Depends(get_db), token: str
     if user.id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to view this profile")
     return user
+
+
+@router.get("/groups/me", response_model=List[GroupSchema])
+async def get_my_groups(
+    db: Session = Depends(get_db),
+    user: UserInDB = Depends(get_current_user),
+):
+    """Get groups the current user belongs to."""
+    if user.role == 'student':
+        # Get groups via enrollment/GroupStudent
+        group_ids = db.query(GroupStudent.group_id).filter(GroupStudent.student_id == user.id).subquery()
+        groups = db.query(Group).filter(Group.id.in_(group_ids), Group.is_active == True).all()
+        
+        # Enrich with details
+        result = []
+        for group in groups:
+            # Basic schema without recursive students list to keep it light
+            result.append(GroupSchema(
+                id=group.id,
+                name=group.name,
+                description=group.description,
+                teacher_id=group.teacher_id,
+                teacher_name="", # Not needed for this view
+                curator_id=group.curator_id,
+                is_active=group.is_active,
+                student_count=0, # Not needed
+                students=[],
+                created_at=group.created_at
+            ))
+        return result
+        
+    elif user.role in ['teacher', 'curator']:
+        # Teachers see groups they teach
+        query = db.query(Group).filter(Group.is_active == True)
+        if user.role == 'teacher':
+            query = query.filter(Group.teacher_id == user.id)
+        elif user.role == 'curator':
+            query = query.filter(Group.curator_id == user.id)
+            
+        groups = query.all()
+        # simplified return
+        return [
+            GroupSchema(
+                id=g.id, 
+                name=g.name, 
+                description=g.description, 
+                teacher_id=g.teacher_id,
+                curator_id=g.curator_id,
+                is_active=g.is_active,
+                students=[],
+                student_count=0,
+                created_at=g.created_at
+            ) for g in groups
+        ]
+        
+    return []
 
 
 @router.put("/{user_id}", response_model=UserSchema)
