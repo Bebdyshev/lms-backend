@@ -2076,12 +2076,6 @@ async def get_ungraded_attempts(
         if not lesson and step:
             lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
         
-        # Debug: log lesson info
-        if lesson:
-            print(f"DEBUG: Found lesson ID={lesson.id}, Title='{lesson.title}' for attempt {attempt.id}")
-        else:
-            print(f"DEBUG: No lesson found for attempt {attempt.id}, lesson_id={attempt.lesson_id}, step.lesson_id={step.lesson_id if step else 'N/A'}")
-        
         course = db.query(Course).filter(Course.id == attempt.course_id).first()
         
         # Get quiz questions from step content
