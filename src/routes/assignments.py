@@ -1126,6 +1126,30 @@ async def grade_submission(
     except Exception as e:
         print(f"Failed to send grading email notification: {e}")
     
+    # Award points based on score
+    try:
+        # Calculate points based on score percentage
+        # Award points proportional to the score received
+        score_percentage = (grade_data.score / assignment.max_score) * 100 if assignment.max_score > 0 else 0
+        
+        # Base points for completing the assignment (minimum)
+        base_points = 10
+        
+        # Bonus points based on score (up to 40 more points for perfect score)
+        bonus_points = int((score_percentage / 100) * 40)
+        
+        total_points = base_points + bonus_points
+        
+        award_points(
+            db, 
+            submission.user_id, 
+            total_points, 
+            'assignment', 
+            f'Graded assignment: {assignment.title} ({grade_data.score}/{assignment.max_score})'
+        )
+    except Exception as e:
+        print(f"Failed to award points: {e}")
+    
     # Enhance submission with names
     submission_data = AssignmentSubmissionSchema.from_orm(submission)
     
