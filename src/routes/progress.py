@@ -1860,11 +1860,15 @@ async def get_course_quiz_analytics(
         QuizAttempt.course_id == course_id
     ).all()
     
+    # OPTIMIZATION: Batch fetch all users to avoid N+1 query
+    user_ids = list(set(a.user_id for a in attempts))
+    users_map = {u.id: u for u in db.query(UserInDB).filter(UserInDB.id.in_(user_ids)).all()} if user_ids else {}
+    
     # Group by student
     student_attempts = {}
     for attempt in attempts:
         if attempt.user_id not in student_attempts:
-            user = db.query(UserInDB).filter(UserInDB.id == attempt.user_id).first()
+            user = users_map.get(attempt.user_id)
             student_attempts[attempt.user_id] = {
                 "user_id": attempt.user_id,
                 "user_name": user.name if user else "Unknown",
@@ -1882,6 +1886,7 @@ async def get_course_quiz_analytics(
             "time_spent_seconds": attempt.time_spent_seconds,
             "completed_at": attempt.completed_at.isoformat() if attempt.completed_at else None
         })
+
     
     # Calculate statistics
     total_attempts = len(attempts)
@@ -1996,16 +2001,30 @@ async def get_lesson_quiz_summary(
         Step.content_type == 'quiz'
     ).order_by(Step.order_index).all()
     
+    # OPTIMIZATION: Batch fetch latest attempts for all quiz steps to avoid N+1
+    step_ids = [s.id for s in quiz_steps]
+    latest_attempts_map = {}
+    
+    if step_ids:
+        # Get all attempts for these steps by this user, then pick latest per step
+        all_attempts = db.query(QuizAttempt).filter(
+            QuizAttempt.user_id == current_user.id,
+            QuizAttempt.step_id.in_(step_ids),
+            QuizAttempt.completed_at.isnot(None)  # Only completed attempts
+        ).order_by(QuizAttempt.step_id, desc(QuizAttempt.completed_at)).all()
+        
+        # Build map of step_id -> latest attempt (first one per step since ordered by desc completed_at)
+        for attempt in all_attempts:
+            if attempt.step_id not in latest_attempts_map:
+                latest_attempts_map[attempt.step_id] = attempt
+    
     quizzes_summary = []
     total_questions = 0
     total_correct = 0
     
     for step in quiz_steps:
-        # Get the latest attempt for this quiz step
-        latest_attempt = db.query(QuizAttempt).filter(
-            QuizAttempt.user_id == current_user.id,
-            QuizAttempt.step_id == step.id
-        ).order_by(desc(QuizAttempt.completed_at)).first()
+        # Get the latest attempt from our pre-fetched map
+        latest_attempt = latest_attempts_map.get(step.id)
         
         # Parse quiz data to get title
         quiz_title = step.title
@@ -2036,6 +2055,7 @@ async def get_lesson_quiz_summary(
             total_correct += latest_attempt.correct_answers
         
         quizzes_summary.append(quiz_item)
+
     
     # Calculate overall statistics
     average_percentage = 0
@@ -2099,20 +2119,39 @@ async def get_ungraded_attempts(
     
     attempts = query.order_by(QuizAttempt.created_at.desc()).all()
     
-    # Enrich response with user and step info
+    if not attempts:
+        return []
+    
+    # OPTIMIZATION: Batch fetch all related entities to avoid N+1 queries
+    user_ids = list(set(a.user_id for a in attempts))
+    step_ids = list(set(a.step_id for a in attempts))
+    lesson_ids = list(set(a.lesson_id for a in attempts if a.lesson_id))
+    course_ids = list(set(a.course_id for a in attempts))
+    
+    users_map = {u.id: u for u in db.query(UserInDB).filter(UserInDB.id.in_(user_ids)).all()} if user_ids else {}
+    steps_map = {s.id: s for s in db.query(Step).filter(Step.id.in_(step_ids)).all()} if step_ids else {}
+    lessons_map = {l.id: l for l in db.query(Lesson).filter(Lesson.id.in_(lesson_ids)).all()} if lesson_ids else {}
+    courses_map = {c.id: c for c in db.query(Course).filter(Course.id.in_(course_ids)).all()} if course_ids else {}
+    
+    # Also fetch lessons for steps that have lesson_ids not in attempts (fallback)
+    step_lesson_ids = list(set(s.lesson_id for s in steps_map.values() if s.lesson_id and s.lesson_id not in lessons_map))
+    if step_lesson_ids:
+        extra_lessons = {l.id: l for l in db.query(Lesson).filter(Lesson.id.in_(step_lesson_ids)).all()}
+        lessons_map.update(extra_lessons)
+    
+    # Enrich response with user and step info (using lookup maps)
     results = []
     for attempt in attempts:
-        user = db.query(UserInDB).filter(UserInDB.id == attempt.user_id).first()
-        step = db.query(Step).filter(Step.id == attempt.step_id).first()
+        user = users_map.get(attempt.user_id)
+        step = steps_map.get(attempt.step_id)
         
         # Try to get lesson - fallback to getting it from the step
-        lesson = None
-        if attempt.lesson_id:
-            lesson = db.query(Lesson).filter(Lesson.id == attempt.lesson_id).first()
+        lesson = lessons_map.get(attempt.lesson_id) if attempt.lesson_id else None
         if not lesson and step:
-            lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
+            lesson = lessons_map.get(step.lesson_id)
         
-        course = db.query(Course).filter(Course.id == attempt.course_id).first()
+        course = courses_map.get(attempt.course_id)
+
         
         # Get quiz questions from step content
         quiz_answers = []
@@ -2199,7 +2238,7 @@ async def get_ungraded_attempts(
                             except Exception as e:
                                 print(f"Error resolving answer for Q {q_id}: {e}")
                         
-                        elif q_type in ['short_answer', 'fill_blank']:
+                        elif q_type in ['short_answer', 'fill_blank', 'text_completion']:
                             # Simple string comparison
                              correct = q.get('correct_answer', '')
                              correct_answer_text = str(correct)
