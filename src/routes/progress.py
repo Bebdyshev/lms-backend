@@ -1416,6 +1416,26 @@ async def get_course_students_steps_progress(
     
     return course_progress
 
+
+def calculate_streak_multiplier(streak: int) -> float:
+    """
+    Calculate point multiplier based on daily streak.
+    - < 5 days: 1.0x
+    - 5 days: 1.1x
+    - Every 2 additional days: +0.1x
+    """
+    if streak < 5:
+        return 1.0
+    
+    # Base 1.1 at 5 days
+    # streak 5-6 -> 0 steps -> 1.1
+    # streak 7-8 -> 1 step -> 1.2
+    steps = (streak - 5) // 2
+    multiplier = 1.1 + (steps * 0.1)
+    
+    return round(multiplier, 1)
+
+
 @router.get("/my-streak")
 async def get_my_daily_streak(
     current_user: UserInDB = Depends(get_current_user_dependency),
@@ -1447,6 +1467,20 @@ async def get_my_daily_streak(
         # Active today
         streak_status = "active"
     
+    # Calculate multiplier
+    current_multiplier = calculate_streak_multiplier(streak_count)
+    
+    # Calculate next multiplier milestone
+    # If < 5, next is at 5
+    # If >= 5, next is at next even number relative to 5 (5->7, 6->7, 7->9)
+    next_milestone = 5
+    if streak_count >= 5:
+        # (streak - 5) // 2 gives current steps
+        # next step is current step + 1
+        # days needed = 5 + (step + 1) * 2
+        current_steps = (streak_count - 5) // 2
+        next_milestone = 5 + (current_steps + 1) * 2
+        
     return {
         "student_id": current_user.id,
         "student_name": current_user.name,
@@ -1454,7 +1488,9 @@ async def get_my_daily_streak(
         "last_activity_date": current_user.last_activity_date,
         "streak_status": streak_status,
         "is_active_today": is_active_today,
-        "total_study_time_minutes": current_user.total_study_time_minutes
+        "total_study_time_minutes": current_user.total_study_time_minutes,
+        "current_multiplier": current_multiplier,
+        "next_multiplier_at": next_milestone
     }
 
 # =============================================================================

@@ -57,6 +57,8 @@ class LeaderboardResponse(BaseModel):
 # HELPER FUNCTIONS
 # =============================================================================
 
+from src.routes.progress import calculate_streak_multiplier
+
 def award_points(db: Session, user_id: int, amount: int, reason: str, description: str = None):
     """Award points to a user and record in history."""
     # Update user's total points
@@ -64,14 +66,27 @@ def award_points(db: Session, user_id: int, amount: int, reason: str, descriptio
     if not user:
         return None
     
-    user.activity_points = (user.activity_points or 0) + amount
+    # Calculate multiplier based on streak
+    multiplier = calculate_streak_multiplier(user.daily_streak or 0)
+    final_amount = int(amount * multiplier)
+    
+    user.activity_points = (user.activity_points or 0) + final_amount
     
     # Record in history
+    # Add multiplier info to description if it's applied (>1.0)
+    final_description = description
+    if multiplier > 1.0:
+        multiplier_info = f" (Streak Bonus: {multiplier}x)"
+        if final_description:
+            final_description += multiplier_info
+        else:
+            final_description = multiplier_info.strip()
+
     history_entry = PointHistory(
         user_id=user_id,
-        amount=amount,
+        amount=final_amount,
         reason=reason,
-        description=description
+        description=final_description
     )
     db.add(history_entry)
     db.commit()
