@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_, select
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 
 from src.config import get_db
@@ -212,7 +212,7 @@ async def create_assignment(
     validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
     
     # Validate due date
-    if assignment_data.due_date and assignment_data.due_date < datetime.utcnow():
+    if assignment_data.due_date and assignment_data.due_date < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Due date cannot be in the past")
         
     # Determine target groups
@@ -469,7 +469,7 @@ async def update_assignment(
     validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
     
     # Validate due date
-    if assignment_data.due_date and assignment_data.due_date < datetime.utcnow():
+    if assignment_data.due_date and assignment_data.due_date < datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Due date cannot be in the past")
     
     # Update fields
@@ -628,7 +628,7 @@ async def submit_assignment(
         # Use extended deadline if exists, otherwise use original deadline
         effective_deadline = extension.extended_deadline if extension else assignment.due_date
         
-        if effective_deadline < datetime.utcnow():
+        if effective_deadline < datetime.now(timezone.utc):
             if extension:
                 raise HTTPException(
                     status_code=400, 
@@ -687,7 +687,7 @@ async def submit_assignment(
         score=score,
         max_score=assignment.max_score,
         is_graded=score is not None,
-        graded_at=datetime.utcnow() if score is not None else None
+        graded_at=datetime.now(timezone.utc) if score is not None else None
     )
     
     db.add(submission)
@@ -1065,7 +1065,7 @@ async def grade_submission(
     submission.feedback = grade_data.feedback
     submission.graded_by = current_user.id
     submission.is_graded = True
-    submission.graded_at = datetime.utcnow()
+    submission.graded_at = datetime.now(timezone.utc)
     
     db.commit()
     db.refresh(submission)
@@ -1394,7 +1394,7 @@ async def get_assignment_student_progress(
             submitted_at = submission.submitted_at
         else:
             # Check if overdue using effective deadline
-            if effective_deadline and effective_deadline < datetime.utcnow():
+            if effective_deadline and effective_deadline < datetime.now(timezone.utc):
                 status = "overdue"
                 is_overdue = True
         
@@ -1696,16 +1696,16 @@ def update_student_progress(assignment: Assignment, user_id: int, score: Optiona
             assignment_id=assignment.id,
             status="completed" if score is not None else "in_progress",
             completion_percentage=100 if score is not None and score >= (assignment.max_score * 0.6) else 50,
-            last_accessed=datetime.utcnow(),
-            completed_at=datetime.utcnow() if score is not None else None
+            last_accessed=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc) if score is not None else None
         )
         db.add(progress)
     else:
         progress.status = "completed" if score is not None else "in_progress"
         progress.completion_percentage = 100 if score is not None and score >= (assignment.max_score * 0.6) else 50
-        progress.last_accessed = datetime.utcnow()
+        progress.last_accessed = datetime.now(timezone.utc)
         if score is not None:
-            progress.completed_at = datetime.utcnow()
+            progress.completed_at = datetime.now(timezone.utc)
     
     db.commit()
 
