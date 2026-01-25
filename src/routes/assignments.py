@@ -704,7 +704,7 @@ async def submit_assignment(
     
     # Award points for completion
     try:
-        award_points(db, current_user.id, 50, 'homework', f'Completed assignment: {assignment.title}')
+        award_points(db, current_user.id, 10, 'homework', f'Completed assignment: {assignment.title}')
     except Exception as e:
         print(f"Failed to award points: {e}") # Non-blocking error
     

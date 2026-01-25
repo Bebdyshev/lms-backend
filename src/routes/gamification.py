@@ -161,16 +161,16 @@ async def give_teacher_bonus(
         )
     
     # Validate amount
-    if request.amount < 1 or request.amount > 10:
+    if request.amount < 1 or request.amount > 50:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Bonus amount must be between 1 and 10"
+            detail="Bonus amount must be between 1 and 50"
         )
     
     # Check weekly limit for this teacher
     weekly_given = get_teacher_weekly_bonus_given(db, current_user.id)
-    if weekly_given + request.amount > 10:
-        remaining = max(0, 10 - weekly_given)
+    if weekly_given + request.amount > 50:
+        remaining = max(0, 50 - weekly_given)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Weekly bonus limit reached. You can give {remaining} more points this week."
