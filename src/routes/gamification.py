@@ -34,6 +34,7 @@ class TeacherBonusRequest(BaseModel):
     student_id: int
     amount: int  # Max 10 points per week
     reason: Optional[str] = None
+    group_id: Optional[int] = None
 
 
 class LeaderboardEntry(BaseModel):
@@ -94,17 +95,28 @@ def get_monthly_points(db: Session, user_id: int, year: int = None, month: int =
     return int(result) if result else 0
 
 
-def get_teacher_weekly_bonus_given(db: Session, teacher_id: int) -> int:
-    """Get how many bonus points a teacher has given this week."""
+def get_teacher_weekly_bonus_given(db: Session, teacher_id: int, group_id: int = None) -> int:
+    """Get how many bonus points a teacher has given this week, optionally filtered by group."""
     # Get start of current week (Monday)
     today = date.today()
     start_of_week = today - timedelta(days=today.weekday())
     
-    result = db.query(func.coalesce(func.sum(PointHistory.amount), 0)).filter(
+    query = db.query(func.coalesce(func.sum(PointHistory.amount), 0)).filter(
         PointHistory.reason == 'teacher_bonus',
         PointHistory.description.like(f'%teacher:{teacher_id}%'),
         PointHistory.created_at >= datetime.combine(start_of_week, datetime.min.time())
-    ).scalar()
+    )
+    
+    if group_id:
+        # Find all students in this group
+        student_ids = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id == group_id
+        ).subquery()
+        
+        # Filter point history for these students
+        query = query.filter(PointHistory.user_id.in_(student_ids))
+    
+    result = query.scalar()
     
     return int(result) if result else 0
 
@@ -146,6 +158,30 @@ async def get_gamification_status(
     )
 
 
+@router.get("/bonus-allowance", response_model=dict)
+async def get_bonus_allowance(
+    group_id: Optional[int] = Query(None, description="Optional group ID to check limit for"),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Get teacher's remaining weekly bonus allowance."""
+    if current_user.role not in ['teacher', 'admin', 'curator']:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can inspect bonus allowance"
+        )
+        
+    weekly_given = get_teacher_weekly_bonus_given(db, current_user.id, group_id)
+    limit = 50
+    remaining = max(0, limit - weekly_given)
+    
+    return {
+        "limit": limit,
+        "given": weekly_given,
+        "remaining": remaining
+    }
+
+
 @router.post("/bonus")
 async def give_teacher_bonus(
     request: TeacherBonusRequest,
@@ -167,21 +203,35 @@ async def give_teacher_bonus(
             detail="Bonus amount must be between 1 and 50"
         )
     
-    # Check weekly limit for this teacher
-    weekly_given = get_teacher_weekly_bonus_given(db, current_user.id)
-    if weekly_given + request.amount > 50:
-        remaining = max(0, 50 - weekly_given)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Weekly bonus limit reached. You can give {remaining} more points this week."
-        )
-    
     # Verify student exists
     student = db.query(UserInDB).filter(UserInDB.id == request.student_id, UserInDB.role == 'student').first()
     if not student:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Student not found"
+        )
+
+    # Determine group ID for limit checking
+    check_group_id = request.group_id
+    
+    # If no group ID provided, try to find a common group between teacher and student
+    if not check_group_id:
+        # Find groups where this teacher is teaching this student
+        common_group = db.query(GroupStudent).join(Group).filter(
+            GroupStudent.student_id == request.student_id,
+            Group.teacher_id == current_user.id
+        ).first()
+        
+        if common_group:
+            check_group_id = common_group.group_id
+    
+    # Check weekly limit for this teacher in this group
+    weekly_given = get_teacher_weekly_bonus_given(db, current_user.id, check_group_id)
+    if weekly_given + request.amount > 50:
+        remaining = max(0, 50 - weekly_given)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Weekly bonus limit reached for this group. You can give {remaining} more points."
         )
     
     # Award the bonus
