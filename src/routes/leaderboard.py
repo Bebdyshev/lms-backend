@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, or_
 from typing import List, Optional
 from datetime import datetime, date, timedelta
 
@@ -739,6 +739,165 @@ async def get_weekly_lessons_with_hw_status(
         "config": config_data
     }
 
+@router.get("/curator/full-attendance/{group_id}")
+async def get_group_full_attendance_matrix(
+    group_id: int,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Get full attendance matrix for a group (all lessons).
+    Handles standard events and expanded recurring schedules.
+    """
+    # 1. Authorization & Group Info
+    group_obj = db.query(Group).filter(Group.id == group_id).first()
+    if not group_obj:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    if current_user.role == "curator":
+        if group_obj.curator_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this group (Curator mismatch)")
+    elif current_user.role == "teacher":
+        if group_obj.teacher_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this group (Teacher mismatch)")
+    elif current_user.role == "admin":
+        pass
+    else:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # 2. Get Group Creation Date and Linked Courses
+    from src.schemas.models import Event, EventGroup, EventParticipant, LessonSchedule, CourseGroupAccess, EventCourse
+    
+    creation_date = group_obj.created_at if group_obj else datetime.utcnow() - timedelta(days=90)
+    
+    # Find courses linked to this group
+    course_accesses = db.query(CourseGroupAccess).filter(CourseGroupAccess.group_id == group_id, CourseGroupAccess.is_active == True).all()
+    course_ids = [ca.course_id for ca in course_accesses]
+    
+    # 3. Fetch Standard Events (Group-linked OR Course-linked)
+    standard_events_query = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
+        Event.event_type == 'class',
+        Event.is_active == True,
+        Event.is_recurring == False,
+        or_(
+            EventGroup.group_id == group_id,
+            EventCourse.course_id.in_(course_ids)
+        )
+    )
+    standard_events = standard_events_query.order_by(Event.start_datetime.asc()).all()
+
+    # 4. Expand Recurring Events (Group-linked OR Course-linked)
+    from src.services.event_service import EventService
+    
+    start_search = datetime.utcnow() - timedelta(days=365)
+    end_search = datetime.utcnow() + timedelta(days=365)
+    
+    recurring_instances = EventService.expand_recurring_events(
+        db=db,
+        start_date=start_search,
+        end_date=end_search,
+        group_ids=[group_id],
+        course_ids=course_ids
+    )
+    
+    recurring_instances = [e for e in recurring_instances if e.event_type == 'class']
+
+    # 5. Combine and Deduplicate
+    all_events = standard_events
+    standard_times = {e.start_datetime.replace(second=0, microsecond=0) for e in standard_events}
+    
+    for instance in recurring_instances:
+        time_sig = instance.start_datetime.replace(second=0, microsecond=0)
+        if time_sig not in standard_times:
+            all_events.append(instance)
+            
+    all_events.sort(key=lambda x: x.start_datetime)
+
+    # 6. Fallback to LessonSchedule if still empty
+    if not all_events:
+        schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == group_id,
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.scheduled_at).all()
+        
+        for sched in schedules:
+            lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
+            pseudo_event = Event(
+                id=sched.id,
+                title=lesson_title,
+                start_datetime=sched.scheduled_at,
+                event_type='class'
+            )
+            pseudo_event.lesson_id = sched.lesson_id
+            all_events.append(pseudo_event)
+
+    # 9. Build Lessons Meta
+    lessons_meta = []
+    for idx, event in enumerate(all_events):
+        lessons_meta.append({
+            "lesson_number": idx + 1,
+            "event_id": event.id,
+            "title": event.title,
+            "start_datetime": event.start_datetime
+        })
+
+    if not all_events:
+         return {"lessons": [], "students": []}
+
+    event_ids = [e.id for e in all_events]
+    
+    # 7. Get Students
+    group_students = db.query(GroupStudent).filter(GroupStudent.group_id == group_id).all()
+    student_ids = [gs.student_id for gs in group_students]
+    
+    if not student_ids:
+        return {"lessons": lessons_meta, "students": []} # Fixed: Return lessons meta even if no students
+        
+    students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
+    students_list = sorted(students, key=lambda s: s.name or "")
+
+    # 8. Get Attendance
+    # Note: For recurring instances, we use their pseudo-IDs (consistent with calendar)
+    attendances = db.query(EventParticipant).filter(
+        EventParticipant.event_id.in_(event_ids),
+        EventParticipant.user_id.in_(student_ids)
+    ).all()
+    # Map (user_id, event_id) -> status
+    attendance_map = {(a.user_id, a.event_id): a.registration_status for a in attendances}
+
+    # 9. Build Lessons Meta
+    lessons_meta = []
+    for idx, event in enumerate(all_events):
+        lessons_meta.append({
+            "lesson_number": idx + 1,
+            "event_id": event.id,
+            "title": event.title,
+            "start_datetime": event.start_datetime
+        })
+
+    # 10. Build Student Rows
+    student_rows = []
+    for student in students_list:
+        lesson_data = {}
+        for idx, event in enumerate(all_events):
+            status = attendance_map.get((student.id, event.id), "missed") 
+            lesson_data[str(idx + 1)] = {
+                "event_id": event.id,
+                "attendance_status": status
+            }
+            
+        student_rows.append({
+            "student_id": student.id,
+            "student_name": student.name,
+            "avatar_url": student.avatar_url,
+            "lessons": lesson_data
+        })
+        
+    return {
+        "lessons": lessons_meta,
+        "students": student_rows
+    }
+
 @router.post("/curator/leaderboard")
 async def update_leaderboard_entry(
     data: LeaderboardEntryCreateSchema,
@@ -806,7 +965,7 @@ async def update_attendance(
     """
     
     # Auth
-    if current_user.role not in ["curator", "admin"]:
+    if current_user.role not in ["curator", "admin", "teacher"]:
         raise HTTPException(status_code=403, detail="Access denied")
         
     group = db.query(Group).filter(Group.id == data.group_id).first()
@@ -814,13 +973,23 @@ async def update_attendance(
          raise HTTPException(status_code=404, detail="Group not found")
          
     if current_user.role == "curator" and group.curator_id != current_user.id:
-         raise HTTPException(status_code=403, detail="Access denied to this group")
+         raise HTTPException(status_code=403, detail="Access denied to this group (Curator mismatch)")
+         
+    if current_user.role == "teacher" and group.teacher_id != current_user.id:
+         raise HTTPException(status_code=403, detail="Access denied to this group (Teacher mismatch)")
 
     # Mode 1: Event-based (New)
     if data.event_id:
+        from src.services.event_service import EventService
         from src.schemas.models import EventParticipant
+        
+        # Ensure event exists (materialize if pseudo-id)
+        real_event_id = EventService.resolve_event_id(db, data.event_id)
+        if not real_event_id:
+             raise HTTPException(status_code=404, detail="Event could not be resolved/materialized")
+
         participant = db.query(EventParticipant).filter(
-            EventParticipant.event_id == data.event_id,
+            EventParticipant.event_id == real_event_id,
             EventParticipant.user_id == data.student_id
         ).first()
         
@@ -829,7 +998,7 @@ async def update_attendance(
             participant.attended_at = datetime.utcnow() if data.score > 0 else None
         else:
             participant = EventParticipant(
-                event_id=data.event_id,
+                event_id=real_event_id,
                 user_id=data.student_id,
                 registration_status="attended" if data.score > 0 else "absent",
                 attended_at=datetime.utcnow() if data.score > 0 else None
@@ -837,7 +1006,7 @@ async def update_attendance(
             db.add(participant)
         
         db.commit()
-        return {"status": "success", "mode": "event"}
+        return {"status": "success", "mode": "event", "event_id": real_event_id}
 
     # Mode 2: Schedule-based (Legacy/Generated)
     schedules = db.query(LessonSchedule).filter(
@@ -1055,8 +1224,15 @@ async def get_group_schedule(
     """
     Fetch existing recurring schedule for a group.
     """
-    if current_user.role not in ["curator", "admin"]:
+    if current_user.role not in ["curator", "admin", "teacher"]:
         raise HTTPException(status_code=403, detail="Access denied")
+        
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+         raise HTTPException(status_code=404, detail="Group not found")
+         
+    if current_user.role == "teacher" and group.teacher_id != current_user.id:
+         raise HTTPException(status_code=403, detail="Access denied to this group schedule")
         
     # Find active recurring events for this group
     events = db.query(Event).join(EventGroup).filter(

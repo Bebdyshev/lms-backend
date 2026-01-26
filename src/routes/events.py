@@ -405,12 +405,12 @@ async def get_calendar_events(
         # Let's map existing events by (group_id, start_time) to filter duplicates.
         
         existing_event_map = set()
-        for e in standard_events:
+        for e in all_events:
             # Create a signature: group_ids + start_time
             # Event might have multiple groups.
-            for eg in e.event_groups:
-                # Round to nearest minute to be safe?
-                sig = (eg.group_id, e.start_datetime.replace(second=0, microsecond=0))
+            for g_id in (e.group_ids or []):
+                # Round to nearest minute to be safe
+                sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
                 existing_event_map.add(sig)
                 
         for sched in schedules:
