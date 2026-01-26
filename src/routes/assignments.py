@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc, and_, select
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 
 from src.config import get_db
@@ -10,15 +10,22 @@ from src.schemas.models import (
     Assignment, AssignmentSubmission, Lesson, Module, Course, UserInDB, Enrollment,
     AssignmentSchema, AssignmentCreateSchema, AssignmentSubmissionSchema,
     SubmitAssignmentSchema, GradeSubmissionSchema, AssignmentLinkedLesson,
-    AssignmentExtension, AssignmentExtensionSchema, GrantExtensionSchema
+    AssignmentExtension, AssignmentExtensionSchema, GrantExtensionSchema,
+    Event, EventGroup
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, check_course_access
 from src.utils.assignment_checker import check_assignment_answers
 from src.services.email_service import send_homework_notification
 from src.schemas.models import GroupStudent
-from src.routes.events import router as events_router # Just a placeholder or remove it
+from src.services.event_service import EventService
 from src.routes.gamification import award_points
+
+def _to_enriched_schema(assignment: Assignment) -> AssignmentSchema:
+    schema = AssignmentSchema.from_orm(assignment)
+    if assignment.event:
+        schema.event_start_datetime = assignment.event.start_datetime
+    return schema
 
 router = APIRouter()
 
@@ -140,8 +147,8 @@ async def get_assignments(
             (Assignment.lesson_id.in_(lesson_ids)) | (Assignment.group_id.in_(teacher_group_ids))
         )
     
-    assignments = query.offset(skip).limit(limit).all()
-    return [AssignmentSchema.from_orm(assignment) for assignment in assignments]
+    assignments = query.options(joinedload(Assignment.event)).offset(skip).limit(limit).all()
+    return [_to_enriched_schema(a) for a in assignments]
 
 @router.patch("/{assignment_id}/toggle-visibility", response_model=AssignmentSchema)
 async def toggle_assignment_visibility(
@@ -179,7 +186,7 @@ async def toggle_assignment_visibility(
     db.commit()
     db.refresh(assignment)
     
-    return AssignmentSchema.from_orm(assignment)
+    return _to_enriched_schema(assignment)
 
 @router.post("/", response_model=AssignmentSchema)
 async def create_assignment(
@@ -232,6 +239,15 @@ async def create_assignment(
         
     created_assignments = []
     
+    # Cache for resolved event IDs to avoid redundant materialization in same request
+    _resolved_ids_cache = {}
+
+    def resolve_eid(eid: Optional[int], db: Session) -> Optional[int]:
+        if eid is None: return None
+        if eid not in _resolved_ids_cache:
+            _resolved_ids_cache[eid] = EventService.resolve_event_id(db, eid)
+        return _resolved_ids_cache[eid]
+    
     # If we have target groups, create an assignment for each group
     if target_group_ids:
         for gid in target_group_ids:
@@ -244,6 +260,16 @@ async def create_assignment(
             if current_user.role != "admin" and group.teacher_id != current_user.id:
                 raise HTTPException(status_code=403, detail=f"Access denied to group {gid}")
                 
+            # Determine settings for this group
+            event_id_for_group = resolve_eid(assignment_data.event_id, db)
+            if assignment_data.event_mapping and gid in assignment_data.event_mapping:
+                event_id_for_group = resolve_eid(assignment_data.event_mapping[gid], db)
+                
+            # Determine due date for this group
+            due_date_for_group = assignment_data.due_date
+            if assignment_data.due_date_mapping and gid in assignment_data.due_date_mapping:
+                due_date_for_group = assignment_data.due_date_mapping[gid]
+
             new_assignment = Assignment(
                 lesson_id=target_lesson_id,
                 group_id=gid,
@@ -254,9 +280,10 @@ async def create_assignment(
                 correct_answers=json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None,
                 max_score=assignment_data.max_score,
                 time_limit_minutes=assignment_data.time_limit_minutes if hasattr(assignment_data, 'time_limit_minutes') else None,
-                due_date=assignment_data.due_date,
+                due_date=due_date_for_group,
                 allowed_file_types=assignment_data.allowed_file_types,
-                max_file_size_mb=assignment_data.max_file_size_mb
+                max_file_size_mb=assignment_data.max_file_size_mb,
+                event_id=event_id_for_group
             )
             db.add(new_assignment)
             created_assignments.append(new_assignment)
@@ -275,7 +302,8 @@ async def create_assignment(
             time_limit_minutes=assignment_data.time_limit_minutes if hasattr(assignment_data, 'time_limit_minutes') else None,
             due_date=assignment_data.due_date,
             allowed_file_types=assignment_data.allowed_file_types,
-            max_file_size_mb=assignment_data.max_file_size_mb
+            max_file_size_mb=assignment_data.max_file_size_mb,
+            event_id=resolve_eid(assignment_data.event_id, db)
         )
         db.add(new_assignment)
         created_assignments.append(new_assignment)
@@ -288,7 +316,7 @@ async def create_assignment(
         sync_assignment_linked_lessons(a, db)
     
     # Return the first one to satisfy response model
-    result_assignment = AssignmentSchema.from_orm(created_assignments[0])
+    result_assignment = _to_enriched_schema(created_assignments[0])
     
     # Send email notifications
     try:
@@ -437,7 +465,7 @@ async def get_assignment(
     
     print(f"Access granted, returning assignment data")
     
-    assignment_data = AssignmentSchema.from_orm(assignment)
+    assignment_data = _to_enriched_schema(assignment)
     
     # Hide correct answers from students
     if current_user.role == "student":
@@ -490,6 +518,7 @@ async def update_assignment(
     assignment.time_limit_minutes = assignment_data.time_limit_minutes
     assignment.due_date = assignment_data.due_date
     assignment.group_id = assignment_data.group_id
+    assignment.event_id = EventService.resolve_event_id(db, assignment_data.event_id)
     assignment.allowed_file_types = assignment_data.allowed_file_types
     assignment.max_file_size_mb = assignment_data.max_file_size_mb
     
@@ -499,7 +528,7 @@ async def update_assignment(
     # Sync linked lessons for fast lookup
     sync_assignment_linked_lessons(assignment, db)
     
-    result_assignment = AssignmentSchema.from_orm(assignment)
+    return _to_enriched_schema(assignment)
     
     # Send email notification if significant changes (e.g. due date)
     try:

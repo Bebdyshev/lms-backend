@@ -8,10 +8,11 @@ from src.config import get_db
 from src.schemas.models import (
     UserInDB, Event, EventGroup, EventParticipant, Group, GroupStudent,
     EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course,
-    CreateEventRequest, Assignment, Lesson, Module
+    CreateEventRequest, Assignment, Lesson, Module,
+    AttendanceBulkUpdateSchema, EventStudentSchema
 )
 from src.routes.auth import get_current_user_dependency
-from src.utils.permissions import require_role
+from src.utils.permissions import require_role, require_teacher_or_admin, require_teacher_curator_or_admin
 
 router = APIRouter()
 
@@ -20,6 +21,7 @@ async def get_my_events(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, le=1000),
     event_type: Optional[str] = Query(None),
+    group_id: Optional[int] = Query(None),
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     upcoming_only: bool = Query(True),
@@ -91,13 +93,32 @@ async def get_my_events(
     # Build query
     # Events that are in user's groups OR in user's courses
     
+    # Security check if group_id requested
+    if group_id:
+        if group_id not in user_group_ids:
+            # If user is admin, allow
+            if current_user.role != "admin":
+                # Check if group is accessible via course? 
+                # Simplest: if not in user's direct groups, deny or fallback?
+                # User might have course access which covers group? 
+                # Let's simple check:
+                raise HTTPException(status_code=403, detail="Access denied to this group's events")
+                
     query = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
-        or_(
-            EventGroup.group_id.in_(user_group_ids),
-            EventCourse.course_id.in_(user_course_ids)
-        ),
         Event.is_active == True
-    ).distinct()
+    )
+    
+    if group_id:
+        query = query.filter(EventGroup.group_id == group_id)
+    else:
+        query = query.filter(
+            or_(
+                EventGroup.group_id.in_(user_group_ids),
+                EventCourse.course_id.in_(user_course_ids)
+            )
+        )
+    
+    query = query.distinct()
     
     # Apply filters
     if event_type:
@@ -119,8 +140,85 @@ async def get_my_events(
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
     
+    # 2. Expand Recurring Events if needed
+    # If specific date range or upcoming_only, we must expand
+    should_expand = start_date or end_date or upcoming_only
+    
+    if should_expand:
+        from src.services.event_service import EventService
+        
+        # Determine range for expansion
+        exp_start = datetime.combine(start_date, datetime.min.time()) if start_date else datetime.utcnow()
+        if end_date:
+            exp_end = datetime.combine(end_date, datetime.max.time())
+        else:
+            # Default lookup window for recurring expansion if no end date
+            # E.g. next 90 days for "upcoming"
+            exp_end = exp_start + timedelta(days=90)
+            
+        # Optimization: Only expand if we have groups or courses filter
+        # If no group_id/course_id is set, expanding ALL user events might be heavy but necessary
+        # user_group_ids/user_course_ids are already calculated
+        
+        recurring_instances = EventService.expand_recurring_events(
+            db=db,
+            start_date=exp_start,
+            end_date=exp_end,
+            group_ids=[group_id] if group_id else user_group_ids,
+            course_ids=user_course_ids
+        )
+        
+        # Filter by event_type if requested
+        if event_type:
+            recurring_instances = [e for e in recurring_instances if e.event_type == event_type]
+            
+        # Combine
+        # Deduplication strategy: Real events usually override recurring instances.
+        
+        # Filter out the parent recurring events from the initial query 
+        events = standard_events
+        
+        # Deduplicate recurring instances against standard events by timestamp
+        # If a manual event exists at the same time, skip the generated one
+        standard_times = {e.start_datetime for e in standard_events}
+        
+        for instance in recurring_instances:
+            if instance.start_datetime not in standard_times:
+                events.append(instance)
+                
+        events.sort(key=lambda x: x.start_datetime)
+        
+        # Re-apply limit after expansion
+        if limit:
+            events = events[:limit]
+            
     if not events:
         return []
+
+    # Final Deduplication by Signature (Group, Time, Title)
+    # This ensures that even if multiple series/events cover the same slot, only one is shown.
+    seen_signatures = set()
+    unique_events = []
+    for e in events:
+        # Create a signature for each group this event belongs to
+        # If any group + time + title combo is seen, skip. 
+        # (This is better than just ID because virtual instances have different IDs)
+        
+        # Round time to nearest minute for comparison
+        time_sig = e.start_datetime.replace(second=0, microsecond=0)
+        
+        # For events with multiple groups, we check if WE (the user) are interested in this one
+        # If group_id filter was used, check only that
+        relevant_groups = [group_id] if group_id else [eg.group_id for eg in e.event_groups]
+        
+        for g_id in relevant_groups:
+            sig = (g_id, time_sig, e.title)
+            if sig not in seen_signatures:
+                unique_events.append(e)
+                seen_signatures.add(sig)
+                break # Only add once even if multi-group (to keep list unique)
+                
+    events = unique_events
 
     # Batch fetch participant counts
     event_ids = [e.id for e in events]
@@ -244,104 +342,29 @@ async def get_calendar_events(
         joinedload(Event.event_courses).joinedload(EventCourse.course)
     ).all()
 
-    # 2. Get recurring parent events that might overlap
-    recurring_parents = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
-        or_(
-            EventGroup.group_id.in_(user_group_ids),
-            EventCourse.course_id.in_(user_course_ids)
-        ),
-        Event.is_active == True,
-        Event.is_recurring == True,
-        Event.start_datetime <= end_date,
-        or_(
-            Event.recurrence_end_date == None,
-            Event.recurrence_end_date >= start_date.date()
-        )
-    ).distinct().options(
-        joinedload(Event.creator),
-        joinedload(Event.event_groups).joinedload(EventGroup.group),
-        joinedload(Event.event_courses).joinedload(EventCourse.course)
-    ).all()
-
-    generated_events = []
-    import calendar as cal_module
-
-    for parent in recurring_parents:
-        # Generate instances for this parent within [start_date, end_date]
-        
-        # Determine the effective start for generation
-        # We need to find the first occurrence >= start_date
-        
-        current_start = parent.start_datetime
-        current_end = parent.end_datetime
-        duration = current_end - current_start
-        
-        # Optimization: Fast forward to near start_date if possible
-        # This is complex for monthly, but easy for daily/weekly/biweekly
-        
-        # Simple iteration for now (robust but potentially slow if start_date is far in future)
-        # TODO: Optimize fast-forwarding
-        
-        original_start_day = parent.start_datetime.day
-        
-        while current_start <= end_date:
-            # Check if current instance is within range
-            if current_start >= start_date and current_start <= end_date:
-                # Create a virtual event copy
-                # We use a special ID format or just negative IDs to distinguish?
-                # For frontend, unique IDs are needed. 
-                # Let's use string IDs in frontend? No, types say number.
-                # We'll use a deterministic hash or large number offset?
-                # Or just let them be 0/negative and handle in frontend?
-                # Frontend expects 'id' to be number.
-                
-                # Let's generate a pseudo-ID based on parent ID and timestamp
-                # This is a bit hacky but works for display
-                pseudo_id = int(f"{parent.id}{int(current_start.timestamp())}") % 2147483647
-                
-                virtual_event = Event(
-                    id=pseudo_id, # Virtual ID
-                    title=parent.title,
-                    description=parent.description,
-                    event_type=parent.event_type,
-                    start_datetime=current_start,
-                    end_datetime=current_start + duration,
-                    location=parent.location,
-                    is_online=parent.is_online,
-                    meeting_url=parent.meeting_url,
-                    created_by=parent.created_by,
-                    is_recurring=True, # It is part of a recurring series
-                    recurrence_pattern=parent.recurrence_pattern,
-                    max_participants=parent.max_participants,
-                    creator=parent.creator,
-                    event_groups=parent.event_groups,
-                    created_at=parent.created_at,
-                    updated_at=parent.updated_at,
-                    is_active=True
-                )
-                generated_events.append(virtual_event)
-            
-            # Increment
-            if parent.recurrence_pattern == "daily":
-                current_start += timedelta(days=1)
-            elif parent.recurrence_pattern == "weekly":
-                current_start += timedelta(weeks=1)
-            elif parent.recurrence_pattern == "biweekly":
-                current_start += timedelta(weeks=2)
-            elif parent.recurrence_pattern == "monthly":
-                year = current_start.year + (current_start.month // 12)
-                month = (current_start.month % 12) + 1
-                day = min(original_start_day, cal_module.monthrange(year, month)[1])
-                current_start = current_start.replace(year=year, month=month, day=day)
-            else:
-                break # Unknown pattern
-            
-            # Check if we passed the recurrence end date (if it exists)
-            if parent.recurrence_end_date and current_start.date() > parent.recurrence_end_date:
-                break
+    # 2. Get expanded recurring events
+    from src.services.event_service import EventService
+    
+    generated_events = EventService.expand_recurring_events(
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+        group_ids=user_group_ids,
+        course_ids=user_course_ids
+    )
 
     # Combine and sort
     all_events = standard_events + generated_events
+    
+    # Final Deduplication by ID
+    seen_ids = set()
+    unique_all = []
+    for e in all_events:
+        if e.id not in seen_ids:
+            unique_all.append(e)
+            seen_ids.add(e.id)
+    all_events = unique_all
+    
     all_events.sort(key=lambda x: x.start_datetime)
     
 
@@ -361,6 +384,78 @@ async def get_calendar_events(
     
     # Enrich with additional data
     result = []
+    
+    # 2.5 Get LessonSchedule items (Planned Schedule) that might not have Events yet
+    # This ensures the calendar shows the "Plan" even if "Events" aren't created
+    if user_group_ids:
+        # Import here to avoid circular deps if any, though top-level is fine
+        from src.schemas.models import LessonSchedule
+        
+        schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True,
+            LessonSchedule.scheduled_at >= start_date,
+            LessonSchedule.scheduled_at <= end_date
+        ).options(
+            joinedload(LessonSchedule.group),
+            joinedload(LessonSchedule.lesson)
+        ).all()
+        
+        # Convert schedules to virtual events
+        # Check against existing real events to avoid duplicates?
+        # Robust strategy: If a real event exists at approx same time for same group, skip schedule?
+        # Simpler: Just show both? Or show schedule. 
+        # Usually admin creates events based on schedule. 
+        # Let's map existing events by (group_id, start_time) to filter duplicates.
+        
+        existing_event_map = set()
+        for e in standard_events:
+            # Create a signature: group_ids + start_time
+            # Event might have multiple groups.
+            for eg in e.event_groups:
+                # Round to nearest minute to be safe?
+                sig = (eg.group_id, e.start_datetime.replace(second=0, microsecond=0))
+                existing_event_map.add(sig)
+                
+        for sched in schedules:
+            # Check for duplicate
+            sched_time = sched.scheduled_at.replace(second=0, microsecond=0)
+            if (sched.group_id, sched_time) in existing_event_map:
+                continue # Skip, real event exists
+                
+            # Create virtual event
+            # Use negative ID or large offset to distinguish
+            virtual_id = 2000000000 + sched.id 
+            
+            title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            # Prefix to clarify it's a class
+            title = f"Class: {title}"
+            
+            # Duration default 1.5 hours?
+            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            
+            sched_event = EventSchema(
+                id=virtual_id,
+                title=title,
+                description="Scheduled lesson topic (Plan)",
+                event_type="class",
+                start_datetime=sched.scheduled_at,
+                end_datetime=end_dt,
+                location="Online (Scheduled)", 
+                is_online=True, 
+                created_by=0,
+                creator_name="System",
+                is_active=True,
+                is_recurring=False,
+                participant_count=0,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+                groups=[sched.group.name] if sched.group else [],
+                group_ids=[sched.group_id],
+                courses=[]
+            )
+            result.append(sched_event)
+
     for event in all_events:
         # For virtual events, we might need to handle schema conversion manually 
         # because they are not attached to session
@@ -372,6 +467,9 @@ async def get_calendar_events(
         
         # Add group names
         event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+        
+        # Add group IDs - CRITICAL for frontend filtering
+        event_data.group_ids = [eg.group_id for eg in event.event_groups]
         
         # Add participant count
         # For virtual events, we assume 0 or fetch from parent? 
@@ -837,3 +935,89 @@ async def create_curator_event(
         result.courses = []
     
     return result
+@router.get("/{event_id}/participants", response_model=List[EventStudentSchema])
+async def get_event_participants(
+    event_id: int,
+    group_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_curator_or_admin())
+):
+    """Get students for an event, optionally filtered by group"""
+    # 1. Verify event exists
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+        
+    # 2. Determine target groups
+    if group_id:
+        target_group_ids = [group_id]
+    else:
+        target_group_ids = [eg.group_id for eg in event.event_groups]
+        
+    if not target_group_ids:
+        return []
+        
+    # 3. Fetch students in these groups
+    students = db.query(UserInDB).join(GroupStudent, GroupStudent.student_id == UserInDB.id).filter(
+        GroupStudent.group_id.in_(target_group_ids)
+    ).all()
+    
+    # 4. Fetch existing attendance records
+    attendance = db.query(EventParticipant).filter(
+        EventParticipant.event_id == event_id
+    ).all()
+    attendance_map = {a.user_id: a for a in attendance}
+    
+    # 5. Build results
+    results = []
+    for s in students:
+        record = attendance_map.get(s.id)
+        results.append(EventStudentSchema(
+            student_id=s.id,
+            name=s.name,
+            attendance_status=record.registration_status if record else "registered",
+            last_updated=record.attended_at if record else None
+        ))
+        
+    return results
+
+@router.post("/{event_id}/attendance")
+async def update_event_attendance(
+    event_id: int,
+    data: AttendanceBulkUpdateSchema,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_teacher_curator_or_admin())
+):
+    """Bulk update attendance for an event"""
+    # 1. Verify event exists
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+        
+    now = datetime.utcnow()
+    
+    # 2. Update records
+    for record in data.attendance:
+        # Check if record already exists
+        participant = db.query(EventParticipant).filter(
+            EventParticipant.event_id == event_id,
+            EventParticipant.user_id == record.student_id
+        ).first()
+        
+        if participant:
+            participant.registration_status = record.status
+            if record.status == "attended":
+                participant.attended_at = now
+        else:
+            # Create new record
+            new_participant = EventParticipant(
+                event_id=event_id,
+                user_id=record.student_id,
+                registration_status=record.status,
+                attended_at=now if record.status == "attended" else None,
+                registered_at=now
+            )
+            db.add(new_participant)
+            
+    db.commit()
+    return {"message": "Attendance updated successfully"}

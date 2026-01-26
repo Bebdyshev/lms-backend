@@ -5,7 +5,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime, date, time, timezone
 from pydantic import BaseModel, ConfigDict, field_validator
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Dict
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 import json
@@ -975,6 +975,7 @@ class Assignment(Base):
     id = Column(Integer, primary_key=True, index=True)
     lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)  # Can be standalone
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)  # For group-specific assignments
+    event_id = Column(Integer, ForeignKey("events.id", ondelete="SET NULL"), nullable=True)  # Link to zoom lesson (Event)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     assignment_type = Column(String, nullable=False)  # single_choice, multiple_choice, etc.
@@ -993,6 +994,7 @@ class Assignment(Base):
     # Relationships
     lesson = relationship("Lesson", back_populates="assignments")
     group = relationship("Group")
+    event = relationship("Event")  # Link to zoom lesson
     submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
 
 class AssignmentSubmission(Base):
@@ -1089,6 +1091,7 @@ class AssignmentSchema(BaseModel):
     id: int
     lesson_id: Optional[int] = None
     group_id: Optional[int] = None
+    event_id: Optional[int] = None  # Link to zoom lesson (Event)
     title: str
     description: Optional[str] = None
     assignment_type: str
@@ -1096,6 +1099,7 @@ class AssignmentSchema(BaseModel):
     max_score: int
     time_limit_minutes: Optional[int] = None
     due_date: Optional[datetime] = None
+    event_start_datetime: Optional[datetime] = None # Added for display
     file_url: Optional[str] = None
     allowed_file_types: Optional[List[str]] = None
     max_file_size_mb: int = 10
@@ -1127,6 +1131,11 @@ class AssignmentCreateSchema(BaseModel):
     due_date: Optional[datetime] = None
     group_id: Optional[int] = None
     group_ids: Optional[List[int]] = None
+    group_id: Optional[int] = None
+    group_ids: Optional[List[int]] = None
+    event_id: Optional[int] = None  # Link to zoom lesson (Event)
+    event_mapping: Optional[Dict[int, int]] = None  # Map group_id -> event_id
+    due_date_mapping: Optional[Dict[int, datetime]] = None # Map group_id -> specific due_date
     allowed_file_types: Optional[List[str]] = None
     max_file_size_mb: int = 10
     
@@ -1851,6 +1860,19 @@ class EventParticipantSchema(BaseModel):
     
     class Config:
         from_attributes = True
+
+class AttendanceRecord(BaseModel):
+    student_id: int
+    status: str  # "attended", "missed", "late"
+
+class AttendanceBulkUpdateSchema(BaseModel):
+    attendance: List[AttendanceRecord]
+
+class EventStudentSchema(BaseModel):
+    student_id: int
+    name: str
+    attendance_status: Optional[str] = "registered" # "attended", "missed", "late", "registered"
+    last_updated: Optional[datetime] = None
 # =============================================================================
 # LEADERBOARD MODELS
 # =============================================================================
@@ -1944,6 +1966,29 @@ class LeaderboardEntry(Base):
         UniqueConstraint('user_id', 'group_id', 'week_number', name='uq_leaderboard_entry'),
     )
 
+class LeaderboardConfig(Base):
+    __tablename__ = "leaderboard_configs"
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    week_number = Column(Integer, nullable=False)
+    
+    # Visibility settings for manual columns
+    curator_hour_enabled = Column(Boolean, default=True)
+    study_buddy_enabled = Column(Boolean, default=True)
+    self_reflection_journal_enabled = Column(Boolean, default=True)
+    weekly_evaluation_enabled = Column(Boolean, default=True)
+    extra_points_enabled = Column(Boolean, default=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    group = relationship("Group", foreign_keys=[group_id])
+    
+    __table_args__ = (
+        UniqueConstraint('group_id', 'week_number', name='uq_leaderboard_config'),
+    )
+
 class LeaderboardEntrySchema(BaseModel):
     id: int
     user_id: int
@@ -1981,6 +2026,29 @@ class LeaderboardEntryCreateSchema(BaseModel):
     self_reflection_journal: Optional[float] = None
     weekly_evaluation: Optional[float] = None
     extra_points: Optional[float] = None
+
+
+class LeaderboardConfigSchema(BaseModel):
+    id: int
+    group_id: int
+    week_number: int
+    curator_hour_enabled: bool
+    study_buddy_enabled: bool
+    self_reflection_journal_enabled: bool
+    weekly_evaluation_enabled: bool
+    extra_points_enabled: bool
+    
+    class Config:
+        from_attributes = True
+
+class LeaderboardConfigUpdateSchema(BaseModel):
+    group_id: int
+    week_number: int
+    curator_hour_enabled: Optional[bool] = None
+    study_buddy_enabled: Optional[bool] = None
+    self_reflection_journal_enabled: Optional[bool] = None
+    weekly_evaluation_enabled: Optional[bool] = None
+    extra_points_enabled: Optional[bool] = None
 
 
 # =============================================================================
