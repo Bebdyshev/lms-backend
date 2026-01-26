@@ -156,10 +156,6 @@ async def get_my_events(
             # E.g. next 90 days for "upcoming"
             exp_end = exp_start + timedelta(days=90)
             
-        # Optimization: Only expand if we have groups or courses filter
-        # If no group_id/course_id is set, expanding ALL user events might be heavy but necessary
-        # user_group_ids/user_course_ids are already calculated
-        
         recurring_instances = EventService.expand_recurring_events(
             db=db,
             start_date=exp_start,
@@ -174,14 +170,14 @@ async def get_my_events(
             
         # Combine
         # Deduplication strategy: Real events usually override recurring instances.
+        # Filter out the parent recurring events from the initial query
+        standard_events = [e for e in events if not e.is_recurring]
         
-        # Filter out the parent recurring events from the initial query 
-        events = standard_events
-        
-        # Deduplicate recurring instances against standard events by timestamp
-        # If a manual event exists at the same time, skip the generated one
+        # Start with standard non-recurring events
+        events = list(standard_events)
         standard_times = {e.start_datetime for e in standard_events}
         
+        # Add recurring instances only if there's no manual event at the same time
         for instance in recurring_instances:
             if instance.start_datetime not in standard_times:
                 events.append(instance)
