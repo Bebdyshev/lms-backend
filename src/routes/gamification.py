@@ -180,10 +180,10 @@ async def get_bonus_allowance(
     db: Session = Depends(get_db)
 ):
     """Get teacher's remaining weekly bonus allowance."""
-    if current_user.role not in ['teacher', 'admin', 'curator']:
+    if current_user.role not in ['teacher', 'admin', 'curator', 'head_curator']:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can inspect bonus allowance"
+            detail="Only teachers, curators and admins can inspect bonus allowance"
         )
         
     weekly_given = get_teacher_weekly_bonus_given(db, current_user.id, group_id)
@@ -205,10 +205,10 @@ async def give_teacher_bonus(
 ):
     """Teacher gives bonus points to a student (max 10 per week)."""
     # Check if current user is a teacher
-    if current_user.role not in ['teacher', 'admin', 'curator']:
+    if current_user.role not in ['teacher', 'admin', 'curator', 'head_curator']:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only teachers can give bonus points"
+            detail="Only teachers, curators and admins can give bonus points"
         )
     
     # Validate amount

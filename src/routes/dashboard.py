@@ -31,6 +31,8 @@ async def get_dashboard_stats(
         return get_teacher_dashboard_stats(current_user, db)
     elif current_user.role == "curator":
         return get_curator_dashboard_stats(current_user, db)
+    elif current_user.role == "head_curator":
+        return get_head_curator_dashboard_stats(current_user, db)
     elif current_user.role == "admin":
         return get_admin_dashboard_stats(current_user, db)
     else:
@@ -434,6 +436,139 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "average_student_progress": round(sum(s["progress"] for s in students_with_progress) / len(students_with_progress)) if students_with_progress else 0
         },
         recent_courses=students_with_progress[:6]  # Show recent student activity instead of courses
+    )
+
+def get_head_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+    """Get dashboard stats for Head of Curators"""
+    from src.schemas.models import Group, Assignment, AssignmentSubmission, GroupStudent, GroupAssignment, StepProgress
+    from sqlalchemy.orm import aliased
+    
+    # 1. Сводная статистика
+    total_curators = db.query(UserInDB).filter(UserInDB.role == "curator", UserInDB.is_active == True).count()
+    total_groups = db.query(Group).filter(Group.is_active == True).count()
+    total_students = db.query(UserInDB).filter(UserInDB.role == "student", UserInDB.is_active == True).count()
+    
+    # Активные студенты за 24 часа
+    one_day_ago = datetime.utcnow() - timedelta(days=1)
+    active_students_24h = db.query(func.count(func.distinct(StepProgress.user_id))).filter(
+        StepProgress.visited_at >= one_day_ago
+    ).scalar() or 0
+    
+    # 2. Детальная статистика по кураторам
+    curators = db.query(UserInDB).filter(UserInDB.role == "curator", UserInDB.is_active == True).all()
+    curator_performance = []
+    
+    for curator in curators:
+        # Группы куратора
+        c_groups = db.query(Group).filter(Group.curator_id == curator.id, Group.is_active == True).all()
+        c_group_ids = [g.id for g in c_groups]
+        
+        # Студенты куратора
+        c_student_ids = [gs.student_id for gs in db.query(GroupStudent).filter(GroupStudent.group_id.in_(c_group_ids)).all()] if c_group_ids else []
+        
+        avg_progress = 0
+        overdue_count = 0
+        pending_grading = 0
+        
+        if c_student_ids:
+            # Средний прогресс
+            progress_records = db.query(StudentProgress).filter(StudentProgress.user_id.in_(c_student_ids)).all()
+            if progress_records:
+                avg_progress = sum(p.completion_percentage for p in progress_records) / len(progress_records)
+            
+            # Просроченные задания (Overdue)
+            if c_group_ids:
+                overdue_count = db.query(GroupAssignment, GroupStudent).join(
+                    GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
+                ).filter(
+                    GroupAssignment.group_id.in_(c_group_ids),
+                    GroupAssignment.due_date < datetime.utcnow(),
+                    GroupAssignment.is_active == True,
+                    GroupStudent.student_id.in_(c_student_ids),
+                    ~db.query(AssignmentSubmission).filter(
+                        AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
+                        AssignmentSubmission.user_id == GroupStudent.student_id,
+                        AssignmentSubmission.is_hidden == False
+                    ).exists()
+                ).count()
+            
+            # Ожидают проверки (только для заданий, требующих оценки)
+            pending_grading = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.user_id.in_(c_student_ids),
+                AssignmentSubmission.is_graded == False,
+                AssignmentSubmission.is_hidden == False
+            ).count()
+
+        curator_performance.append({
+            "id": curator.id,
+            "name": curator.name,
+            "groups_count": len(c_groups),
+            "students_count": len(c_student_ids),
+            "avg_progress": round(avg_progress, 1),
+            "overdue_count": overdue_count,
+            "pending_grading": pending_grading
+        })
+
+    # 3. Активность за 14 дней (Engagement Trends)
+    activity_trends = []
+    for i in range(13, -1, -1):
+        day = (datetime.utcnow() - timedelta(days=i)).date()
+        count = db.query(StepProgress).filter(
+            func.date(StepProgress.visited_at) == day,
+            StepProgress.status == "completed"
+        ).count()
+        activity_trends.append({
+            "date": day.isoformat(),
+            "count": count
+        })
+
+    # 4. Проблемные группы (At-Risk Groups) - с наибольшим числом просрочек
+    at_risk_groups = []
+    if total_groups > 0:
+        CuratorAlias = aliased(UserInDB)
+        group_overdue = db.query(
+            Group.id, Group.name, CuratorAlias.name.label("curator_name"), func.count(GroupAssignment.id).label("overdue_count")
+        ).join(
+            GroupAssignment, Group.id == GroupAssignment.group_id
+        ).join(
+            GroupStudent, Group.id == GroupStudent.group_id
+        ).join(
+            CuratorAlias, Group.curator_id == CuratorAlias.id
+        ).filter(
+            GroupAssignment.due_date < datetime.utcnow(),
+            GroupAssignment.is_active == True,
+            ~db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
+                AssignmentSubmission.user_id == GroupStudent.student_id,
+                AssignmentSubmission.is_hidden == False
+            ).exists()
+        ).group_by(Group.id, Group.name, CuratorAlias.name).order_by(desc("overdue_count")).limit(10).all()
+        
+        for g in group_overdue:
+            at_risk_groups.append({
+                "id": g.id,
+                "title": g.name,
+                "curator": g.curator_name,
+                "overdue_count": g.overdue_count,
+                "status": "critical" if g.overdue_count > 5 else "warning"
+            })
+
+    return DashboardStatsSchema(
+        user={
+            "name": user.name.split()[0],
+            "full_name": user.name,
+            "role": user.role,
+            "avatar_url": user.avatar_url
+        },
+        stats={
+            "total_curators": total_curators,
+            "total_groups": total_groups,
+            "total_students": total_students,
+            "active_students_24h": active_students_24h,
+            "curator_performance": curator_performance,
+            "activity_trends": activity_trends
+        },
+        recent_courses=at_risk_groups
     )
 
 def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
@@ -1030,15 +1165,16 @@ async def get_curator_students_progress(
     db: Session = Depends(get_db)
 ):
     """Get list of students with their current lesson progress for curator's groups"""
-    if current_user.role != "curator":
+    if current_user.role not in ["curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
     
     from src.schemas.models import CourseGroupAccess, Group
     
     # Get curator's groups
-    curator_groups = db.query(Group).filter(
-        Group.curator_id == current_user.id
-    ).all()
+    if current_user.role == "head_curator":
+        curator_groups = db.query(Group).all()
+    else:
+        curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
     
     if not curator_groups:
         return {"students_progress": []}
@@ -1176,15 +1312,16 @@ async def get_curator_pending_submissions(
     db: Session = Depends(get_db)
 ):
     """Get pending submissions for curator's students"""
-    if current_user.role != "curator":
+    if current_user.role not in ["curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
     
     from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
     
     # Get curator's groups
-    curator_groups = db.query(Group).filter(
-        Group.curator_id == current_user.id
-    ).all()
+    if current_user.role == "head_curator":
+        curator_groups = db.query(Group).all()
+    else:
+        curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
     
     if not curator_groups:
         return {"pending_submissions": []}
@@ -1274,20 +1411,28 @@ async def get_curator_pending_submissions(
 
 @router.get("/curator/recent-submissions")
 async def get_curator_recent_submissions(
+    group_id: Optional[int] = None,
     limit: int = 10,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
     """Get recent submissions for curator's students"""
-    if current_user.role != "curator":
-        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
+    if current_user.role not in ["curator", "head_curator"]:
+        raise HTTPException(status_code=403, detail="Only curators and head curators can access this endpoint")
     
     from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
+    from typing import Optional
     
     # Get curator's groups
-    curator_groups = db.query(Group).filter(
-        Group.curator_id == current_user.id
-    ).all()
+    if current_user.role == "head_curator":
+        curator_groups_query = db.query(Group)
+    else:
+        curator_groups_query = db.query(Group).filter(Group.curator_id == current_user.id)
+        
+    if group_id:
+        curator_groups_query = curator_groups_query.filter(Group.id == group_id)
+    
+    curator_groups = curator_groups_query.all()
     
     if not curator_groups:
         return {"recent_submissions": []}
@@ -1535,13 +1680,19 @@ async def get_curator_homework_by_group(
     Get homework data grouped by curator's groups with detailed student submissions.
     Returns groups with their assignments and student progress.
     """
-    if current_user.role != "curator":
-        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
+    if current_user.role not in ["curator", "head_curator"]:
+        raise HTTPException(status_code=403, detail="Only curators and head curators can access this endpoint")
     
     from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
     
     # Get curator's groups
-    curator_groups_query = db.query(Group).filter(Group.curator_id == current_user.id)
+    if current_user.role == "head_curator":
+        # Head curator sees all groups that have a curator or all active groups? 
+        # Usually they oversee everything.
+        curator_groups_query = db.query(Group)
+    else:
+        curator_groups_query = db.query(Group).filter(Group.curator_id == current_user.id)
+        
     if group_id:
         curator_groups_query = curator_groups_query.filter(Group.id == group_id)
     

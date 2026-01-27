@@ -446,9 +446,9 @@ async def handle_contacts_get(sid, data=None):
                 # Original logic: curators of the group
                 curators = db.query(UserInDB).join(Group, Group.curator_id == UserInDB.id).filter(
                     Group.id.in_(student_group_ids),
-                    UserInDB.role == "curator",
-                    UserInDB.is_active == True
-                ).distinct().all()
+                UserInDB.role.in_(["curator", "head_curator"]),
+                UserInDB.is_active == True
+            ).distinct().all()
                 
                 for curator in curators:
                     available_contacts.append({
@@ -486,7 +486,7 @@ async def handle_contacts_get(sid, data=None):
             ).all()
             
             all_curators = db.query(UserInDB).filter(
-                UserInDB.role == "curator",
+                UserInDB.role.in_(["curator", "head_curator"]),
                 UserInDB.is_active == True
             ).all()
             
@@ -518,8 +518,26 @@ async def handle_contacts_get(sid, data=None):
                     "avatar_url": curator.avatar_url
                 })
         
-        elif current_user.role == "curator":
+        elif current_user.role in ["curator", "head_curator"]:
             # Curators can write to students from their groups
+            if current_user.role == "head_curator":
+                # Head curators can write to all students? Or maybe just like admin?
+                # Let's give them access to everyone to be safe, like admin
+                all_users = db.query(UserInDB).filter(
+                    UserInDB.id != current_user_id,
+                    UserInDB.is_active == True
+                ).all()
+                
+                for user in all_users:
+                    available_contacts.append({
+                        "user_id": user.id,
+                        "name": user.name,
+                        "role": user.role,
+                        "avatar_url": user.avatar_url,
+                        "student_id": user.student_id if user.role == "student" else None
+                    })
+                return {"available_contacts": available_contacts}
+            
             curator_groups = db.query(Group).filter(Group.curator_id == current_user_id).all()
             
             if curator_groups:

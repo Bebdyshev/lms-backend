@@ -331,8 +331,9 @@ def can_grade_assignment(assignment_id: int, user: UserInDB, db: Session) -> boo
 ROLE_HIERARCHY = {
     "student": 1,
     "curator": 2,
-    "teacher": 3,
-    "admin": 4
+    "head_curator": 3,
+    "teacher": 4,
+    "admin": 5
 }
 
 def has_higher_or_equal_role(user_role: str, required_role: str) -> bool:

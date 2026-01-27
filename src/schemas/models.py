@@ -541,7 +541,7 @@ class UserInDB(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=False)
     hashed_password = Column(String, nullable=False)
-    role = Column(String, nullable=False, default="student")  # student, teacher, curator, admin
+    role = Column(String, nullable=False, default="student")  # student, teacher, head_curator, curator, admin
     avatar_url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -1981,6 +1981,65 @@ class LeaderboardEntryCreateSchema(BaseModel):
     self_reflection_journal: Optional[float] = None
     weekly_evaluation: Optional[float] = None
     extra_points: Optional[float] = None
+
+# =============================================================================
+# CURATOR EVALUATION MODELS
+# =============================================================================
+
+class CuratorRating(Base):
+    """Head Curator's manual evaluation of other curators."""
+    __tablename__ = "curator_ratings"
+    id = Column(Integer, primary_key=True, index=True)
+    curator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    head_curator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    week_number = Column(Integer, nullable=False)
+    
+    # Metrics (0-10 scale)
+    professionalism = Column(Float, default=0.0)
+    responsiveness = Column(Float, default=0.0)
+    feedback_quality = Column(Float, default=0.0)
+    retention_rate = Column(Float, default=0.0)
+    
+    extra_points = Column(Float, default=0.0)
+    comment = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    curator = relationship("UserInDB", foreign_keys=[curator_id])
+    head_curator = relationship("UserInDB", foreign_keys=[head_curator_id])
+    
+    __table_args__ = (
+        UniqueConstraint('curator_id', 'week_number', name='uq_curator_rating_week'),
+    )
+
+class CuratorRatingSchema(BaseModel):
+    id: int
+    curator_id: int
+    head_curator_id: int
+    week_number: int
+    professionalism: float
+    responsiveness: float
+    feedback_quality: float
+    retention_rate: float
+    extra_points: float
+    comment: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class CuratorRatingCreateSchema(BaseModel):
+    curator_id: int
+    week_number: int
+    professionalism: Optional[float] = 0.0
+    responsiveness: Optional[float] = 0.0
+    feedback_quality: Optional[float] = 0.0
+    retention_rate: Optional[float] = 0.0
+    extra_points: Optional[float] = 0.0
+    comment: Optional[str] = None
 
 
 # =============================================================================

@@ -28,7 +28,7 @@ class CreateUserRequest(BaseModel):
     email: EmailStr
     name: str
     password: Optional[str] = None  # If not provided, will be auto-generated
-    role: str = "student"  # student, teacher, curator, admin
+    role: str = "student"  # student, teacher, head_curator, curator, admin
     student_id: Optional[str] = None
     is_active: bool = True
     group_ids: Optional[List[int]] = None  # Multiple groups for students

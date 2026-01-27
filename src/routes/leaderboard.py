@@ -21,10 +21,12 @@ async def get_curator_groups(
     db: Session = Depends(get_db)
 ):
     """Get groups managed by average curator"""
-    if current_user.role != "curator":
-        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
-        
-    groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+    if current_user.role == "admin" or current_user.role == "head_curator":
+        groups = db.query(Group).all()
+    elif current_user.role == "curator":
+        groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
+    else:
+        raise HTTPException(status_code=403, detail="Only curators and admins can access this endpoint")
     # We need to return GroupSchema. Since GroupSchema has many fields, we might need to populate them or use a simplified schema.
     # The frontend only uses id and name for the dropdown.
     # But for compatibility, let's use GroupSchema and fill basics.
@@ -58,12 +60,11 @@ async def get_group_leaderboard(
     Get leaderboard data for a specific group and week.
     Supports dynamic LessonSchedule or falls back to legacy 5-lesson logic.
     """
-    # Authorization check
     if current_user.role == "curator":
         group = db.query(Group).filter(Group.id == group_id, Group.curator_id == current_user.id).first()
         if not group:
             raise HTTPException(status_code=403, detail="Access denied to this group")
-    elif current_user.role == "admin":
+    elif current_user.role in ["admin", "head_curator"]:
         pass
     else:
         raise HTTPException(status_code=403, detail="Only curators and admins can access leaderboard")
@@ -252,12 +253,11 @@ async def get_group_leaderboard(
     Get leaderboard data for a specific group and week.
     Calculates homework scores automatically based on week number (5 lessons per week).
     """
-    # Authorization check
     if current_user.role == "curator":
         group = db.query(Group).filter(Group.id == group_id, Group.curator_id == current_user.id).first()
         if not group:
             raise HTTPException(status_code=403, detail="Access denied to this group")
-    elif current_user.role == "admin":
+    elif current_user.role in ["admin", "head_curator"]:
         pass
     else:
         raise HTTPException(status_code=403, detail="Only curators and admins can access leaderboard")
@@ -391,7 +391,6 @@ async def update_leaderboard_entry(
     """
     Update or create a manual leaderboard entry.
     """
-    # Auth check
     if current_user.role == "curator":
          group = db.query(Group).filter(
              Group.id == data.group_id, 
@@ -399,7 +398,7 @@ async def update_leaderboard_entry(
          ).first()
          if not group:
              raise HTTPException(status_code=403, detail="Access denied to this group")
-    elif current_user.role == "admin":
+    elif current_user.role in ["admin", "head_curator"]:
         pass
     else:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -448,7 +447,7 @@ async def update_attendance(
     """
     
     # Auth
-    if current_user.role not in ["curator", "admin"]:
+    if current_user.role not in ["curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
         
     group = db.query(Group).filter(Group.id == data.group_id).first()
