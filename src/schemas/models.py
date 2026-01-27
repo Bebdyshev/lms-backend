@@ -1974,6 +1974,7 @@ class LeaderboardConfig(Base):
     
     # Visibility settings for manual columns
     curator_hour_enabled = Column(Boolean, default=True)
+    curator_hour_date = Column(Date, nullable=True)
     study_buddy_enabled = Column(Boolean, default=True)
     self_reflection_journal_enabled = Column(Boolean, default=True)
     weekly_evaluation_enabled = Column(Boolean, default=True)
@@ -2033,6 +2034,7 @@ class LeaderboardConfigSchema(BaseModel):
     group_id: int
     week_number: int
     curator_hour_enabled: bool
+    curator_hour_date: Optional[date] = None
     study_buddy_enabled: bool
     self_reflection_journal_enabled: bool
     weekly_evaluation_enabled: bool
@@ -2045,6 +2047,7 @@ class LeaderboardConfigUpdateSchema(BaseModel):
     group_id: int
     week_number: int
     curator_hour_enabled: Optional[bool] = None
+    curator_hour_date: Optional[date] = None
     study_buddy_enabled: Optional[bool] = None
     self_reflection_journal_enabled: Optional[bool] = None
     weekly_evaluation_enabled: Optional[bool] = None

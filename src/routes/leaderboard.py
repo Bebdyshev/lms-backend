@@ -81,12 +81,20 @@ async def get_group_leaderboard(
     students_map = {s.id: s for s in students}
 
     # 2. Key logic: Map Week Number to Lesson IDs using LessonSchedule
-    # Try to find schedules for this week
-    schedules = db.query(LessonSchedule).filter(
+    raw_schedules = db.query(LessonSchedule).filter(
         LessonSchedule.group_id == group_id,
         LessonSchedule.week_number == week_number,
         LessonSchedule.is_active == True
     ).order_by(LessonSchedule.scheduled_at).all()
+    
+    # Deduplicate by time signature
+    schedules = []
+    seen_times = set()
+    for s in raw_schedules:
+        time_sig = s.scheduled_at.replace(second=0, microsecond=0)
+        if time_sig not in seen_times:
+            schedules.append(s)
+            seen_times.add(time_sig)
     
     homework_data = {} # {student_id: {schedule_id: score}}
     attendance_data = {} # {student_id: {schedule_id: score}}
@@ -453,19 +461,13 @@ async def get_weekly_lessons_with_hw_status(
     # Default config if not exists
     if not config:
         config_data = {
-            "curator_hour_enabled": True,
-            "study_buddy_enabled": True,
-            "self_reflection_journal_enabled": True,
-            "weekly_evaluation_enabled": True,
-            "extra_points_enabled": True
+            "extra_points_enabled": True,
+            "curator_hour_date": None
         }
     else:
         config_data = {
-            "curator_hour_enabled": config.curator_hour_enabled,
-            "study_buddy_enabled": config.study_buddy_enabled,
-            "self_reflection_journal_enabled": config.self_reflection_journal_enabled,
-            "weekly_evaluation_enabled": config.weekly_evaluation_enabled,
-            "extra_points_enabled": config.extra_points_enabled
+            "extra_points_enabled": config.extra_points_enabled,
+            "curator_hour_date": config.curator_hour_date
         }
 
     # 2. Determine Week Start Date based on first event OR first schedule
@@ -483,87 +485,99 @@ async def get_weekly_lessons_with_hw_status(
     week_end_date = None
     events = []
     mode = "event"
+    seen_times = set()
 
+    # Determine Week 1 Start
+    start_of_week1 = None
     if first_event:
         start_of_week1 = first_event.start_datetime.date()
-        # Align to Monday of that week for cleanliness
+    else:
+        first_sched_any = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == group_id,
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.scheduled_at.asc()).first()
+        if first_sched_any:
+            start_of_week1 = first_sched_any.scheduled_at.date()
+            
+    if start_of_week1:
+        # Align to Monday
         start_of_week1 = start_of_week1 - timedelta(days=start_of_week1.weekday())
-        
         week_start_date = start_of_week1 + timedelta(weeks=week_number - 1)
         week_end_date = week_start_date + timedelta(days=7)
-        
-        # 3. Get Events for this week (Standard + Recurring Expanded)
-        # Old logic only fetched standard events, missing recurring instances!
+    
+        # 3. Get Events for this week
         from src.services.event_service import EventService
+        from src.schemas.models import CourseGroupAccess, EventCourse
         
-        # We need to pass end_date as datetime for the filter
+        course_accesses = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id == group_id,
+            CourseGroupAccess.is_active == True
+        ).all()
+        course_ids = [ca.course_id for ca in course_accesses]
+        
         week_end_dt = datetime.combine(week_end_date, datetime.min.time())
         week_start_dt = datetime.combine(week_start_date, datetime.min.time())
         
-        # Fetch standard events first to replicate old logic base
-        standard_events = db.query(Event).join(EventGroup).filter(
-            EventGroup.group_id == group_id,
+        # Standard events
+        standard_events = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
             Event.event_type == 'class',
             Event.is_active == True,
             Event.start_datetime >= week_start_dt,
             Event.start_datetime < week_end_dt,
-            Event.is_recurring == False 
-        ).order_by(Event.start_datetime).all()
+            Event.is_recurring == False,
+            or_(
+                EventGroup.group_id == group_id,
+                EventCourse.course_id.in_(course_ids)
+            )
+        ).distinct().order_by(Event.start_datetime).all()
         
-        # Fetch recurring instances
-        # Note: expand_recurring_events accepts group_ids list
+        # Recurring events
         recurring_instances = EventService.expand_recurring_events(
             db=db,
             start_date=week_start_dt,
-            end_date=week_end_dt - timedelta(seconds=1), # Exclusive end
-            group_ids=[group_id]
+            end_date=week_end_dt - timedelta(seconds=1),
+            group_ids=[group_id],
+            course_ids=course_ids
         )
-        
-        # Filter recurring for 'class' type just in case service returns all types (it respects parent types)
         recurring_instances = [e for e in recurring_instances if e.event_type == 'class']
         
-        # Deduplication strategy: standard_events (manual) take precedence over recurring instances
-        events = standard_events
-        standard_times = {e.start_datetime for e in standard_events}
-        
+        for e in standard_events:
+            time_sig = e.start_datetime.replace(second=0, microsecond=0)
+            if time_sig not in seen_times:
+                events.append(e)
+                seen_times.add(time_sig)
+                
         for instance in recurring_instances:
-            if instance.start_datetime not in standard_times:
+            time_sig = instance.start_datetime.replace(second=0, microsecond=0)
+            if time_sig not in seen_times:
                 events.append(instance)
-                
-        events.sort(key=lambda x: x.start_datetime)
-        
-    if not events:
-        # FALLBACK: Check for Legacy LessonSchedule
-        schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id == group_id,
-            LessonSchedule.week_number == week_number,
-            LessonSchedule.is_active == True
-        ).order_by(LessonSchedule.scheduled_at).all()
-        
-        if schedules:
-            mode = "schedule"
-            # Calculate mock week dates if not set by event
-            if not week_start_date:
-                # Use first schedule date to approximate week
-                first_sched = schedules[0].scheduled_at.date()
-                week_start_date = first_sched - timedelta(days=first_sched.weekday())
-            
-            # Convert schedules to pseudo-events for consistent structure
-            for sched in schedules:
-                lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
-                pseudo_event = Event(
-                    id=sched.id, # Using schedule ID as pseudo event ID
-                    title=lesson_title,
-                    start_datetime=sched.scheduled_at,
-                    event_type='class' # Mock type
-                )
-                # Attach real lesson ID for HW lookup
-                pseudo_event.lesson_id = sched.lesson_id
-                events.append(pseudo_event)
+                seen_times.add(time_sig)
+    
+    # 4. Merge LessonSchedule for the current week
+    schedules = db.query(LessonSchedule).filter(
+        LessonSchedule.group_id == group_id,
+        LessonSchedule.week_number == week_number,
+        LessonSchedule.is_active == True
+    ).order_by(LessonSchedule.scheduled_at).all()
+    
+    for sched in schedules:
+        time_sig = sched.scheduled_at.replace(second=0, microsecond=0)
+        if time_sig not in seen_times:
+            lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
+            pseudo_event = Event(
+                id=sched.id,
+                title=lesson_title,
+                start_datetime=sched.scheduled_at,
+                event_type='class'
+            )
+            pseudo_event.lesson_id = sched.lesson_id
+            events.append(pseudo_event)
+            seen_times.add(time_sig)
+
+    events.sort(key=lambda x: x.start_datetime)
                 
     if not events:
-         # No data at all
-         return {"week_number": week_number, "week_start": datetime.utcnow(), "lessons": [], "students": []}
+         return {"week_number": week_number, "week_start": week_start_date or datetime.utcnow(), "lessons": [], "students": []}
          
     if not week_start_date:
          week_start_date = datetime.utcnow() # Warning: Should not happen if events exist
@@ -783,7 +797,7 @@ async def get_group_full_attendance_matrix(
             EventGroup.group_id == group_id,
             EventCourse.course_id.in_(course_ids)
         )
-    )
+    ).distinct()
     standard_events = standard_events_query.order_by(Event.start_datetime.asc()).all()
 
     # 4. Expand Recurring Events (Group-linked OR Course-linked)
@@ -803,24 +817,34 @@ async def get_group_full_attendance_matrix(
     recurring_instances = [e for e in recurring_instances if e.event_type == 'class']
 
     # 5. Combine and Deduplicate
-    all_events = standard_events
-    standard_times = {e.start_datetime.replace(second=0, microsecond=0) for e in standard_events}
+    combined_events = []
+    seen_times = set()
     
+    # Process standard events
+    for e in standard_events:
+        time_sig = e.start_datetime.replace(second=0, microsecond=0)
+        if time_sig not in seen_times:
+            combined_events.append(e)
+            seen_times.add(time_sig)
+            
+    # Process recurring instances
     for instance in recurring_instances:
         time_sig = instance.start_datetime.replace(second=0, microsecond=0)
-        if time_sig not in standard_times:
-            all_events.append(instance)
+        if time_sig not in seen_times:
+            combined_events.append(instance)
+            seen_times.add(time_sig)
             
-    all_events.sort(key=lambda x: x.start_datetime)
+    all_events = combined_events
 
-    # 6. Fallback to LessonSchedule if still empty
-    if not all_events:
-        schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id == group_id,
-            LessonSchedule.is_active == True
-        ).order_by(LessonSchedule.scheduled_at).all()
-        
-        for sched in schedules:
+    # 6. Always include LessonSchedule to ensure all intended slots are visible
+    schedules = db.query(LessonSchedule).filter(
+        LessonSchedule.group_id == group_id,
+        LessonSchedule.is_active == True
+    ).order_by(LessonSchedule.scheduled_at).all()
+    
+    for sched in schedules:
+        time_sig = sched.scheduled_at.replace(second=0, microsecond=0)
+        if time_sig not in seen_times:
             lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
             pseudo_event = Event(
                 id=sched.id,
@@ -830,6 +854,11 @@ async def get_group_full_attendance_matrix(
             )
             pseudo_event.lesson_id = sched.lesson_id
             all_events.append(pseudo_event)
+            seen_times.add(time_sig)
+
+    all_events.sort(key=lambda x: x.start_datetime)
+
+    all_events.sort(key=lambda x: x.start_datetime)
 
     # 9. Build Lessons Meta
     lessons_meta = []
@@ -851,7 +880,7 @@ async def get_group_full_attendance_matrix(
     student_ids = [gs.student_id for gs in group_students]
     
     if not student_ids:
-        return {"lessons": lessons_meta, "students": []} # Fixed: Return lessons meta even if no students
+        return {"lessons": lessons_meta, "students": []}
         
     students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
     students_list = sorted(students, key=lambda s: s.name or "")
@@ -864,16 +893,6 @@ async def get_group_full_attendance_matrix(
     ).all()
     # Map (user_id, event_id) -> status
     attendance_map = {(a.user_id, a.event_id): a.registration_status for a in attendances}
-
-    # 9. Build Lessons Meta
-    lessons_meta = []
-    for idx, event in enumerate(all_events):
-        lessons_meta.append({
-            "lesson_number": idx + 1,
-            "event_id": event.id,
-            "title": event.title,
-            "start_datetime": event.start_datetime
-        })
 
     # 10. Build Student Rows
     student_rows = []
@@ -949,6 +968,98 @@ class AttendanceInputSchema(BaseModel):
     score: int
     status: str = "present"
     event_id: Optional[int] = None
+
+class BulkAttendanceInputSchema(BaseModel):
+    updates: List[AttendanceInputSchema]
+
+@router.post("/curator/attendance/bulk")
+async def update_attendance_bulk(
+    data: BulkAttendanceInputSchema,
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Update multiple attendance records in a single transaction.
+    Supports event-based updates (preferred) and legacy schedule-based updates.
+    """
+    if current_user.role not in ["curator", "admin", "teacher"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    from src.schemas.models import EventParticipant, Attendance
+    from src.services.event_service import EventService
+
+    updated_count = 0
+    cached_groups = {} # id -> group_obj
+
+    for item in data.updates:
+        # Auth check
+        if item.group_id not in cached_groups:
+            group = db.query(Group).filter(Group.id == item.group_id).first()
+            if not group: continue
+            
+            # Role-based restriction
+            if current_user.role == "curator" and group.curator_id != current_user.id: continue
+            if current_user.role == "teacher" and group.teacher_id != current_user.id: continue
+            cached_groups[item.group_id] = group
+
+        # Priority: event_id
+        if item.event_id:
+            real_event_id = EventService.resolve_event_id(db, item.event_id)
+            if not real_event_id: continue
+
+            participant = db.query(EventParticipant).filter(
+                EventParticipant.event_id == real_event_id,
+                EventParticipant.user_id == item.student_id
+            ).first()
+
+            status = item.status
+            # Map legacy status if needed or stick to what frontend sends
+            # Logic from single update: "attended" if score > 0 else "absent"
+            # But frontend sends 'attended', 'late', 'missed'
+            
+            if participant:
+                participant.registration_status = status
+                participant.attended_at = datetime.utcnow() if status != 'missed' else None
+            else:
+                participant = EventParticipant(
+                    event_id=real_event_id,
+                    user_id=item.student_id,
+                    registration_status=status,
+                    attended_at=datetime.utcnow() if status != 'missed' else None
+                )
+                db.add(participant)
+            updated_count += 1
+            continue
+
+        # Fallback: Schedule-based (Legacy)
+        schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == item.group_id,
+            LessonSchedule.week_number == item.week_number,
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.scheduled_at).all()
+
+        if schedules and 0 < item.lesson_index <= len(schedules):
+            target_schedule = schedules[item.lesson_index - 1]
+            attendance = db.query(Attendance).filter(
+                Attendance.lesson_schedule_id == target_schedule.id,
+                Attendance.user_id == item.student_id
+            ).first()
+
+            if attendance:
+                attendance.score = item.score
+                attendance.status = item.status
+            else:
+                attendance = Attendance(
+                    lesson_schedule_id=target_schedule.id,
+                    user_id=item.student_id,
+                    score=item.score,
+                    status=item.status
+                )
+                db.add(attendance)
+            updated_count += 1
+
+    db.commit()
+    return {"status": "success", "updated_count": updated_count}
 
 @router.post("/curator/attendance")
 async def update_attendance(
