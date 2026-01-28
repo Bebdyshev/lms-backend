@@ -536,7 +536,7 @@ async def generate_schedule(
     Iteratively finds lessons in the course and schedules them.
     Also creates GroupAssignment records for automated homework tracking.
     """
-    if current_user.role not in ["curator", "admin"]:
+    if current_user.role not in ["curator", "admin", "head_curator"]:
        raise HTTPException(status_code=403, detail="Access denied")
 
     # Fetch group and course
@@ -648,7 +648,7 @@ async def get_student_ranking(
     Perfect for competitive students who want to flex 💪
     """
     
-    if current_user.role not in ['student', 'admin']:
+    if current_user.role not in ['student', 'admin', 'head_curator']:
         raise HTTPException(status_code=403, detail="This endpoint is for students only")
     
     # Find user's group

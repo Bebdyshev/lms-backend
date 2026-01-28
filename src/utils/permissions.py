@@ -30,10 +30,10 @@ def require_teacher_or_admin():
 def require_teacher_or_admin_for_groups():
     """Require teacher or admin role for group operations"""
     def group_access_checker(current_user: UserInDB = Depends(get_current_user_dependency)):
-        if current_user.role not in ["teacher", "admin"]:
+        if current_user.role not in ["teacher", "admin", "head_curator"]:
             raise HTTPException(
                 status_code=403, 
-                detail="Access denied. Only teachers and admins can manage groups."
+                detail="Access denied. Only teachers, head curators, and admins can access groups."
             )
         return current_user
     return group_access_checker
@@ -43,8 +43,8 @@ def require_curator_or_admin():
     return require_role(["curator", "admin"])
 
 def require_teacher_curator_or_admin():
-    """Require teacher, curator or admin role"""
-    return require_role(["teacher", "curator", "admin"])
+    """Require teacher, curator or admin role (includes head_curator)"""
+    return require_role(["teacher", "curator", "admin", "head_curator"])
 
 def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
     """
@@ -54,7 +54,7 @@ def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
     - Curators: if they have access to students in the course
     - Admins: always
     """
-    if user.role == "admin":
+    if user.role in ["admin", "head_curator"]:
         return True
     
     # Get course
@@ -159,7 +159,7 @@ def check_student_access(student_id: int, user: UserInDB, db: Session) -> bool:
     - Curators: only assigned students
     - Admins: all students
     """
-    if user.role == "admin":
+    if user.role in ["admin", "head_curator"]:
         return True
     
     if user.role == "student":
@@ -261,7 +261,11 @@ def check_group_access(group_id: int, user: UserInDB, db: Session) -> bool:
     
     elif user.role == "curator":
         # Curators can access their assigned groups
-        return user.group_id == group_id
+        return group.curator_id == user.id
+    
+    elif user.role == "head_curator":
+        # Head curators can access all groups
+        return True
     
     return False
 

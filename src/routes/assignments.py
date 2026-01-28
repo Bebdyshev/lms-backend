@@ -1003,7 +1003,7 @@ async def grade_submission(
 ):
     """Grade a submission (teachers, curators, and admins)"""
     # Check role
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only teachers, curators, and admins can grade submissions")
     
     # Check if assignment exists
@@ -1246,7 +1246,7 @@ async def get_assignment_student_progress(
     db: Session = Depends(get_db)
 ):
     """Get student progress for an assignment (teachers, admins, and curators)"""
-    if current_user.role not in ["teacher", "admin", "curator"]:
+    if current_user.role not in ["teacher", "admin", "curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only teachers, admins, and curators can access student progress")
     
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()

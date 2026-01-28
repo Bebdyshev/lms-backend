@@ -18,6 +18,7 @@ router = APIRouter()
 
 @router.get("/stats", response_model=DashboardStatsSchema)
 async def get_dashboard_stats(
+    group_id: Optional[int] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
@@ -32,7 +33,7 @@ async def get_dashboard_stats(
     elif current_user.role == "curator":
         return get_curator_dashboard_stats(current_user, db)
     elif current_user.role == "head_curator":
-        return get_head_curator_dashboard_stats(current_user, db)
+        return get_head_curator_dashboard_stats(current_user, db, group_id)
     elif current_user.role == "admin":
         return get_admin_dashboard_stats(current_user, db)
     else:
@@ -438,29 +439,132 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         recent_courses=students_with_progress[:6]  # Show recent student activity instead of courses
     )
 
-def get_head_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+def get_head_curator_dashboard_stats(user: UserInDB, db: Session, group_id: Optional[int] = None) -> DashboardStatsSchema:
     """Get dashboard stats for Head of Curators"""
     from src.schemas.models import Group, Assignment, AssignmentSubmission, GroupStudent, GroupAssignment, StepProgress
     from sqlalchemy.orm import aliased
     
     # 1. Сводная статистика
     total_curators = db.query(UserInDB).filter(UserInDB.role == "curator", UserInDB.is_active == True).count()
-    total_groups = db.query(Group).filter(Group.is_active == True).count()
-    total_students = db.query(UserInDB).filter(UserInDB.role == "student", UserInDB.is_active == True).count()
     
-    # Активные студенты за 24 часа
-    one_day_ago = datetime.utcnow() - timedelta(days=1)
-    active_students_24h = db.query(func.count(func.distinct(StepProgress.user_id))).filter(
-        StepProgress.visited_at >= one_day_ago
-    ).scalar() or 0
+    # Base query for groups
+    group_query = db.query(Group).filter(Group.is_active == True)
+    if group_id:
+        group_query = group_query.filter(Group.id == group_id)
     
-    # 2. Детальная статистика по кураторам
+    current_groups = group_query.all()
+    total_groups = len(current_groups)
+    current_group_ids = [g.id for g in current_groups]
+    
+    # Base query for students
+    student_query = db.query(UserInDB).filter(UserInDB.role == "student", UserInDB.is_active == True)
+    if group_id:
+        student_query = student_query.join(GroupStudent, UserInDB.id == GroupStudent.student_id).filter(GroupStudent.group_id == group_id)
+    
+    current_students = student_query.all()
+    total_students = len(current_students)
+    current_student_ids = [s.id for s in current_students]
+    
+    # Активность за 7 дней (Active criteria: activity in last 7 days)
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    
+    # Count active vs inactive students
+    active_student_ids_set = set()
+    if current_student_ids:
+        # Step progress activity
+        active_steps = db.query(StepProgress.user_id).filter(
+            StepProgress.user_id.in_(current_student_ids),
+            StepProgress.visited_at >= seven_days_ago
+        ).distinct().all()
+        for s in active_steps: active_student_ids_set.add(s[0])
+        
+        # Assignment submission activity
+        active_submissions = db.query(AssignmentSubmission.user_id).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.submitted_at >= seven_days_ago,
+            AssignmentSubmission.is_hidden == False
+        ).distinct().all()
+        for s in active_submissions: active_student_ids_set.add(s[0])
+
+    total_active_students = len(active_student_ids_set)
+    total_inactive_students = total_students - total_active_students
+    
+    # 2. Global stats for KPIs (includes all groups, not just those with curators)
+    total_overdue_global = 0
+    total_pending_global = 0
+    
+    if current_group_ids and current_student_ids:
+        # --- 1. From GroupAssignment (Lesson-based assignments assigned to groups) ---
+        unsubmitted_ga = db.query(GroupAssignment, GroupStudent).join(
+            GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
+        ).filter(
+            GroupAssignment.group_id.in_(current_group_ids),
+            GroupAssignment.due_date < datetime.utcnow(),
+            GroupAssignment.is_active == True,
+            GroupStudent.student_id.in_(current_student_ids),
+            ~db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
+                AssignmentSubmission.user_id == GroupStudent.student_id,
+                AssignmentSubmission.is_hidden == False
+            ).exists()
+        ).count()
+        
+        late_ga = db.query(AssignmentSubmission).join(
+            GroupAssignment, AssignmentSubmission.assignment_id == GroupAssignment.assignment_id
+        ).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.submitted_at > GroupAssignment.due_date,
+            GroupAssignment.group_id.in_(current_group_ids),
+            AssignmentSubmission.is_hidden == False
+        ).count()
+
+        # --- 2. From Assignment directly (Group-specific assignments) ---
+        unsubmitted_direct = db.query(Assignment, GroupStudent).join(
+            GroupStudent, Assignment.group_id == GroupStudent.group_id
+        ).filter(
+            Assignment.group_id.in_(current_group_ids),
+            Assignment.due_date < datetime.utcnow(),
+            Assignment.is_active == True,
+            Assignment.is_hidden == False,
+            GroupStudent.student_id.in_(current_student_ids),
+            ~db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == Assignment.id,
+                AssignmentSubmission.user_id == GroupStudent.student_id,
+                AssignmentSubmission.is_hidden == False
+            ).exists()
+        ).count()
+        
+        late_direct = db.query(AssignmentSubmission).join(
+            Assignment, AssignmentSubmission.assignment_id == Assignment.id
+        ).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.submitted_at > Assignment.due_date,
+            Assignment.group_id.in_(current_group_ids),
+            Assignment.is_active == True,
+            Assignment.is_hidden == False,
+            AssignmentSubmission.is_hidden == False
+        ).count()
+        
+        total_overdue_global = unsubmitted_ga + late_ga + unsubmitted_direct + late_direct
+        
+        # Global Pending Grading
+        total_pending_global = db.query(AssignmentSubmission).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.is_graded == False,
+            AssignmentSubmission.is_hidden == False
+        ).count()
+
+    # 3. Детальная статистика по кураторам
     curators = db.query(UserInDB).filter(UserInDB.role == "curator", UserInDB.is_active == True).all()
     curator_performance = []
     
     for curator in curators:
         # Группы куратора
-        c_groups = db.query(Group).filter(Group.curator_id == curator.id, Group.is_active == True).all()
+        c_groups_query = db.query(Group).filter(Group.curator_id == curator.id, Group.is_active == True)
+        if group_id:
+            c_groups_query = c_groups_query.filter(Group.id == group_id)
+        
+        c_groups = c_groups_query.all()
         c_group_ids = [g.id for g in c_groups]
         
         # Студенты куратора
@@ -471,28 +575,66 @@ def get_head_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardSt
         pending_grading = 0
         
         if c_student_ids:
-            # Средний прогресс
+            # Средний прогресс (за все время, так как это статус завершенности)
             progress_records = db.query(StudentProgress).filter(StudentProgress.user_id.in_(c_student_ids)).all()
             if progress_records:
                 avg_progress = sum(p.completion_percentage for p in progress_records) / len(progress_records)
             
             # Просроченные задания (Overdue)
-            if c_group_ids:
-                overdue_count = db.query(GroupAssignment, GroupStudent).join(
-                    GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
-                ).filter(
-                    GroupAssignment.group_id.in_(c_group_ids),
-                    GroupAssignment.due_date < datetime.utcnow(),
-                    GroupAssignment.is_active == True,
-                    GroupStudent.student_id.in_(c_student_ids),
-                    ~db.query(AssignmentSubmission).filter(
-                        AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
-                        AssignmentSubmission.user_id == GroupStudent.student_id,
-                        AssignmentSubmission.is_hidden == False
-                    ).exists()
-                ).count()
+            # 1. Lesson assignments via GroupAssignment
+            unsubmitted_ga = db.query(GroupAssignment, GroupStudent).join(
+                GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
+            ).filter(
+                GroupAssignment.group_id.in_(c_group_ids),
+                GroupAssignment.due_date < datetime.utcnow(),
+                GroupAssignment.is_active == True,
+                GroupStudent.student_id.in_(c_student_ids),
+                ~db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
+                    AssignmentSubmission.user_id == GroupStudent.student_id,
+                    AssignmentSubmission.is_hidden == False
+                ).exists()
+            ).count()
             
-            # Ожидают проверки (только для заданий, требующих оценки)
+            late_ga = db.query(AssignmentSubmission).join(
+                GroupAssignment, AssignmentSubmission.assignment_id == GroupAssignment.assignment_id
+            ).filter(
+                AssignmentSubmission.user_id.in_(c_student_ids),
+                AssignmentSubmission.submitted_at > GroupAssignment.due_date,
+                GroupAssignment.group_id.in_(c_group_ids),
+                AssignmentSubmission.is_hidden == False
+            ).count()
+
+            # 2. Group-specific assignments directly in Assignment table
+            unsubmitted_direct = db.query(Assignment, GroupStudent).join(
+                GroupStudent, Assignment.group_id == GroupStudent.group_id
+            ).filter(
+                Assignment.group_id.in_(c_group_ids),
+                Assignment.due_date < datetime.utcnow(),
+                Assignment.is_active == True,
+                Assignment.is_hidden == False,
+                GroupStudent.student_id.in_(c_student_ids),
+                ~db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == Assignment.id,
+                    AssignmentSubmission.user_id == GroupStudent.student_id,
+                    AssignmentSubmission.is_hidden == False
+                ).exists()
+            ).count()
+            
+            late_direct = db.query(AssignmentSubmission).join(
+                Assignment, AssignmentSubmission.assignment_id == Assignment.id
+            ).filter(
+                AssignmentSubmission.user_id.in_(c_student_ids),
+                AssignmentSubmission.submitted_at > Assignment.due_date,
+                Assignment.group_id.in_(c_group_ids),
+                Assignment.is_active == True,
+                Assignment.is_hidden == False,
+                AssignmentSubmission.is_hidden == False
+            ).count()
+            
+            overdue_count = unsubmitted_ga + late_ga + unsubmitted_direct + late_direct
+            
+            # Ожидают проверки (все активные, так как их нужно проверить)
             pending_grading = db.query(AssignmentSubmission).filter(
                 AssignmentSubmission.user_id.in_(c_student_ids),
                 AssignmentSubmission.is_graded == False,
@@ -509,49 +651,92 @@ def get_head_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardSt
             "pending_grading": pending_grading
         })
 
-    # 3. Активность за 14 дней (Engagement Trends)
+    # 4. Активность за 14 дней (Engagement Trends in PERCENTAGE)
     activity_trends = []
     for i in range(13, -1, -1):
         day = (datetime.utcnow() - timedelta(days=i)).date()
-        count = db.query(StepProgress).filter(
+        # Count unique students active on that day
+        day_active_count = db.query(func.count(func.distinct(StepProgress.user_id))).filter(
             func.date(StepProgress.visited_at) == day,
-            StepProgress.status == "completed"
-        ).count()
+            StepProgress.user_id.in_(current_student_ids) if current_student_ids else False
+        ).scalar() or 0
+        
+        percentage = round((day_active_count / total_students) * 100, 1) if total_students > 0 else 0
         activity_trends.append({
             "date": day.isoformat(),
-            "count": count
+            "count": day_active_count,
+            "percentage": percentage
         })
 
-    # 4. Проблемные группы (At-Risk Groups) - с наибольшим числом просрочек
     at_risk_groups = []
-    if total_groups > 0:
-        CuratorAlias = aliased(UserInDB)
-        group_overdue = db.query(
-            Group.id, Group.name, CuratorAlias.name.label("curator_name"), func.count(GroupAssignment.id).label("overdue_count")
-        ).join(
-            GroupAssignment, Group.id == GroupAssignment.group_id
-        ).join(
-            GroupStudent, Group.id == GroupStudent.group_id
-        ).join(
-            CuratorAlias, Group.curator_id == CuratorAlias.id
-        ).filter(
-            GroupAssignment.due_date < datetime.utcnow(),
-            GroupAssignment.is_active == True,
-            ~db.query(AssignmentSubmission).filter(
-                AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
-                AssignmentSubmission.user_id == GroupStudent.student_id,
+    if current_group_ids:
+        # Calculate overdue per group (including both GA and Direct)
+        temp_group_overdue = {}
+        for gid in current_group_ids:
+            # 1. GA source
+            u_ga = db.query(GroupAssignment, GroupStudent).join(
+                GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
+            ).filter(
+                GroupAssignment.group_id == gid,
+                GroupAssignment.due_date < datetime.utcnow(),
+                GroupAssignment.is_active == True,
+                ~db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
+                    AssignmentSubmission.user_id == GroupStudent.student_id,
+                    AssignmentSubmission.is_hidden == False
+                ).exists()
+            ).count()
+            
+            l_ga = db.query(AssignmentSubmission).join(
+                GroupAssignment, AssignmentSubmission.assignment_id == GroupAssignment.assignment_id
+            ).filter(
+                GroupAssignment.group_id == gid,
+                AssignmentSubmission.submitted_at > GroupAssignment.due_date,
                 AssignmentSubmission.is_hidden == False
-            ).exists()
-        ).group_by(Group.id, Group.name, CuratorAlias.name).order_by(desc("overdue_count")).limit(10).all()
-        
-        for g in group_overdue:
-            at_risk_groups.append({
-                "id": g.id,
-                "title": g.name,
-                "curator": g.curator_name,
-                "overdue_count": g.overdue_count,
-                "status": "critical" if g.overdue_count > 5 else "warning"
-            })
+            ).count()
+            
+            # 2. Direct source
+            u_direct = db.query(Assignment, GroupStudent).join(
+                GroupStudent, Assignment.group_id == GroupStudent.group_id
+            ).filter(
+                Assignment.group_id == gid,
+                Assignment.due_date < datetime.utcnow(),
+                Assignment.is_active == True,
+                Assignment.is_hidden == False,
+                ~db.query(AssignmentSubmission).filter(
+                    AssignmentSubmission.assignment_id == Assignment.id,
+                    AssignmentSubmission.user_id == GroupStudent.student_id,
+                    AssignmentSubmission.is_hidden == False
+                ).exists()
+            ).count()
+            
+            l_direct = db.query(AssignmentSubmission).join(
+                Assignment, AssignmentSubmission.assignment_id == Assignment.id
+            ).filter(
+                Assignment.group_id == gid,
+                AssignmentSubmission.submitted_at > Assignment.due_date,
+                Assignment.is_active == True,
+                Assignment.is_hidden == False,
+                AssignmentSubmission.is_hidden == False
+            ).count()
+            
+            total = u_ga + l_ga + u_direct + l_direct
+            if total > 0:
+                temp_group_overdue[gid] = total
+
+        if temp_group_overdue:
+            # Sort and pick top 10
+            sorted_gids = sorted(temp_group_overdue.keys(), key=lambda x: temp_group_overdue[x], reverse=True)[:10]
+            for gid in sorted_gids:
+                group = db.query(Group).filter(Group.id == gid).first()
+                curator = db.query(UserInDB).filter(UserInDB.id == group.curator_id).first() if group.curator_id else None
+                at_risk_groups.append({
+                    "id": gid,
+                    "title": group.name,
+                    "curator": curator.name if curator else "No Curator",
+                    "overdue_count": temp_group_overdue[gid],
+                    "status": "critical" if temp_group_overdue[gid] > 5 else "warning"
+                })
 
     return DashboardStatsSchema(
         user={
@@ -564,7 +749,10 @@ def get_head_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardSt
             "total_curators": total_curators,
             "total_groups": total_groups,
             "total_students": total_students,
-            "active_students_24h": active_students_24h,
+            "active_students_7d": total_active_students,
+            "inactive_students": total_inactive_students,
+            "total_overdue": total_overdue_global,
+            "total_pending": total_pending_global,
             "curator_performance": curator_performance,
             "activity_trends": activity_trends
         },

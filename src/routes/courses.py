@@ -470,8 +470,8 @@ async def get_course_modules(
     # Determine target user for progress
     target_user_id = current_user.id
     if student_id:
-        if current_user.role not in ["teacher", "admin"]:
-            raise HTTPException(status_code=403, detail="Only teachers and admins can view other students' progress")
+        if current_user.role not in ["teacher", "admin", "head_curator"]:
+            raise HTTPException(status_code=403, detail="Only teachers, admins, and head curators can view other students' progress")
         target_user_id = student_id
     
     # Only fetch progress if target user is a student (or we are viewing as student)

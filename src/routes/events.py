@@ -748,7 +748,7 @@ async def create_curator_event(
     """Create a new event as curator for managed groups"""
     
     # Only curators and admins can create events
-    if current_user.role not in ["curator", "admin"]:
+    if current_user.role not in ["curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only curators and admins can create events")
     
     # Validate event type

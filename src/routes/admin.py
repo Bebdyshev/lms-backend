@@ -199,7 +199,8 @@ async def create_single_user(
             hashed_password=hash_password(password),
             role=user_data.role,
             student_id=student_id,
-            is_active=user_data.is_active
+            is_active=user_data.is_active,
+            onboarding_completed=user_data.role != 'student'
         )
         
         db.add(new_user)
@@ -420,7 +421,8 @@ async def create_bulk_users_from_text(
                 hashed_password=hash_password(password) if password else hash_password(generate_password()),
                 role=request.role,
                 student_id=student_id,
-                is_active=True
+                is_active=True,
+                onboarding_completed=request.role != 'student'
             )
             
             db.add(new_user)
@@ -680,10 +682,10 @@ async def get_all_groups(
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_teacher_or_admin_for_groups())
 ):
-    """Get all groups (teachers and admins only)"""
+    """Get all groups (teachers, head curators and admins)"""
     query = db.query(Group)
     
-    # Teachers can only see their own groups, admins can see all
+    # Teachers can only see their own groups, admins and head curators can see all
     if current_user.role == "teacher":
         query = query.filter(Group.teacher_id == current_user.id)
     elif teacher_id is not None:

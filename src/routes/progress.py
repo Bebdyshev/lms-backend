@@ -463,7 +463,7 @@ async def get_students_progress(
 ):
     """Получить прогресс всех студентов (для учителей/кураторов/админов)"""
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Формируем запрос студентов в зависимости от роли
@@ -1324,7 +1324,7 @@ async def get_course_students_steps_progress(
 ):
     """Получить прогресс всех студентов по шагам курса (для учителей/кураторов/админов)"""
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Проверяем существование курса
@@ -1747,7 +1747,7 @@ async def grade_quiz_attempt(
     db: Session = Depends(get_db)
 ):
     """Grade a quiz attempt (for manual grading)"""
-    if current_user.role not in ["teacher", "admin", "curator"]:
+    if current_user.role not in ["teacher", "admin", "curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
         
     attempt = db.query(QuizAttempt).filter(QuizAttempt.id == attempt_id).first()
@@ -1843,7 +1843,7 @@ async def get_course_quiz_analytics(
     db: Session = Depends(get_db)
 ):
     """Получить аналитику по квизам для курса (для учителей/админов)"""
-    if current_user.role not in ["teacher", "admin", "curator"]:
+    if current_user.role not in ["teacher", "admin", "curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only teachers, curators and admins can access quiz analytics")
     
     # Get course to verify access
@@ -1916,7 +1916,7 @@ async def get_student_quiz_analytics(
     db: Session = Depends(get_db)
 ):
     """Получить аналитику по квизам для конкретного студента (для учителей/админов)"""
-    if current_user.role not in ["teacher", "admin", "curator"]:
+    if current_user.role not in ["teacher", "admin", "curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Only teachers, curators and admins can access student analytics")
     
     # Build query
@@ -2079,7 +2079,7 @@ async def get_ungraded_attempts(
     graded: Optional[bool] = None  # None = ungraded only (default), True = graded only, False = ungraded only
 ):
     """Get quiz attempts for teachers/admins. By default returns ungraded only."""
-    if current_user.role not in ["teacher", "admin", "curator"]:
+    if current_user.role not in ["teacher", "admin", "curator", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     query = db.query(QuizAttempt)

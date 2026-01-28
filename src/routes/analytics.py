@@ -35,7 +35,7 @@ async def get_detailed_student_analytics(
     """Get comprehensive analytics for a specific student"""
     
     # Check permissions
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify student exists
@@ -171,7 +171,7 @@ async def get_course_analytics_overview(
 ):
     """Get analytics overview for a specific course"""
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Check course access (now properly validates curator access via group students)
@@ -703,7 +703,7 @@ async def get_video_engagement_analytics(
 ):
     """Get video engagement analytics for a course"""
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Properly validate access including curator permissions
@@ -758,7 +758,7 @@ async def get_quiz_performance_analytics(
 ):
     """Get quiz performance analytics for a course"""
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Properly validate access including curator permissions
@@ -876,7 +876,7 @@ async def get_quiz_question_errors(
     Helps teachers identify difficult questions students struggle with.
     """
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     if not check_course_access(course_id, current_user, db):
@@ -893,7 +893,7 @@ async def get_quiz_question_errors(
         query = query.filter(QuizAttempt.lesson_id == lesson_id)
 
     # Role-based filtering (Teacher/Curator should only see their own groups if no specific group is selected)
-    if not group_id and current_user.role != "admin":
+    if not group_id and current_user.role not in ["admin", "head_curator"]:
         if current_user.role == "teacher":
             # Teacher's groups or courses they teach
             teacher_groups = db.query(Group.id).filter(Group.teacher_id == current_user.id).subquery()
@@ -1155,7 +1155,7 @@ async def get_all_students_analytics(
     """
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Базовый запрос студентов
@@ -1354,7 +1354,7 @@ async def get_groups_analytics(
     """Получить аналитику по всем доступным группам"""
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Базовый запрос групп
@@ -1491,7 +1491,7 @@ async def get_course_groups_analytics(
 ):
     """Get analytics for groups in a specific course"""
     
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Check course access
@@ -1618,7 +1618,7 @@ async def get_group_students_analytics(
     """
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Проверяем доступ к группе
@@ -1812,7 +1812,7 @@ async def get_student_progress_history(
     """Получить историю прогресса студента"""
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Проверяем доступ к студенту (аналогично другим эндпоинтам)
@@ -2026,7 +2026,7 @@ async def export_student_report(
     """Экспорт PDF отчета по студенту"""
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Получаем данные студента (используем существующий эндпоинт)
@@ -2070,7 +2070,7 @@ async def export_group_report(
     """Экспорт PDF отчета по группе"""
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     try:
@@ -2194,7 +2194,7 @@ async def export_all_students_report(
     """Экспорт PDF отчета по всем доступным студентам"""
     
     # Проверка прав доступа
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     try:
@@ -2515,7 +2515,7 @@ async def get_student_detailed_progress(
     """
     
     # Check role-based access
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate student access (now properly checks curator permissions)
@@ -2853,7 +2853,7 @@ async def get_student_learning_path(
     """
     
     # Check role-based access
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Validate student access (now properly checks curator permissions)
@@ -2939,7 +2939,7 @@ async def export_analytics_to_excel(
     """
     
     # Check permissions
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Check course access
@@ -3413,7 +3413,7 @@ async def get_student_sat_scores(
     """Get SAT scores for a student from external platform"""
     
     # Check permissions
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Verify student exists
@@ -3490,7 +3490,7 @@ async def get_course_progress_history(
     Get cumulative progress history for the course (all time).
     Optionally filtered by group.
     """
-    if current_user.role not in ["teacher", "curator", "admin"]:
+    if current_user.role not in ["teacher", "curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
     # 1. Determine the set of student IDs to consider
