@@ -1944,6 +1944,27 @@ class LeaderboardEntry(Base):
         UniqueConstraint('user_id', 'group_id', 'week_number', name='uq_leaderboard_entry'),
     )
 
+
+class LeaderboardConfig(Base):
+    __tablename__ = "leaderboard_configs"
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    week_number = Column(Integer, nullable=False)
+    
+    curator_hour_enabled = Column(Boolean, default=True)
+    study_buddy_enabled = Column(Boolean, default=True)
+    self_reflection_journal_enabled = Column(Boolean, default=True)
+    weekly_evaluation_enabled = Column(Boolean, default=True)
+    extra_points_enabled = Column(Boolean, default=True)
+    curator_hour_date = Column(Date, nullable=True) # ISO Date string or custom format
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('group_id', 'week_number', name='uq_leaderboard_config'),
+    )
+
 class LeaderboardEntrySchema(BaseModel):
     id: int
     user_id: int
@@ -1981,6 +2002,34 @@ class LeaderboardEntryCreateSchema(BaseModel):
     self_reflection_journal: Optional[float] = None
     weekly_evaluation: Optional[float] = None
     extra_points: Optional[float] = None
+
+
+class LeaderboardConfigSchema(BaseModel):
+    id: int
+    group_id: int
+    week_number: int
+    curator_hour_enabled: bool
+    study_buddy_enabled: bool
+    self_reflection_journal_enabled: bool
+    weekly_evaluation_enabled: bool
+    extra_points_enabled: bool
+    curator_hour_date: Optional[date] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class LeaderboardConfigUpdateSchema(BaseModel):
+    group_id: int
+    week_number: int
+    curator_hour_enabled: Optional[bool] = None
+    study_buddy_enabled: Optional[bool] = None
+    self_reflection_journal_enabled: Optional[bool] = None
+    weekly_evaluation_enabled: Optional[bool] = None
+    extra_points_enabled: Optional[bool] = None
+    curator_hour_date: Optional[date] = None
 
 # =============================================================================
 # CURATOR EVALUATION MODELS
