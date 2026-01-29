@@ -232,8 +232,16 @@ async def get_my_events(
     for event in events:
         event_data = EventSchema.from_orm(event)
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
-        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+        group_names = [eg.group.name for eg in event.event_groups if eg.group]
+        event_data.groups = group_names
         event_data.participant_count = count_map.get(event.id, 0)
+        
+        # Ensure title includes group name if it's a class and title is generic
+        if event.event_type == "class" and group_names:
+            main_group = group_names[0]
+            if not event.title.startswith(main_group):
+                event_data.title = f"{main_group}: {event.title}"
+                
         result.append(event_data)
         
     # Add Lesson Schedules (Planned) if no real event exists
@@ -290,7 +298,9 @@ async def get_my_events(
                 continue # Skip, real event exists
                 
             virtual_id = 2000000000 + sched.id 
-            title = f"Plan: {sched.lesson.title}" if sched.lesson else f"Plan: Lesson {sched.week_number}"
+            item_title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            group_name = sched.group.name if sched.group else "Group"
+            title = f"{group_name}: {item_title}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             result.append(EventSchema(
@@ -515,7 +525,9 @@ async def get_calendar_events(
             # Use negative ID or large offset to distinguish
             virtual_id = 2000000000 + sched.id 
             
-            title = f"Plan: {sched.lesson.title}" if sched.lesson else f"Plan: Lesson {sched.week_number}"
+            item_title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            group_name = sched.group.name if sched.group else "Group"
+            title = f"{group_name}: {item_title}"
             
             # Duration default 1.5 hours?
             end_dt = sched.scheduled_at + timedelta(minutes=90)
@@ -552,15 +564,20 @@ async def get_calendar_events(
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
         
         # Add group names
-        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+        group_names = [eg.group.name for eg in event.event_groups if eg.group]
+        event_data.groups = group_names
         
         # Add group IDs - CRITICAL for frontend filtering
         event_data.group_ids = [eg.group_id for eg in event.event_groups]
         
         # Add participant count
-        # For virtual events, we assume 0 or fetch from parent? 
-        # Participants are usually per-instance. Virtual instances have no participants yet.
         event_data.participant_count = count_map.get(event.id, 0)
+        
+        # Ensure title includes group name
+        if event.event_type == "class" and group_names:
+            main_group = group_names[0]
+            if not event.title.startswith(main_group):
+                event_data.title = f"{main_group}: {event.title}"
         
         result.append(event_data)
     
@@ -797,11 +814,14 @@ async def get_upcoming_events(
                 continue
 
             lesson_event_id = 2000000000 + sched.id
+            item_title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            group_name = sched.group.name if sched.group else "Group"
+            title = f"{group_name}: {item_title}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             lesson_event = EventSchema(
                 id=lesson_event_id,
-                title=f"Plan: {sched.lesson.title}" if sched.lesson else f"Plan: Lesson {sched.week_number}",
+                title=title,
                 description=f"Planned topic for group {sched.group.name}",
                 event_type="class",
                 start_datetime=sched.scheduled_at,

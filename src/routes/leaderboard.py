@@ -1510,7 +1510,7 @@ async def generate_schedule(
         
         # Create Recurring Event
         event = Event(
-            title="Online Class",
+            title=f"{group.name}: Online Class",
             description="Regular scheduled class via Zoom",
             event_type="class",
             start_datetime=start_dt,

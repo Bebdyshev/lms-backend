@@ -961,10 +961,14 @@ def parse_date(date_str: str) -> Optional[date]:
         return datetime.strptime(date_str.strip(), "%B %d %Y").date()
     except ValueError:
         try:
-             # Try other common formats
-             return datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
-        except:
-             return None
+             # Try DD.MM.YYYY format
+             return datetime.strptime(date_str.strip(), "%d.%m.%Y").date()
+        except ValueError:
+            try:
+                 # Try other common formats
+                 return datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+            except:
+                 return None
 
 def parse_shorthand_python(text: str) -> List[dict]:
     day_map = {
@@ -1011,8 +1015,8 @@ async def bulk_schedule_upload(
             continue
             
         parts = line.split('\t')
-        if len(parts) < 6:
-            failed_lines.append({"line_num": i+1, "error": f"Invalid format, expected 6 parts, got {len(parts)}"})
+        if len(parts) < 7:
+            failed_lines.append({"line_num": i+1, "error": f"Invalid format, expected 7 parts, got {len(parts)}"})
             continue
             
         try:
@@ -1022,21 +1026,28 @@ async def bulk_schedule_upload(
             course_info = parts[3].strip()
             lessons_count_str = parts[4].strip()
             shorthand = parts[5].strip()
+            end_date_str = parts[6].strip()
             
-            # 1. Parse Date
+            # 1. Parse Start Date
             start_date = parse_date(start_date_str)
             if not start_date:
-                failed_lines.append({"line_num": i+1, "error": f"Failed to parse date: {start_date_str}"})
+                failed_lines.append({"line_num": i+1, "error": f"Failed to parse start date: {start_date_str}"})
                 continue
                 
-            # 2. Parse Lessons Count
+            # 2. Parse End Date
+            end_date = parse_date(end_date_str)
+            if not end_date:
+                failed_lines.append({"line_num": i+1, "error": f"Failed to parse end date: {end_date_str}"})
+                continue
+                
+            # 3. Parse Lessons Count
             try:
                 lessons_count = int(lessons_count_str)
             except ValueError:
                 failed_lines.append({"line_num": i+1, "error": f"Invalid lessons count: {lessons_count_str}"})
                 continue
                 
-            # 3. Find Teacher (Case-insensitive)
+            # 3. Find or Create Teacher (Case-insensitive)
             teacher = db.query(UserInDB).filter(
                 func.lower(UserInDB.name) == teacher_name.lower(),
                 UserInDB.role == "teacher"
@@ -1045,10 +1056,23 @@ async def bulk_schedule_upload(
                 # Try all roles if not found among teachers
                 teacher = db.query(UserInDB).filter(func.lower(UserInDB.name) == teacher_name.lower()).first()
             if not teacher:
-                failed_lines.append({"line_num": i+1, "error": f"Teacher not found: {teacher_name}"})
-                continue
+                # Auto-create teacher if not found
+                import string
+                import secrets
+                teacher_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+                teacher_email = f"{teacher_name.lower().replace(' ', '.')}@auto.created"
                 
-            # 4. Find Student
+                teacher = UserInDB(
+                    name=teacher_name,
+                    email=teacher_email,
+                    hashed_password=hash_password(teacher_password),
+                    role="teacher",
+                    is_active=True
+                )
+                db.add(teacher)
+                db.flush()
+                
+            # 4. Find or Create Student
             student = db.query(UserInDB).filter(
                 func.lower(UserInDB.name) == student_name.lower(),
                 UserInDB.role == "student"
@@ -1057,8 +1081,21 @@ async def bulk_schedule_upload(
                  # Try to find by name only if role mismatch
                  student = db.query(UserInDB).filter(func.lower(UserInDB.name) == student_name.lower()).first()
             if not student:
-                 failed_lines.append({"line_num": i+1, "error": f"Student not found: {student_name}"})
-                 continue
+                 # Auto-create student if not found
+                 import string
+                 import secrets
+                 student_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+                 student_email = f"{student_name.lower().replace(' ', '.')}@auto.created"
+                 
+                 student = UserInDB(
+                     name=student_name,
+                     email=student_email,
+                     hashed_password=hash_password(student_password),
+                     role="student",
+                     is_active=True
+                 )
+                 db.add(student)
+                 db.flush()
                  
             # 5. Determine Course
             course = None
@@ -1070,18 +1107,123 @@ async def bulk_schedule_upload(
             if not course:
                 course = db.query(Course).first() # Fallback
             
-            # 6. Create Group
-            group_name = f"{course_info} - {student_name}"
-            # Check if group already exists
-            group = db.query(Group).filter(Group.name == group_name).first()
+            # 6. Find Existing Group (don't create new ones)
+            # Try multiple search strategies to find the group
+            
+            group = None
+            
+            # Strategy 1: Try student name first (most likely to match)
+            student_groups = db.query(Group).filter(
+                Group.name.ilike(f"%{student_name}%")
+            ).all()
+            
+            if student_groups:
+                # Prefer groups with matching teacher
+                for potential_group in student_groups:
+                    if potential_group.teacher_id == teacher.id:
+                        group = potential_group
+                        break
+                
+                # If no teacher match, prefer groups containing course info
+                if not group:
+                    for potential_group in student_groups:
+                        if course_info.upper() in potential_group.name.upper():
+                            group = potential_group
+                            break
+                
+                # Otherwise take the first one
+                if not group:
+                    group = student_groups[0]
+            
+            # Strategy 2: If not found, try student name + course info
             if not group:
-                group = Group(
-                    name=group_name,
-                    teacher_id=teacher.id,
-                    is_active=True
-                )
-                db.add(group)
-                db.flush()
+                potential_groups = db.query(Group).filter(
+                    Group.name.ilike(f"%{student_name}%")
+                ).filter(
+                    Group.name.ilike(f"%{course_info}%")
+                ).all()
+                
+                if potential_groups:
+                    # Prefer groups with matching teacher
+                    for potential_group in potential_groups:
+                        if potential_group.teacher_id == teacher.id:
+                            group = potential_group
+                            break
+                    
+                    # If no teacher match, take the first one
+                    if not group:
+                        group = potential_groups[0]
+            
+            # Strategy 3: If still not found, try exact match with course_info - student_name
+            if not group:
+                group_name = f"{course_info} - {student_name}"
+                group = db.query(Group).filter(Group.name == group_name).first()
+            
+            # Strategy 4: If still not found, try date-based search (least specific)
+            if not group:
+                groups_with_date = db.query(Group).filter(
+                    Group.name.ilike(f"%{start_date.strftime('%B %d %Y')}%") |
+                    Group.name.ilike(f"%{start_date.strftime('%B %d')}%") |
+                    Group.name.ilike(f"%{start_date.strftime('%Y-%m-%d')}%")
+                ).all()
+                
+                if groups_with_date:
+                    # Prefer groups with matching teacher
+                    for potential_group in groups_with_date:
+                        if potential_group.teacher_id == teacher.id:
+                            group = potential_group
+                            break
+                    
+                    # If no teacher match, take the first one
+                    if not group:
+                        group = groups_with_date[0]
+            
+            # Strategy 4: If still not found, try common transliterations
+            if not group:
+                # Common Kazakh name transliterations
+                translit_map = {
+                    'Абзал': 'Abzal',
+                    'Азамат': 'Azamat', 
+                    'Мадина': 'Madina',
+                    'Жансая': 'Zhansaya',
+                    'Маулен': 'Maulen',
+                    'Аянат': 'Ayanat',
+                    'Амина': 'Amina',
+                    'Таймас': 'Taimas',
+                    'Амирлан': 'Amirlan',
+                    'Бибинур': 'Bibinur',
+                    'Айша': 'Aisha'
+                }
+                
+                for kazakh, english in translit_map.items():
+                    if kazakh in student_name and not group:
+                        group = db.query(Group).filter(
+                            Group.name.ilike(f"%{english}%")
+                        ).first()
+                        if group:
+                            break
+            
+            if not group:
+                failed_lines.append({"line_num": i+1, "error": f"Group not found for student '{student_name}' starting {start_date}. Please ensure the group exists."})
+                continue
+            
+            # 7. Add Student to Group (if not already there)
+            existing_gs = db.query(GroupStudent).filter(
+                GroupStudent.group_id == group.id,
+                GroupStudent.student_id == student.id
+            ).first()
+            if not existing_gs:
+                try:
+                    gs = GroupStudent(group_id=group.id, student_id=student.id)
+                    db.add(gs)
+                    db.flush()  # Check for duplicates immediately
+                except Exception as e:
+                    # If duplicate key error, student is already in group - that's fine
+                    if "duplicate key" in str(e).lower() or "unique constraint" in str(e).lower():
+                        db.rollback()  # Rollback the failed insert
+                        pass  # Continue without error
+                    else:
+                        raise  # Re-raise other errors
             
             # 7. Add Student to Group
             existing_gs = db.query(GroupStudent).filter(
@@ -1113,17 +1255,23 @@ async def bulk_schedule_upload(
                 failed_lines.append({"line_num": i+1, "error": f"Failed to parse shorthand: {shorthand}"})
                 continue
                 
-            # Frequency = count of lessons per week
-            frequency = len(schedule_items)
-            week_limit = math.ceil(lessons_count / frequency)
-            end_recurrence = start_date + timedelta(weeks=week_limit)
+            # Use explicit end date instead of calculating from lessons count
+            end_recurrence = end_date
+            
+            # Calculate weeks between start and end dates
+            weeks_diff = (end_date - start_date).days // 7
+            week_limit = max(1, weeks_diff)  # At least 1 week
             
             # Deactivate existing recurring classes for this group
-            db.query(Event).join(EventGroup).filter(
+            existing_event_ids = db.query(Event.id).join(EventGroup).filter(
                 EventGroup.group_id == group.id,
                 Event.event_type == 'class',
                 Event.is_recurring == True
-            ).update({Event.is_active: False}, synchronize_session=False)
+            ).subquery()
+            
+            db.query(Event).filter(Event.id.in_(existing_event_ids)).update(
+                {Event.is_active: False}, synchronize_session=False
+            )
             
             for item in schedule_items:
                 # Calculate first date
@@ -1142,7 +1290,7 @@ async def bulk_schedule_upload(
                 end_dt = start_dt + timedelta(minutes=90)
                 
                 event = Event(
-                    title="Online Class",
+                    title=f"{group.name}: Online Class",
                     description=f"Scheduled via Bulk Upload. Total {lessons_count} lessons.",
                     event_type="class",
                     start_datetime=start_dt,
@@ -1217,7 +1365,7 @@ async def bulk_schedule_upload(
             
             created_groups.append({
                 "student_name": student_name,
-                "group_name": group_name,
+                "group_name": group.name,
                 "lessons_count": lessons_count
             })
             
