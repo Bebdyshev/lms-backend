@@ -749,6 +749,10 @@ async def generate_schedule(
         CourseGroupAccess.is_active == True
     ).first()
     
+    group = db.query(Group).filter(Group.id == data.group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
     if not course_access:
         raise HTTPException(status_code=400, detail="Group has no active course")
         
@@ -829,6 +833,13 @@ async def generate_schedule(
         current_date += timedelta(days=1)
         while current_date.weekday() not in schedule_config:
             current_date += timedelta(days=1)
+            
+    # Save config for future use
+    group.schedule_config = {
+        "start_date": data.start_date.isoformat(),
+        "weeks_count": data.weeks_count,
+        "schedule_items": [item.dict() for item in data.schedule_items]
+    }
             
     db.commit()
     return {"status": "success", "count": len(schedules)}

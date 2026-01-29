@@ -10,7 +10,7 @@ from src.schemas.models import (
     UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
     StudentProgress, Assignment, AssignmentSubmission, Event, EventGroup, EventParticipant,
     EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema,
-    StepProgress, Step, Lesson
+    StepProgress, Step, Lesson, LessonSchedule
 )
 from src.utils.auth_utils import hash_password
 from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups, require_teacher_curator_or_admin
@@ -740,7 +740,8 @@ async def get_all_groups(
             student_count=student_count,
             students=students,
             created_at=group.created_at,
-            is_active=group.is_active
+            is_active=group.is_active,
+            schedule_config=group.schedule_config
         )
         
         result.append(group_data)
@@ -805,7 +806,8 @@ async def create_group(
         student_count=0,
         students=[],
         created_at=new_group.created_at,
-        is_active=new_group.is_active
+        is_active=new_group.is_active,
+        schedule_config=new_group.schedule_config
     )
     
     return group_response
@@ -920,7 +922,8 @@ async def update_group(
         student_count=len(students),
         students=students,
         created_at=group.created_at,
-        is_active=group.is_active
+        is_active=group.is_active,
+        schedule_config=group.schedule_config
     )
     
     return group_response
@@ -1523,6 +1526,7 @@ async def get_all_events(
     skip: int = 0,
     limit: int = 100,
     event_type: Optional[str] = None,
+    exclude_type: Optional[str] = None,
     group_id: Optional[int] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
@@ -1535,6 +1539,8 @@ async def get_all_events(
     # Apply filters
     if event_type:
         query = query.filter(Event.event_type == event_type)
+    if exclude_type:
+        query = query.filter(Event.event_type != exclude_type)
     if start_date:
         query = query.filter(Event.start_datetime >= start_date)
     if end_date:
@@ -1551,40 +1557,30 @@ async def get_all_events(
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
     
-    if not events:
-        return []
-
     # Batch fetch participant counts
     event_ids = [e.id for e in events]
-    participant_counts = db.query(
-        EventParticipant.event_id, 
-        func.count(EventParticipant.id)
-    ).filter(
-        EventParticipant.event_id.in_(event_ids)
-    ).group_by(EventParticipant.event_id).all()
-    
-    count_map = {event_id: count for event_id, count in participant_counts}
+    count_map = {}
+    if event_ids:
+        participant_counts = db.query(
+            EventParticipant.event_id, 
+            func.count(EventParticipant.id)
+        ).filter(
+            EventParticipant.event_id.in_(event_ids)
+        ).group_by(EventParticipant.event_id).all()
+        count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
     for event in events:
         event_data = EventSchema.from_orm(event)
-        
-        # Add creator name from eager loaded relationship
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
-        
-        # Add teacher name
         event_data.teacher_name = event.teacher.name if event.teacher else None
-        
-        # Add group names from eager loaded relationship
-        group_names = [eg.group.name for eg in event.event_groups if eg.group]
-        event_data.groups = group_names
-        
-        # Add participant count from batch map
+        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
         event_data.participant_count = count_map.get(event.id, 0)
-        
         result.append(event_data)
-    
+        
+    # Sort result
+    result.sort(key=lambda x: x.start_datetime)
     return result
 
 @router.post("/events", response_model=EventSchema)

@@ -6,7 +6,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime, date, time, timezone
 from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List, Union
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 import uuid
 import json
 
@@ -655,6 +655,7 @@ class Group(Base):
     curator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+    schedule_config = Column(JSONB, nullable=True)
 
     # Relationships
     teacher = relationship("UserInDB", foreign_keys=[teacher_id], post_update=True)
@@ -673,6 +674,7 @@ class GroupSchema(BaseModel):
     students: Optional[List["UserSchema"]] = None
     created_at: datetime
     is_active: bool
+    schedule_config: Optional[dict] = None
     
     class Config:
         from_attributes = True

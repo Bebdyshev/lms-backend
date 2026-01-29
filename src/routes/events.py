@@ -8,7 +8,7 @@ from src.config import get_db
 from src.schemas.models import (
     UserInDB, Event, EventGroup, EventParticipant, Group, GroupStudent,
     EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course,
-    CreateEventRequest, Assignment, Lesson, Module
+    CreateEventRequest, Assignment, Lesson, Module, LessonSchedule
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role
@@ -105,7 +105,7 @@ async def get_my_events(
     if start_date:
         query = query.filter(Event.start_datetime >= datetime.combine(start_date, datetime.min.time()))
     if end_date:
-        query = query.filter(Event.end_datetime <= datetime.combine(end_date, datetime.max.time()))
+        query = query.filter(Event.start_datetime <= datetime.combine(end_date, datetime.max.time()))
     if upcoming_only:
         query = query.filter(Event.start_datetime >= datetime.utcnow())
     
@@ -119,37 +119,74 @@ async def get_my_events(
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
     
-    if not events:
-        return []
-
     # Batch fetch participant counts
     event_ids = [e.id for e in events]
-    participant_counts = db.query(
-        EventParticipant.event_id, 
-        func.count(EventParticipant.id)
-    ).filter(
-        EventParticipant.event_id.in_(event_ids)
-    ).group_by(EventParticipant.event_id).all()
-    
-    count_map = {event_id: count for event_id, count in participant_counts}
+    count_map = {}
+    if event_ids:
+        participant_counts = db.query(
+            EventParticipant.event_id, 
+            func.count(EventParticipant.id)
+        ).filter(
+            EventParticipant.event_id.in_(event_ids)
+        ).group_by(EventParticipant.event_id).all()
+        count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
     for event in events:
         event_data = EventSchema.from_orm(event)
-        
-        # Add creator name
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
-        
-        # Add group names
         event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
-        
-        # Add participant count
         event_data.participant_count = count_map.get(event.id, 0)
-        
         result.append(event_data)
-    
-    return result
+        
+    # Add Lesson Schedules
+    if user_group_ids and (not event_type or event_type == "class"):
+        ls_query = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True
+        )
+        if start_date:
+            ls_query = ls_query.filter(LessonSchedule.scheduled_at >= datetime.combine(start_date, datetime.min.time()))
+        if end_date:
+            ls_query = ls_query.filter(LessonSchedule.scheduled_at <= datetime.combine(end_date, datetime.max.time()))
+        if upcoming_only:
+            ls_query = ls_query.filter(LessonSchedule.scheduled_at >= datetime.utcnow())
+            
+        lessons_schedules = ls_query.options(
+            joinedload(LessonSchedule.lesson),
+            joinedload(LessonSchedule.group)
+        ).order_by(LessonSchedule.scheduled_at).offset(skip).limit(limit).all()
+        
+        for sched in lessons_schedules:
+            lesson_event_id = 2000000000 + sched.id
+            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            
+            lesson_event = EventSchema(
+                id=lesson_event_id,
+                title=f"{sched.group.name}: {sched.lesson.title}",
+                description=f"Lesson {sched.lesson.title} for group {sched.group.name}",
+                event_type="class",
+                start_datetime=sched.scheduled_at,
+                end_datetime=end_dt,
+                location="Online" if sched.group.name.startswith("Online") else "In Person",
+                is_online=True,
+                created_by=0,
+                creator_name="System",
+                is_active=True,
+                is_recurring=False,
+                participant_count=0,
+                created_at=sched.scheduled_at,
+                updated_at=sched.scheduled_at,
+                groups=[sched.group.name],
+                lesson_id=sched.lesson_id,
+                group_ids=[sched.group_id]
+            )
+            result.append(lesson_event)
+            
+    # Sort and limit result if mixed
+    result.sort(key=lambda x: x.start_datetime)
+    return result[:limit]
 
 @router.get("/calendar", response_model=List[EventSchema])
 async def get_calendar_events(
@@ -460,6 +497,48 @@ async def get_calendar_events(
         
         result.append(assign_event)
         
+    # 4. Get Lesson Schedules as Events
+    if user_group_ids:
+        lessons_schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True,
+            LessonSchedule.scheduled_at >= start_date,
+            LessonSchedule.scheduled_at <= end_date
+        ).options(
+            joinedload(LessonSchedule.lesson),
+            joinedload(LessonSchedule.group)
+        ).all()
+        
+        for sched in lessons_schedules:
+            # Create a virtual event for the lesson
+            # ID logic: offset by 2000000000 + sched.id
+            lesson_event_id = 2000000000 + sched.id
+            
+            # End time default + 90 mins
+            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            
+            lesson_event = EventSchema(
+                id=lesson_event_id,
+                title=f"{sched.group.name}: {sched.lesson.title}",
+                description=f"Lesson {sched.lesson.title} for group {sched.group.name}",
+                event_type="class",
+                start_datetime=sched.scheduled_at,
+                end_datetime=end_dt,
+                location="Online" if sched.group.name.startswith("Online") else "In Person",
+                is_online=True, # Assuming online for now or checking group name
+                created_by=0, # System
+                creator_name="System",
+                is_active=True,
+                is_recurring=False,
+                participant_count=0,
+                created_at=sched.scheduled_at, # Fallback
+                updated_at=sched.scheduled_at, # Fallback
+                groups=[sched.group.name],
+                lesson_id=sched.lesson_id,
+                group_ids=[sched.group_id]
+            )
+            result.append(lesson_event)
+
     # Sort again by start date
     result.sort(key=lambda x: x.start_datetime)
     
@@ -544,37 +623,68 @@ async def get_upcoming_events(
         joinedload(Event.event_courses).joinedload(EventCourse.course)
     ).order_by(Event.start_datetime).limit(limit).all()
     
-    if not events:
-        return []
-
     # Batch fetch participant counts
     event_ids = [e.id for e in events]
-    participant_counts = db.query(
-        EventParticipant.event_id, 
-        func.count(EventParticipant.id)
-    ).filter(
-        EventParticipant.event_id.in_(event_ids)
-    ).group_by(EventParticipant.event_id).all()
-    
-    count_map = {event_id: count for event_id, count in participant_counts}
+    count_map = {}
+    if event_ids:
+        participant_counts = db.query(
+            EventParticipant.event_id, 
+            func.count(EventParticipant.id)
+        ).filter(
+            EventParticipant.event_id.in_(event_ids)
+        ).group_by(EventParticipant.event_id).all()
+        count_map = {event_id: count for event_id, count in participant_counts}
     
     # Enrich with additional data
     result = []
     for event in events:
         event_data = EventSchema.from_orm(event)
-        
-        # Add creator name
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
-        
-        # Add group names
         event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
-        
-        # Add participant count
         event_data.participant_count = count_map.get(event.id, 0)
-        
         result.append(event_data)
-    
-    return result
+        
+    # Add upcoming Lesson Schedules
+    if user_group_ids:
+        ls_query = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True,
+            LessonSchedule.scheduled_at >= start_date,
+            LessonSchedule.scheduled_at <= end_date
+        ).options(
+            joinedload(LessonSchedule.lesson),
+            joinedload(LessonSchedule.group)
+        ).order_by(LessonSchedule.scheduled_at).limit(limit).all()
+        
+        for sched in ls_query:
+            lesson_event_id = 2000000000 + sched.id
+            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            
+            lesson_event = EventSchema(
+                id=lesson_event_id,
+                title=f"{sched.group.name}: {sched.lesson.title}",
+                description=f"Lesson {sched.lesson.title} for group {sched.group.name}",
+                event_type="class",
+                start_datetime=sched.scheduled_at,
+                end_datetime=end_dt,
+                location="Online" if sched.group.name.startswith("Online") else "In Person",
+                is_online=True,
+                created_by=0,
+                creator_name="System",
+                is_active=True,
+                is_recurring=False,
+                participant_count=0,
+                created_at=sched.scheduled_at,
+                updated_at=sched.scheduled_at,
+                groups=[sched.group.name],
+                lesson_id=sched.lesson_id,
+                group_ids=[sched.group_id]
+            )
+            result.append(lesson_event)
+            
+    # Sort and limit
+    result.sort(key=lambda x: x.start_datetime)
+    return result[:limit]
 
 @router.get("/{event_id}", response_model=EventSchema)
 async def get_event_details(
