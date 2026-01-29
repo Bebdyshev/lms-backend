@@ -20,7 +20,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column('leaderboard_configs', sa.Column('curator_hour_date', sa.Date(), nullable=True))
+    # Check if column already exists
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('leaderboard_configs')]
+    if 'curator_hour_date' not in columns:
+        op.add_column('leaderboard_configs', sa.Column('curator_hour_date', sa.Date(), nullable=True))
 
 
 def downgrade() -> None:

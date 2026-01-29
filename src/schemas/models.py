@@ -2112,8 +2112,7 @@ class CuratorRatingCreateSchema(BaseModel):
     retention_rate: Optional[float] = 0.0
     extra_points: Optional[float] = 0.0
     comment: Optional[str] = None
-=======
->>>>>>> PT-curator-dashboard
+
 
 
 # =============================================================================
