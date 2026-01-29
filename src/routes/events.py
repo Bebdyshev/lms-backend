@@ -9,7 +9,7 @@ from src.schemas.models import (
     UserInDB, Event, EventGroup, EventParticipant, Group, GroupStudent,
     EventSchema, EventParticipantSchema, Enrollment, EventCourse, Course,
     CreateEventRequest, Assignment, Lesson, Module, LessonSchedule,
-    AttendanceBulkUpdateSchema, EventStudentSchema
+    AttendanceBulkUpdateSchema, EventStudentSchema, CourseGroupAccess
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role, require_teacher_or_admin, require_teacher_curator_or_admin
@@ -236,7 +236,7 @@ async def get_my_events(
         event_data.participant_count = count_map.get(event.id, 0)
         result.append(event_data)
         
-    # Add Lesson Schedules
+    # Add Lesson Schedules (Planned) if no real event exists
     if user_group_ids and (not event_type or event_type == "class"):
         ls_query = db.query(LessonSchedule).filter(
             LessonSchedule.group_id.in_(user_group_ids),
@@ -252,33 +252,67 @@ async def get_my_events(
         lessons_schedules = ls_query.options(
             joinedload(LessonSchedule.lesson),
             joinedload(LessonSchedule.group)
-        ).order_by(LessonSchedule.scheduled_at).offset(skip).limit(limit).all()
+        ).all()
         
+        # Mapping course_id -> group_ids for current context
+        course_to_groups = {}
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            accesses = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            for acc in accesses:
+                if acc.course_id not in course_to_groups:
+                    course_to_groups[acc.course_id] = []
+                course_to_groups[acc.course_id].append(acc.group_id)
+
+        # Deduplication map
+        existing_event_map = set()
+        for e in events:
+            # Group IDs directly linked
+            e_group_ids = [eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else []
+            for g_id in e_group_ids:
+                sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
+                existing_event_map.add(sig)
+            
+            # Group IDs linked via courses
+            e_course_ids = [ec.course_id for ec in e.event_courses] if hasattr(e, 'event_courses') else []
+            for c_id in e_course_ids:
+                for g_id in course_to_groups.get(c_id, []):
+                    sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
+                    existing_event_map.add(sig)
+
         for sched in lessons_schedules:
-            lesson_event_id = 2000000000 + sched.id
+            # Check for duplicate
+            sched_time = sched.scheduled_at.replace(second=0, microsecond=0)
+            if (sched.group_id, sched_time) in existing_event_map:
+                continue # Skip, real event exists
+                
+            virtual_id = 2000000000 + sched.id 
+            title = f"Plan: {sched.lesson.title}" if sched.lesson else f"Plan: Lesson {sched.week_number}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
-            lesson_event = EventSchema(
-                id=lesson_event_id,
-                title=f"{sched.group.name}: {sched.lesson.title}",
-                description=f"Lesson {sched.lesson.title} for group {sched.group.name}",
+            result.append(EventSchema(
+                id=virtual_id,
+                title=title,
+                description="Planned topic from group schedule",
                 event_type="class",
                 start_datetime=sched.scheduled_at,
                 end_datetime=end_dt,
-                location="Online" if sched.group.name.startswith("Online") else "In Person",
+                location="Planned",
                 is_online=True,
                 created_by=0,
                 creator_name="System",
                 is_active=True,
                 is_recurring=False,
                 participant_count=0,
-                created_at=sched.scheduled_at,
-                updated_at=sched.scheduled_at,
-                groups=[sched.group.name],
-                lesson_id=sched.lesson_id,
-                group_ids=[sched.group_id]
-            )
-            result.append(lesson_event)
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+                groups=[sched.group.name] if sched.group else [],
+                group_ids=[sched.group_id],
+                courses=[]
+            ))
             
     # Sort and limit result if mixed
     result.sort(key=lambda x: x.start_datetime)
@@ -443,14 +477,33 @@ async def get_calendar_events(
         # Usually admin creates events based on schedule. 
         # Let's map existing events by (group_id, start_time) to filter duplicates.
         
+        # Mapping course_id -> group_ids for current context
+        course_to_groups = {}
+        if user_group_ids:
+            from src.schemas.models import CourseGroupAccess
+            accesses = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.is_active == True
+            ).all()
+            for acc in accesses:
+                if acc.course_id not in course_to_groups:
+                    course_to_groups[acc.course_id] = []
+                course_to_groups[acc.course_id].append(acc.group_id)
+
         existing_event_map = set()
         for e in all_events:
-            # Create a signature: group_ids + start_time
-            # Event might have multiple groups.
-            for g_id in (e.group_ids or []):
-                # Round to nearest minute to be safe
+            # Group IDs directly linked
+            e_group_ids = [eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else []
+            for g_id in e_group_ids:
                 sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
                 existing_event_map.add(sig)
+            
+            # Group IDs linked via courses
+            e_course_ids = [ec.course_id for ec in e.event_courses] if hasattr(e, 'event_courses') else []
+            for c_id in e_course_ids:
+                for g_id in course_to_groups.get(c_id, []):
+                    sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
+                    existing_event_map.add(sig)
                 
         for sched in schedules:
             # Check for duplicate
@@ -462,9 +515,7 @@ async def get_calendar_events(
             # Use negative ID or large offset to distinguish
             virtual_id = 2000000000 + sched.id 
             
-            title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
-            # Prefix to clarify it's a class
-            title = f"Class: {title}"
+            title = f"Plan: {sched.lesson.title}" if sched.lesson else f"Plan: Lesson {sched.week_number}"
             
             # Duration default 1.5 hours?
             end_dt = sched.scheduled_at + timedelta(minutes=90)
@@ -472,11 +523,11 @@ async def get_calendar_events(
             sched_event = EventSchema(
                 id=virtual_id,
                 title=title,
-                description="Scheduled lesson topic (Plan)",
+                description="Planned topic from group schedule",
                 event_type="class",
                 start_datetime=sched.scheduled_at,
                 end_datetime=end_dt,
-                location="Online (Scheduled)", 
+                location="Planned", 
                 is_online=True, 
                 created_by=0,
                 creator_name="System",
@@ -593,48 +644,6 @@ async def get_calendar_events(
         
         result.append(assign_event)
         
-    # 4. Get Lesson Schedules as Events
-    if user_group_ids:
-        lessons_schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id.in_(user_group_ids),
-            LessonSchedule.is_active == True,
-            LessonSchedule.scheduled_at >= start_date,
-            LessonSchedule.scheduled_at <= end_date
-        ).options(
-            joinedload(LessonSchedule.lesson),
-            joinedload(LessonSchedule.group)
-        ).all()
-        
-        for sched in lessons_schedules:
-            # Create a virtual event for the lesson
-            # ID logic: offset by 2000000000 + sched.id
-            lesson_event_id = 2000000000 + sched.id
-            
-            # End time default + 90 mins
-            end_dt = sched.scheduled_at + timedelta(minutes=90)
-            
-            lesson_event = EventSchema(
-                id=lesson_event_id,
-                title=f"{sched.group.name}: {sched.lesson.title}",
-                description=f"Lesson {sched.lesson.title} for group {sched.group.name}",
-                event_type="class",
-                start_datetime=sched.scheduled_at,
-                end_datetime=end_dt,
-                location="Online" if sched.group.name.startswith("Online") else "In Person",
-                is_online=True, # Assuming online for now or checking group name
-                created_by=0, # System
-                creator_name="System",
-                is_active=True,
-                is_recurring=False,
-                participant_count=0,
-                created_at=sched.scheduled_at, # Fallback
-                updated_at=sched.scheduled_at, # Fallback
-                groups=[sched.group.name],
-                lesson_id=sched.lesson_id,
-                group_ids=[sched.group_id]
-            )
-            result.append(lesson_event)
-
     # Sort again by start date
     result.sort(key=lambda x: x.start_datetime)
     
@@ -740,7 +749,36 @@ async def get_upcoming_events(
         event_data.participant_count = count_map.get(event.id, 0)
         result.append(event_data)
         
-    # Add upcoming Lesson Schedules
+    # Mapping course_id -> group_ids for current context
+    course_to_groups = {}
+    if user_group_ids:
+        from src.schemas.models import CourseGroupAccess
+        accesses = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id.in_(user_group_ids),
+            CourseGroupAccess.is_active == True
+        ).all()
+        for acc in accesses:
+            if acc.course_id not in course_to_groups:
+                course_to_groups[acc.course_id] = []
+            course_to_groups[acc.course_id].append(acc.group_id)
+
+    # Create expansion map for deduplication
+    existing_event_map = set()
+    for e in events:
+        # Group IDs directly linked
+        e_group_ids = [eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else []
+        for g_id in e_group_ids:
+            sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
+            existing_event_map.add(sig)
+            
+        # Group IDs linked via courses
+        e_course_ids = [ec.course_id for ec in e.event_courses] if hasattr(e, 'event_courses') else []
+        for c_id in e_course_ids:
+            for g_id in course_to_groups.get(c_id, []):
+                sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
+                existing_event_map.add(sig)
+
+    # Add upcoming Lesson Schedules (Planned)
     if user_group_ids:
         ls_query = db.query(LessonSchedule).filter(
             LessonSchedule.group_id.in_(user_group_ids),
@@ -753,17 +791,22 @@ async def get_upcoming_events(
         ).order_by(LessonSchedule.scheduled_at).limit(limit).all()
         
         for sched in ls_query:
+            # Deduplicate against real events
+            sched_time = sched.scheduled_at.replace(second=0, microsecond=0)
+            if (sched.group_id, sched_time) in existing_event_map:
+                continue
+
             lesson_event_id = 2000000000 + sched.id
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             lesson_event = EventSchema(
                 id=lesson_event_id,
-                title=f"{sched.group.name}: {sched.lesson.title}",
-                description=f"Lesson {sched.lesson.title} for group {sched.group.name}",
+                title=f"Plan: {sched.lesson.title}" if sched.lesson else f"Plan: Lesson {sched.week_number}",
+                description=f"Planned topic for group {sched.group.name}",
                 event_type="class",
                 start_datetime=sched.scheduled_at,
                 end_datetime=end_dt,
-                location="Online" if sched.group.name.startswith("Online") else "In Person",
+                location="Planned",
                 is_online=True,
                 created_by=0,
                 creator_name="System",
@@ -772,7 +815,7 @@ async def get_upcoming_events(
                 participant_count=0,
                 created_at=sched.scheduled_at,
                 updated_at=sched.scheduled_at,
-                groups=[sched.group.name],
+                groups=[sched.group.name] if sched.group else [],
                 lesson_id=sched.lesson_id,
                 group_ids=[sched.group_id]
             )

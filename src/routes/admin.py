@@ -3,14 +3,14 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time, date
 
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
     StudentProgress, Assignment, AssignmentSubmission, Event, EventGroup, EventParticipant,
     EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema,
-    StepProgress, Step, Lesson, LessonSchedule
+    StepProgress, Step, Lesson, LessonSchedule, CourseGroupAccess
 )
 from src.utils.auth_utils import hash_password
 from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups, require_teacher_curator_or_admin
@@ -145,6 +145,13 @@ class GroupListResponse(BaseModel):
     total: int
     skip: int
     limit: int
+
+class BulkGroupScheduleUploadRequest(BaseModel):
+    text: str
+
+class BulkGroupScheduleUploadResponse(BaseModel):
+    created_groups: List[dict]
+    failed_lines: List[dict]
 
 class AdminDashboardResponse(BaseModel):
     stats: AdminStatsResponse
@@ -948,11 +955,279 @@ async def delete_group(
             detail=f"Cannot delete group with {student_count} active students. Remove students first."
         )
     
-    # Soft delete
-    group.is_active = False
-    db.commit()
+def parse_date(date_str: str) -> Optional[date]:
+    try:
+        # Example: February 5 2026
+        return datetime.strptime(date_str.strip(), "%B %d %Y").date()
+    except ValueError:
+        try:
+             # Try other common formats
+             return datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+        except:
+             return None
+
+def parse_shorthand_python(text: str) -> List[dict]:
+    day_map = {
+        'пн': 0, 'вт': 1, 'ср': 2, 'чт': 3, 'пт': 4, 'сб': 5, 'вс': 6,
+        'mon': 0, 'tue': 1, 'wed': 2, 'thu': 3, 'fri': 4, 'sat': 5, 'sun': 6
+    }
     
-    return {"detail": f"Group '{group.name}' deleted successfully"}
+    tokens = text.lower().replace(':', ' ').split()
+    days = []
+    time_str = "19:00"
+    
+    # Collect days and find time
+    for i, token in enumerate(tokens):
+        if token in day_map:
+            days.append(day_map[token])
+        elif token.isdigit():
+            # Potential hour
+            if i + 1 < len(tokens) and tokens[i+1].isdigit() and len(tokens[i+1]) == 2:
+                time_str = f"{token.zfill(2)}:{tokens[i+1]}"
+                # Keep looking? usually it's one time for all days in shorthand
+    
+    return [{"day_of_week": d, "time_of_day": time_str} for d in days]
+
+@router.post("/groups/bulk-schedule-upload", response_model=BulkGroupScheduleUploadResponse)
+async def bulk_schedule_upload(
+    request: BulkGroupScheduleUploadRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin())
+):
+    """
+    Bulk create groups/schedules from text.
+    Format: StartDate\tStudentName\tTeacherName\tCourseInfo\tLessonsCount\tShorthand
+    Example: February 5 2026\tТемирхан Айша\tЕргали Мамыр\tSAT 4 месяца\t48\tпн ср пт 20 00
+    """
+    created_groups = []
+    failed_lines = []
+    
+    import math
+    
+    lines = request.text.strip().split('\n')
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+            
+        parts = line.split('\t')
+        if len(parts) < 6:
+            failed_lines.append({"line_num": i+1, "error": f"Invalid format, expected 6 parts, got {len(parts)}"})
+            continue
+            
+        try:
+            start_date_str = parts[0].strip()
+            student_name = parts[1].strip()
+            teacher_name = parts[2].strip()
+            course_info = parts[3].strip()
+            lessons_count_str = parts[4].strip()
+            shorthand = parts[5].strip()
+            
+            # 1. Parse Date
+            start_date = parse_date(start_date_str)
+            if not start_date:
+                failed_lines.append({"line_num": i+1, "error": f"Failed to parse date: {start_date_str}"})
+                continue
+                
+            # 2. Parse Lessons Count
+            try:
+                lessons_count = int(lessons_count_str)
+            except ValueError:
+                failed_lines.append({"line_num": i+1, "error": f"Invalid lessons count: {lessons_count_str}"})
+                continue
+                
+            # 3. Find Teacher (Case-insensitive)
+            teacher = db.query(UserInDB).filter(
+                func.lower(UserInDB.name) == teacher_name.lower(),
+                UserInDB.role == "teacher"
+            ).first()
+            if not teacher:
+                # Try all roles if not found among teachers
+                teacher = db.query(UserInDB).filter(func.lower(UserInDB.name) == teacher_name.lower()).first()
+            if not teacher:
+                failed_lines.append({"line_num": i+1, "error": f"Teacher not found: {teacher_name}"})
+                continue
+                
+            # 4. Find Student
+            student = db.query(UserInDB).filter(
+                func.lower(UserInDB.name) == student_name.lower(),
+                UserInDB.role == "student"
+            ).first()
+            if not student:
+                 # Try to find by name only if role mismatch
+                 student = db.query(UserInDB).filter(func.lower(UserInDB.name) == student_name.lower()).first()
+            if not student:
+                 failed_lines.append({"line_num": i+1, "error": f"Student not found: {student_name}"})
+                 continue
+                 
+            # 5. Determine Course
+            course = None
+            if "SAT" in course_info.upper():
+                course = db.query(Course).filter(Course.title.ilike("%SAT%")).first()
+            elif "IELTS" in course_info.upper():
+                course = db.query(Course).filter(Course.title.ilike("%IELTS%")).first()
+                
+            if not course:
+                course = db.query(Course).first() # Fallback
+            
+            # 6. Create Group
+            group_name = f"{course_info} - {student_name}"
+            # Check if group already exists
+            group = db.query(Group).filter(Group.name == group_name).first()
+            if not group:
+                group = Group(
+                    name=group_name,
+                    teacher_id=teacher.id,
+                    is_active=True
+                )
+                db.add(group)
+                db.flush()
+            
+            # 7. Add Student to Group
+            existing_gs = db.query(GroupStudent).filter(
+                GroupStudent.group_id == group.id,
+                GroupStudent.student_id == student.id
+            ).first()
+            if not existing_gs:
+                gs = GroupStudent(group_id=group.id, student_id=student.id)
+                db.add(gs)
+                
+            # 8. Link Course
+            if course:
+                existing_ca = db.query(CourseGroupAccess).filter(
+                    CourseGroupAccess.group_id == group.id,
+                    CourseGroupAccess.course_id == course.id
+                ).first()
+                if not existing_ca:
+                    ca = CourseGroupAccess(
+                        group_id=group.id, 
+                        course_id=course.id, 
+                        is_active=True,
+                        granted_by=current_user.id
+                    )
+                    db.add(ca)
+            
+            # 9. Generate Schedule
+            schedule_items = parse_shorthand_python(shorthand)
+            if not schedule_items:
+                failed_lines.append({"line_num": i+1, "error": f"Failed to parse shorthand: {shorthand}"})
+                continue
+                
+            # Frequency = count of lessons per week
+            frequency = len(schedule_items)
+            week_limit = math.ceil(lessons_count / frequency)
+            end_recurrence = start_date + timedelta(weeks=week_limit)
+            
+            # Deactivate existing recurring classes for this group
+            db.query(Event).join(EventGroup).filter(
+                EventGroup.group_id == group.id,
+                Event.event_type == 'class',
+                Event.is_recurring == True
+            ).update({Event.is_active: False}, synchronize_session=False)
+            
+            for item in schedule_items:
+                # Calculate first date
+                days_ahead = item["day_of_week"] - start_date.weekday()
+                if days_ahead < 0:
+                    days_ahead += 7
+                first_date = start_date + timedelta(days=days_ahead)
+                
+                try:
+                    t_str = item["time_of_day"]
+                    time_obj = datetime.strptime(t_str, "%H:%M").time()
+                except:
+                    time_obj = time(19, 0)
+                    
+                start_dt = datetime.combine(first_date, time_obj)
+                end_dt = start_dt + timedelta(minutes=90)
+                
+                event = Event(
+                    title="Online Class",
+                    description=f"Scheduled via Bulk Upload. Total {lessons_count} lessons.",
+                    event_type="class",
+                    start_datetime=start_dt,
+                    end_datetime=end_dt,
+                    location="Online (Scheduled)",
+                    is_online=True,
+                    created_by=current_user.id,
+                    is_active=True,
+                    is_recurring=True,
+                    recurrence_pattern="weekly",
+                    recurrence_end_date=end_recurrence,
+                    max_participants=50
+                )
+                db.add(event)
+                db.flush()
+                db.add(EventGroup(event_id=event.id, group_id=group.id))
+                
+            # 10. Also generate individual LessonSchedule entries for leaderboard tracking
+            # Fetch lessons for this course
+            from src.schemas.models import Lesson, Module, LessonSchedule
+            lessons = db.query(Lesson).join(Module).filter(
+                Module.course_id == course.id
+            ).order_by(Module.order_index, Lesson.order_index).all()
+            
+            # Deactivate existing schedules for this group
+            db.query(LessonSchedule).filter(
+                LessonSchedule.group_id == group.id,
+                LessonSchedule.is_active == True
+            ).update({LessonSchedule.is_active: False}, synchronize_session=False)
+
+            lessons_scheduled = 0
+            for week in range(week_limit):
+                for item in schedule_items:
+                    if lessons_scheduled >= lessons_count:
+                        break
+                    
+                    if lessons_scheduled >= len(lessons):
+                        break
+                        
+                    lesson = lessons[lessons_scheduled]
+                    
+                    # Find date for this week and day
+                    try:
+                        time_obj = datetime.strptime(item["time_of_day"], "%H:%M").time()
+                    except:
+                        time_obj = datetime.min.time()
+                        
+                    days_ahead = item["day_of_week"] - start_date.weekday()
+                    if days_ahead < 0:
+                        days_ahead += 7
+                    
+                    target_date = start_date + timedelta(weeks=week, days=days_ahead)
+                    target_dt = datetime.combine(target_date, time_obj)
+                    
+                    new_sched = LessonSchedule(
+                        group_id=group.id,
+                        lesson_id=lesson.id,
+                        week_number=week + 1,
+                        scheduled_at=target_dt,
+                        is_active=True
+                    )
+                    db.add(new_sched)
+                    lessons_scheduled += 1
+                
+            # Save config
+            group.schedule_config = {
+                "start_date": start_date.isoformat(),
+                "weeks_count": week_limit,
+                "lessons_count": lessons_count,
+                "schedule_items": schedule_items
+            }
+            
+            created_groups.append({
+                "student_name": student_name,
+                "group_name": group_name,
+                "lessons_count": lessons_count
+            })
+            
+        except Exception as e:
+            db.rollback()
+            failed_lines.append({"line_num": i+1, "error": str(e)})
+            continue
+            
+    db.commit()
+    return BulkGroupScheduleUploadResponse(created_groups=created_groups, failed_lines=failed_lines)
 
 @router.post("/groups/{group_id}/assign-teacher")
 async def assign_teacher_to_group(

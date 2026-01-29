@@ -1385,10 +1385,12 @@ class ScheduleGenerationSchema(BaseModel):
     start_date: date
     schedule_items: List[ScheduleItem]
     weeks_count: int = 12
+    lessons_count: Optional[int] = None
 
 class GroupScheduleResponse(BaseModel):
     start_date: date
     weeks_count: int
+    lessons_count: Optional[int] = None
     schedule_items: List[ScheduleItem]
 
 
@@ -1471,7 +1473,17 @@ async def generate_schedule(
     # Instead of creating 100 individual events, we create 1 recurring event per Weekly Slot.
     # e.g. Mon 19:00 -> 1 Recurring Event (Weekly)
     
-    week_limit = data.weeks_count
+    # Calculate duration
+    if data.lessons_count and data.schedule_items:
+        import math
+        # Frequency = count of lessons per week
+        frequency = len(data.schedule_items)
+        # Duration in weeks = lessons / frequency
+        # Note: This is an approximation for recurring events end_date
+        week_limit = math.ceil(data.lessons_count / frequency)
+    else:
+        week_limit = data.weeks_count
+        
     start_date = data.start_date
     end_recurrence = start_date + timedelta(weeks=week_limit)
     
@@ -1524,40 +1536,55 @@ async def generate_schedule(
         db.add(event_group)
         
         generated_count += 1
-        
-        # Automated Homework Assignment
-        lesson_assignments = db.query(Assignment).filter(
-            Assignment.lesson_id == lesson.id,
-            Assignment.is_active == True
-        ).all()
-        
-        for assign in lesson_assignments:
-            due = dt + timedelta(days=7) # Default 1 week due date
             
-            ga = GroupAssignment(
+    # Also generate individual LessonSchedule entries for leaderboard tracking
+    # (These will be hidden in calendar by deduplication if real events exist)
+    lessons_scheduled = 0
+    total_lessons = data.lessons_count if data.lessons_count else (len(data.schedule_items) * week_limit)
+    
+    for week in range(week_limit):
+        for item in data.schedule_items:
+            if lessons_scheduled >= total_lessons:
+                break
+                
+            if lessons_scheduled >= len(lessons):
+                break
+                
+            lesson = lessons[lessons_scheduled]
+            
+            # Find date for this week and day
+            try:
+                time_obj = datetime.strptime(item.time_of_day, "%H:%M").time()
+            except ValueError:
+                time_obj = datetime.min.time()
+                
+            days_ahead = item.day_of_week - start_date.weekday()
+            if days_ahead < 0:
+                days_ahead += 7
+            
+            target_date = start_date + timedelta(weeks=week, days=days_ahead)
+            target_dt = datetime.combine(target_date, time_obj)
+            
+            new_sched = LessonSchedule(
                 group_id=data.group_id,
-                assignment_id=assign.id,
-                lesson_schedule_id=sched.id,
-                assigned_at=dt,
-                due_date=due,
+                lesson_id=lesson.id,
+                week_number=week + 1,
+                scheduled_at=target_dt,
                 is_active=True
             )
-            db.add(ga)
-        
-        # Move to next slot
-        current_date += timedelta(days=1)
-        while current_date.weekday() not in schedule_config:
-            current_date += timedelta(days=1)
-            
+            db.add(new_sched)
+            lessons_scheduled += 1
+
     # Save config for future use
     group.schedule_config = {
         "start_date": data.start_date.isoformat(),
-        "weeks_count": data.weeks_count,
+        "weeks_count": week_limit,
+        "lessons_count": total_lessons,
         "schedule_items": [item.dict() for item in data.schedule_items]
     }
     db.commit()
     
-    return {"message": f"Schedule generated successfully. Created {generated_count} recurring event series."}
+    return {"message": f"Schedule generated successfully. Created {generated_count} recurring event series and {lessons_scheduled} planned lessons."}
 
 @router.get("/curator/schedule/{group_id}", response_model=GroupScheduleResponse)
 async def get_group_schedule(
@@ -1579,6 +1606,16 @@ async def get_group_schedule(
          raise HTTPException(status_code=403, detail="Access denied to this group schedule")
         
     # Find active recurring events for this group
+    # Try to return saved config first (more accurate)
+    if group.schedule_config:
+        config = group.schedule_config
+        return {
+            "start_date": config.get("start_date"),
+            "weeks_count": config.get("weeks_count", 12),
+            "lessons_count": config.get("lessons_count"),
+            "schedule_items": config.get("schedule_items", [])
+        }
+
     events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id == group_id,
         Event.event_type == 'class',
@@ -1591,6 +1628,7 @@ async def get_group_schedule(
         return {
             "start_date": date.today(),
             "weeks_count": 12,
+            "lessons_count": 48,
             "schedule_items": []
         }
         
@@ -1621,6 +1659,7 @@ async def get_group_schedule(
     return {
         "start_date": min_start_date,
         "weeks_count": weeks_count,
+        "lessons_count": weeks_count * len(schedule_items),
         "schedule_items": schedule_items
     }
 
