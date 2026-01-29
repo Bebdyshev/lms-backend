@@ -1000,8 +1000,9 @@ async def bulk_schedule_upload(
 ):
     """
     Bulk create groups/schedules from text.
-    Format: StartDate\tStudentName\tTeacherName\tCourseInfo\tLessonsCount\tShorthand
-    Example: February 5 2026\tТемирхан Айша\tЕргали Мамыр\tSAT 4 месяца\t48\tпн ср пт 20 00
+    Format: Date\tStudentName\tTeacherName\tCourseInfo\tLessonsCount\tShorthand\tStartDate
+    Example: January 1 2026\tБибинур Сырымкызы\tАданова Дарина\tSAT 4 месяца\t48\tвт чт сб 20 00\t06.01.2026
+    The last column (StartDate) is used as the actual start date for the schedule.
     """
     created_groups = []
     failed_lines = []
@@ -1020,24 +1021,18 @@ async def bulk_schedule_upload(
             continue
             
         try:
-            start_date_str = parts[0].strip()
+            # Skip first column (date), use last column as start date
             student_name = parts[1].strip()
             teacher_name = parts[2].strip()
             course_info = parts[3].strip()
             lessons_count_str = parts[4].strip()
             shorthand = parts[5].strip()
-            end_date_str = parts[6].strip()
+            start_date_str = parts[6].strip()
             
             # 1. Parse Start Date
             start_date = parse_date(start_date_str)
             if not start_date:
                 failed_lines.append({"line_num": i+1, "error": f"Failed to parse start date: {start_date_str}"})
-                continue
-                
-            # 2. Parse End Date
-            end_date = parse_date(end_date_str)
-            if not end_date:
-                failed_lines.append({"line_num": i+1, "error": f"Failed to parse end date: {end_date_str}"})
                 continue
                 
             # 3. Parse Lessons Count
@@ -1255,7 +1250,15 @@ async def bulk_schedule_upload(
                 failed_lines.append({"line_num": i+1, "error": f"Failed to parse shorthand: {shorthand}"})
                 continue
                 
-            # Use explicit end date instead of calculating from lessons count
+            # Calculate end date based on lessons count and schedule frequency
+            lessons_per_week = len(schedule_items)
+            if lessons_per_week == 0:
+                failed_lines.append({"line_num": i+1, "error": f"No lessons per week found in shorthand: {shorthand}"})
+                continue
+                
+            total_weeks = math.ceil(lessons_count / lessons_per_week)
+            end_date = start_date + timedelta(weeks=total_weeks - 1)  # -1 because start week counts
+            
             end_recurrence = end_date
             
             # Calculate weeks between start and end dates
