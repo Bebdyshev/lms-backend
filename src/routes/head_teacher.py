@@ -159,18 +159,15 @@ async def get_managed_courses(
 @router.get("/course/{course_id}/teachers", response_model=CourseTeacherStatsResponse)
 async def get_course_teacher_statistics(
     course_id: int,
-    days: int = Query(30, ge=1, le=365, description="Number of past days for statistics"),
+    days: int = Query(30, ge=0, le=365, description="Number of past days for statistics"),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
     """
     Get detailed statistics for all teachers working with groups linked to a specific course.
-    
-    Stats include:
-    - Homework grading counts and feedback frequency
-    - Quiz grading counts
-    - Average grading time (time between student submission and teacher grading)
-    - Activity in last 7/30 days
+    Supports custom date range filtering.
     """
     # Authorization
     if current_user.role not in ["head_teacher", "admin"]:
@@ -200,9 +197,49 @@ async def get_course_teacher_statistics(
         return CourseTeacherStatsResponse(
             course_id=course_id,
             course_title=course.title,
-            teachers=[]
+            teachers=[],
+            daily_activity=[]
         )
     
+    # Date ranges logic
+    now = datetime.utcnow()
+    
+    if start_date and end_date:
+        date_range_start = start_date
+        date_range_end = end_date
+    else:
+        date_range_end = now.date()
+        date_range_start = (now - timedelta(days=days)).date()
+        
+    date_7_days_ago = now - timedelta(days=7)
+    date_30_days_ago = now - timedelta(days=30)
+    
+    # Daily Activity Query for the whole course
+    # Get all assignments linked to these groups
+    all_course_assignment_ids = db.query(Assignment.id).filter(
+        Assignment.group_id.in_(group_ids),
+        Assignment.is_active == True
+    ).subquery()
+    
+    course_activity_data = db.query(
+        func.date(AssignmentSubmission.graded_at).label('graded_date'),
+        func.count(AssignmentSubmission.id).label('count')
+    ).filter(
+        AssignmentSubmission.assignment_id.in_(all_course_assignment_ids),
+        AssignmentSubmission.is_graded == True,
+        AssignmentSubmission.graded_at >= date_range_start,
+        AssignmentSubmission.graded_at <= datetime.combine(date_range_end, datetime.max.time())
+    ).group_by(
+        func.date(AssignmentSubmission.graded_at)
+    ).order_by(
+        func.date(AssignmentSubmission.graded_at)
+    ).all()
+    
+    daily_activity = [
+        ActivityHistoryItem(date=item.graded_date, submissions_graded=item.count)
+        for item in course_activity_data
+    ]
+
     # Get groups and their teachers
     groups = db.query(Group).filter(Group.id.in_(group_ids)).all()
     
@@ -219,19 +256,13 @@ async def get_course_teacher_statistics(
         return CourseTeacherStatsResponse(
             course_id=course_id,
             course_title=course.title,
-            teachers=[]
+            teachers=[],
+            daily_activity=daily_activity
         )
     
     # Fetch teacher users
     teachers = db.query(UserInDB).filter(UserInDB.id.in_(teacher_ids)).all()
     teachers_map = {t.id: t for t in teachers}
-    
-    # Date ranges
-    now = datetime.utcnow()
-    date_range_end = now.date()
-    date_range_start = (now - timedelta(days=days)).date()
-    date_7_days_ago = now - timedelta(days=7)
-    date_30_days_ago = now - timedelta(days=30)
     
     # Build response
     teacher_stats = []
@@ -253,10 +284,13 @@ async def get_course_teacher_statistics(
         ).subquery()
         
         # Homework grading stats (graded_by = this teacher)
+        # Apply date filter!
         checked_homeworks_count = db.query(func.count(AssignmentSubmission.id)).filter(
             AssignmentSubmission.assignment_id.in_(assignment_ids_query),
             AssignmentSubmission.graded_by == teacher_id,
-            AssignmentSubmission.is_graded == True
+            AssignmentSubmission.is_graded == True,
+            AssignmentSubmission.graded_at >= date_range_start,
+            AssignmentSubmission.graded_at <= datetime.combine(date_range_end, datetime.max.time())
         ).scalar() or 0
         
         feedbacks_given_count = db.query(func.count(AssignmentSubmission.id)).filter(
@@ -264,7 +298,9 @@ async def get_course_teacher_statistics(
             AssignmentSubmission.graded_by == teacher_id,
             AssignmentSubmission.is_graded == True,
             AssignmentSubmission.feedback.isnot(None),
-            AssignmentSubmission.feedback != ""
+            AssignmentSubmission.feedback != "",
+            AssignmentSubmission.graded_at >= date_range_start,
+            AssignmentSubmission.graded_at <= datetime.combine(date_range_end, datetime.max.time())
         ).scalar() or 0
         
         # Average grading time
@@ -278,14 +314,17 @@ async def get_course_teacher_statistics(
             AssignmentSubmission.graded_by == teacher_id,
             AssignmentSubmission.is_graded == True,
             AssignmentSubmission.graded_at.isnot(None),
-            AssignmentSubmission.submitted_at.isnot(None)
+            AssignmentSubmission.submitted_at.isnot(None),
+            AssignmentSubmission.graded_at >= date_range_start,
+            AssignmentSubmission.graded_at <= datetime.combine(date_range_end, datetime.max.time())
         ).scalar()
         
         avg_grading_time_hours = None
         if grading_times:
             avg_grading_time_hours = round(grading_times / 3600, 2)  # Convert seconds to hours
         
-        # Recent activity (last 7 and 30 days)
+        # Recent activity (Still specifically last 7 and 30 days relative to NOW, not selected range, as these are "recent" indicators)
+        # Or should they follow the range? The labels are "Last 7 Days". Let's keep them as fixed recent indicators.
         homeworks_checked_last_7_days = db.query(func.count(AssignmentSubmission.id)).filter(
             AssignmentSubmission.assignment_id.in_(assignment_ids_query),
             AssignmentSubmission.graded_by == teacher_id,
@@ -331,7 +370,8 @@ async def get_course_teacher_statistics(
         course_title=course.title,
         date_range_start=date_range_start,
         date_range_end=date_range_end,
-        teachers=teacher_stats
+        teachers=teacher_stats,
+        daily_activity=daily_activity
     )
 
 
