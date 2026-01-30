@@ -41,6 +41,7 @@ class TeacherStatisticsSchema(BaseModel):
     students_count: int
     # Homework Stats
     checked_homeworks_count: int
+    total_submissions_count: int  # Added
     feedbacks_given_count: int
     avg_grading_time_hours: Optional[float] = None  # Avg time between submission and grading
     # Quiz Stats
@@ -49,6 +50,10 @@ class TeacherStatisticsSchema(BaseModel):
     homeworks_checked_last_7_days: int
     homeworks_checked_last_30_days: int
 
+class ActivityHistoryItem(BaseModel):
+    date: str
+    submissions_graded: int
+
 
 class CourseTeacherStatsResponse(BaseModel):
     course_id: int
@@ -56,6 +61,7 @@ class CourseTeacherStatsResponse(BaseModel):
     date_range_start: Optional[date] = None
     date_range_end: Optional[date] = None
     teachers: List[TeacherStatisticsSchema]
+    daily_activity: List[ActivityHistoryItem] = []
 
 
 class GradeDistributionItem(BaseModel):
@@ -222,7 +228,7 @@ async def get_course_teacher_statistics(
     ).subquery()
     
     course_activity_data = db.query(
-        func.date(AssignmentSubmission.graded_at).label('graded_date'),
+        func.to_char(AssignmentSubmission.graded_at, 'YYYY-MM-DD').label('graded_date'),
         func.count(AssignmentSubmission.id).label('count')
     ).filter(
         AssignmentSubmission.assignment_id.in_(all_course_assignment_ids),
@@ -230,13 +236,13 @@ async def get_course_teacher_statistics(
         AssignmentSubmission.graded_at >= date_range_start,
         AssignmentSubmission.graded_at <= datetime.combine(date_range_end, datetime.max.time())
     ).group_by(
-        func.date(AssignmentSubmission.graded_at)
+        func.to_char(AssignmentSubmission.graded_at, 'YYYY-MM-DD')
     ).order_by(
-        func.date(AssignmentSubmission.graded_at)
+        func.to_char(AssignmentSubmission.graded_at, 'YYYY-MM-DD')
     ).all()
     
     daily_activity = [
-        ActivityHistoryItem(date=item.graded_date, submissions_graded=item.count)
+        {"date": item.graded_date, "submissions_graded": item.count}
         for item in course_activity_data
     ]
 
@@ -291,6 +297,13 @@ async def get_course_teacher_statistics(
             AssignmentSubmission.is_graded == True,
             AssignmentSubmission.graded_at >= date_range_start,
             AssignmentSubmission.graded_at <= datetime.combine(date_range_end, datetime.max.time())
+        ).scalar() or 0
+        
+        # Calculate total submissions received in this period (that should be graded)
+        total_submissions_count = db.query(func.count(AssignmentSubmission.id)).filter(
+            AssignmentSubmission.assignment_id.in_(assignment_ids_query),
+            AssignmentSubmission.submitted_at >= date_range_start,
+            AssignmentSubmission.submitted_at <= datetime.combine(date_range_end, datetime.max.time())
         ).scalar() or 0
         
         feedbacks_given_count = db.query(func.count(AssignmentSubmission.id)).filter(
@@ -355,6 +368,7 @@ async def get_course_teacher_statistics(
             groups_count=len(group_ids_for_teacher),
             students_count=students_count,
             checked_homeworks_count=checked_homeworks_count,
+            total_submissions_count=total_submissions_count,
             feedbacks_given_count=feedbacks_given_count,
             avg_grading_time_hours=avg_grading_time_hours,
             quizzes_graded_count=quizzes_graded_count,

@@ -1,16 +1,10 @@
-from sqlalchemy import create_engine, func, text
-from sqlalchemy.orm import sessionmaker
-from src.database import Base, get_db
-from src.models import (
-    User, Course, Group, CourseGroupAccess, Assignment, AssignmentSubmission, CourseHeadTeacher
+from src.config import SessionLocal
+from src.schemas.models import (
+    UserInDB as User, Course, Group, CourseGroupAccess, Assignment, AssignmentSubmission, CourseHeadTeacher
 )
 from datetime import datetime, timedelta
 
-# Setup DB connection (assuming standard local env from running app)
-# You might need to adjust the URL if it's different in .env
-SQLALCHEMY_DATABASE_URL = "postgresql://myuser:mypassword@localhost:5432/lms_db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Setup DB connection
 db = SessionLocal()
 
 course_id = 1
