@@ -579,6 +579,12 @@ class UserInDB(Base):
     step_progress = relationship("StepProgress", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     point_history = relationship("PointHistory", back_populates="user", cascade="all, delete-orphan")
+    # Head Teacher: courses managed by this user
+    managed_courses = relationship("Course", secondary="course_head_teachers", back_populates="head_teachers")
+    
+    @property
+    def course_ids(self) -> List[int]:
+        return [c.id for c in self.managed_courses] if self.managed_courses else []
 
 # =============================================================================
 # POINT HISTORY MODEL - Gamification
@@ -637,6 +643,7 @@ class UserSchema(BaseModel):
     assignment_zero_completed: Optional[bool] = False
     assignment_zero_completed_at: Optional[datetime] = None
     activity_points: Optional[int] = 0
+    course_ids: Optional[List[int]] = []  # List of course IDs for head teachers
     created_at: datetime
 
     class Config:
@@ -781,6 +788,19 @@ class Course(Base):
     modules = relationship("Module", back_populates="course", cascade="all, delete-orphan", order_by="Module.order_index")
     enrollments = relationship("Enrollment", back_populates="course")
     group_access = relationship("CourseGroupAccess", back_populates="course", cascade="all, delete-orphan")
+    # Head Teachers managing this course
+    head_teachers = relationship("UserInDB", secondary="course_head_teachers", back_populates="managed_courses")
+
+# =============================================================================
+# HEAD TEACHER ASSOCIATION TABLE
+# =============================================================================
+
+class CourseHeadTeacher(Base):
+    """Association table for Head Teachers managing Courses (M2M)."""
+    __tablename__ = "course_head_teachers"
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), primary_key=True)
+    head_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class CourseGroupAccess(Base):
     __tablename__ = "course_group_access"

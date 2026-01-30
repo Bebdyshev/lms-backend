@@ -2,7 +2,7 @@ from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from src.config import get_db
-from src.schemas.models import UserInDB, Course, Group, Enrollment
+from src.schemas.models import UserInDB, Course, Group, Enrollment, CourseHeadTeacher
 from src.routes.auth import get_current_user_dependency
 
 def require_role(allowed_roles: List[str]):
@@ -88,6 +88,14 @@ def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
         
         return group_access is not None
     
+    elif user.role == "head_teacher":
+        # Head teachers can access courses they are assigned to
+        head_teacher_link = db.query(CourseHeadTeacher).filter(
+            CourseHeadTeacher.course_id == course_id,
+            CourseHeadTeacher.head_teacher_id == user.id
+        ).first()
+        return head_teacher_link is not None
+
     elif user.role == "student":
         # Students can access if their group has access to the course
         from src.schemas.models import GroupStudent, CourseGroupAccess
@@ -337,6 +345,7 @@ ROLE_HIERARCHY = {
     "curator": 2,
     "head_curator": 3,
     "teacher": 4,
+    "head_teacher": 4,
     "admin": 5
 }
 

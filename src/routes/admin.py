@@ -10,7 +10,7 @@ from src.schemas.models import (
     UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
     StudentProgress, Assignment, AssignmentSubmission, Event, EventGroup, EventParticipant,
     EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema,
-    StepProgress, Step, Lesson, LessonSchedule, CourseGroupAccess
+    StepProgress, Step, Lesson, LessonSchedule, CourseGroupAccess, CourseHeadTeacher
 )
 from src.utils.auth_utils import hash_password
 from src.utils.permissions import require_admin, require_teacher_or_admin_for_groups, require_teacher_curator_or_admin
@@ -28,10 +28,11 @@ class CreateUserRequest(BaseModel):
     email: EmailStr
     name: str
     password: Optional[str] = None  # If not provided, will be auto-generated
-    role: str = "student"  # student, teacher, head_curator, curator, admin
+    role: str = "student"  # student, teacher, head_curator, curator, admin, head_teacher
     student_id: Optional[str] = None
     is_active: bool = True
     group_ids: Optional[List[int]] = None  # Multiple groups for students
+    course_ids: Optional[List[int]] = None  # Courses for head teachers
 
 class BulkCreateUsersRequest(BaseModel):
     users: List[CreateUserRequest]
@@ -57,6 +58,7 @@ class UpdateUserRequest(BaseModel):
     is_active: Optional[bool] = None
     password: Optional[str] = None
     group_ids: Optional[List[int]] = None  # Update user's groups
+    course_ids: Optional[List[int]] = None  # Update head teacher's courses
 
 class CreateUserResponse(BaseModel):
     user: UserSchema
@@ -231,6 +233,25 @@ async def create_single_user(
                             student_id=new_user.id
                         )
                         db.add(group_student)
+            db.commit()
+        
+        # Assign user to courses if course_ids provided and user is a head_teacher
+        if user_data.course_ids and user_data.role == "head_teacher":
+            for course_id in user_data.course_ids:
+                # Verify course exists
+                course = db.query(Course).filter(Course.id == course_id).first()
+                if course:
+                    # Check if association already exists
+                    existing = db.query(CourseHeadTeacher).filter(
+                        CourseHeadTeacher.course_id == course_id,
+                        CourseHeadTeacher.head_teacher_id == new_user.id
+                    ).first()
+                    if not existing:
+                        course_head_teacher = CourseHeadTeacher(
+                            course_id=course_id,
+                            head_teacher_id=new_user.id
+                        )
+                        db.add(course_head_teacher)
             db.commit()
         
         return CreateUserResponse(
@@ -1579,6 +1600,22 @@ async def update_user(
             if group:
                 db.add(GroupStudent(group_id=group_id, student_id=user_id))
         
+        db.commit()
+    
+    # Update managed courses for Head Teacher
+    if user_data.course_ids is not None and final_role == "head_teacher":
+        # Remove all existing course associations
+        db.query(CourseHeadTeacher).filter(CourseHeadTeacher.head_teacher_id == user_id).delete()
+        db.flush()
+        
+        # Add new course associations
+        for course_id in user_data.course_ids:
+            course = db.query(Course).filter(Course.id == course_id).first()
+            if course:
+                db.add(CourseHeadTeacher(
+                    course_id=course.id,
+                    head_teacher_id=user_id
+                ))
         db.commit()
     
     # Create response
