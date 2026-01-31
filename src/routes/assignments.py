@@ -283,7 +283,9 @@ async def create_assignment(
                 due_date=due_date_for_group,
                 allowed_file_types=assignment_data.allowed_file_types,
                 max_file_size_mb=assignment_data.max_file_size_mb,
-                event_id=event_id_for_group
+                event_id=event_id_for_group,
+                late_penalty_enabled=assignment_data.late_penalty_enabled,
+                late_penalty_multiplier=assignment_data.late_penalty_multiplier
             )
             db.add(new_assignment)
             created_assignments.append(new_assignment)
@@ -303,7 +305,9 @@ async def create_assignment(
             due_date=assignment_data.due_date,
             allowed_file_types=assignment_data.allowed_file_types,
             max_file_size_mb=assignment_data.max_file_size_mb,
-            event_id=resolve_eid(assignment_data.event_id, db)
+            event_id=resolve_eid(assignment_data.event_id, db),
+            late_penalty_enabled=assignment_data.late_penalty_enabled,
+            late_penalty_multiplier=assignment_data.late_penalty_multiplier
         )
         db.add(new_assignment)
         created_assignments.append(new_assignment)
@@ -522,6 +526,10 @@ async def update_assignment(
     assignment.allowed_file_types = assignment_data.allowed_file_types
     assignment.max_file_size_mb = assignment_data.max_file_size_mb
     
+    # Update late penalty settings
+    assignment.late_penalty_enabled = assignment_data.late_penalty_enabled
+    assignment.late_penalty_multiplier = assignment_data.late_penalty_multiplier
+    
     db.commit()
     db.refresh(assignment)
     
@@ -655,6 +663,7 @@ async def submit_assignment(
         raise HTTPException(status_code=403, detail="Access denied to this assignment")
     
     # Check if assignment is overdue (with extension support)
+    is_late = False
     if assignment.due_date:
         # Check if student has an extension
         extension = db.query(AssignmentExtension).filter(
@@ -666,16 +675,9 @@ async def submit_assignment(
         effective_deadline = extension.extended_deadline if extension else assignment.due_date
         
         if to_naive_utc(effective_deadline) < datetime.utcnow():
-            if extension:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Extended deadline has passed. Your deadline was {effective_deadline.strftime('%Y-%m-%d %H:%M')}"
-                )
-            else:
-                raise HTTPException(
-                    status_code=400, 
-                    detail=f"Assignment deadline has passed. Deadline was {effective_deadline.strftime('%Y-%m-%d %H:%M')}"
-                )
+            is_late = True
+            print(f"Submission is late! Effective deadline was: {effective_deadline}")
+            # We allow late submissions but mark them as late
     
     # Check if already submitted (non-hidden submission exists)
     existing_submission = db.query(AssignmentSubmission).filter(
@@ -709,6 +711,14 @@ async def submit_assignment(
                 correct_answers,
                 assignment.max_score
             )
+            
+            # Apply late penalty if enabled
+            if score is not None and is_late and assignment.late_penalty_enabled:
+                print(f"Applying late penalty: score {score} * {assignment.late_penalty_multiplier}")
+                original_score = score
+                score = int(score * assignment.late_penalty_multiplier)
+                print(f"New score: {score}")
+                
         except Exception as e:
             # If auto-grading fails, mark as ungraded
             score = None
@@ -724,6 +734,7 @@ async def submit_assignment(
         score=score,
         max_score=assignment.max_score,
         is_graded=score is not None,
+        is_late=is_late,
         graded_at=datetime.utcnow() if score is not None else None
     )
     
@@ -1455,6 +1466,7 @@ async def get_assignment_student_progress(
             "submitted_at": submitted_at,
             "graded_at": graded_at,
             "is_overdue": is_overdue,
+            "is_late": submission.is_late if submission else False,
             "is_hidden": submission.is_hidden if submission else False,
             "assignment_source": assignment_source,
             "source_display": source_display
@@ -1486,7 +1498,10 @@ async def get_assignment_student_progress(
             "lesson_id": assignment.lesson_id,
             "group_id": assignment.group_id,
             "assignment_type": assignment.assignment_type,
-            "content": json.loads(assignment.content) if isinstance(assignment.content, str) else assignment.content
+            "assignment_type": assignment.assignment_type,
+            "content": json.loads(assignment.content) if isinstance(assignment.content, str) else assignment.content,
+            "late_penalty_enabled": assignment.late_penalty_enabled,
+            "late_penalty_multiplier": assignment.late_penalty_multiplier
         },
         "students": student_progress,
         "summary": {

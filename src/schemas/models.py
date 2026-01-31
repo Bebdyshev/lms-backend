@@ -1013,6 +1013,10 @@ class Assignment(Base):
     is_hidden = Column(Boolean, default=False)  # Hide old assignments from all users
     created_at = Column(DateTime, default=datetime.utcnow)
     
+    # Late submission settings
+    late_penalty_enabled = Column(Boolean, default=False)
+    late_penalty_multiplier = Column(Float, default=0.6)
+    
     # Relationships
     lesson = relationship("Lesson", back_populates="assignments")
     group = relationship("Group")
@@ -1035,6 +1039,7 @@ class AssignmentSubmission(Base):
     feedback = Column(Text, nullable=True)  # Teacher feedback
     graded_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # Teacher who graded
     submitted_at = Column(DateTime, default=datetime.utcnow)
+    is_late = Column(Boolean, default=False)
     graded_at = Column(DateTime, nullable=True)
     
     # Relationships
@@ -1127,6 +1132,8 @@ class AssignmentSchema(BaseModel):
     max_file_size_mb: int = 10
     is_active: bool
     is_hidden: Optional[bool] = False
+    late_penalty_enabled: Optional[bool] = False
+    late_penalty_multiplier: Optional[float] = 0.6
     created_at: datetime
     
     @field_validator('content', mode='before')
@@ -1153,13 +1160,14 @@ class AssignmentCreateSchema(BaseModel):
     due_date: Optional[datetime] = None
     group_id: Optional[int] = None
     group_ids: Optional[List[int]] = None
-    group_id: Optional[int] = None
-    group_ids: Optional[List[int]] = None
     event_id: Optional[int] = None  # Link to zoom lesson (Event)
     event_mapping: Optional[Dict[int, int]] = None  # Map group_id -> event_id
     due_date_mapping: Optional[Dict[int, datetime]] = None # Map group_id -> specific due_date
     allowed_file_types: Optional[List[str]] = None
     max_file_size_mb: int = 10
+    
+    late_penalty_enabled: bool = False
+    late_penalty_multiplier: float = 0.6
     
     @field_validator('content')
     @classmethod
@@ -1188,6 +1196,7 @@ class AssignmentSubmissionSchema(BaseModel):
     graded_by: Optional[int] = None
     grader_name: Optional[str] = None
     submitted_at: datetime
+    is_late: bool = False
     graded_at: Optional[datetime] = None
     
     @field_validator('answers', mode='before')
