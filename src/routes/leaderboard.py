@@ -33,8 +33,92 @@ async def get_curator_groups(
     # The frontend only uses id and name for the dropdown.
     # But for compatibility, let's use GroupSchema and fill basics.
     
+    
+    # 3. Calculate current_week for each group
+    from src.schemas.models import Event, EventGroup, LessonSchedule
+    
     result = []
     for group in groups:
+        # Determine Week 1 Start (same logic as get_weekly_lessons_with_hw_status)
+        first_event = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id == group.id,
+            Event.event_type == 'class',
+            Event.is_active == True
+        ).order_by(Event.start_datetime.asc()).first()
+        
+        start_of_week1 = None
+        if first_event:
+            start_of_week1 = first_event.start_datetime.date()
+        else:
+            first_sched = db.query(LessonSchedule).filter(
+                LessonSchedule.group_id == group.id,
+                LessonSchedule.is_active == True
+            ).order_by(LessonSchedule.scheduled_at.asc()).first()
+            if first_sched:
+                start_of_week1 = first_sched.scheduled_at.date()
+        
+        current_week = 1
+        max_week = 52
+        if start_of_week1:
+             # Align to Monday
+            start_of_week1 = start_of_week1 - timedelta(days=start_of_week1.weekday())
+            now_date = datetime.utcnow().date()
+            
+            # Calculate calendar week difference
+            days_diff = (now_date - start_of_week1).days
+            calendar_week = (days_diff // 7) + 1
+            if calendar_week < 1: 
+                calendar_week = 1
+                
+            # Calculate Max Content Week (Last scheduled event)
+            last_event = db.query(Event).join(EventGroup).filter(
+                EventGroup.group_id == group.id,
+                Event.event_type == 'class',
+                Event.is_active == True
+            ).order_by(Event.start_datetime.desc()).first()
+            
+            last_date = None
+            if last_event:
+                last_date = last_event.start_datetime.date()
+            else:
+                last_sched = db.query(LessonSchedule).filter(
+                    LessonSchedule.group_id == group.id,
+                    LessonSchedule.is_active == True
+                ).order_by(LessonSchedule.scheduled_at.desc()).first()
+                if last_sched:
+                    last_date = last_sched.scheduled_at.date()
+            
+            max_content_week = 1
+            if last_date:
+                 last_diff = (last_date - start_of_week1).days
+                 max_content_week = (last_diff // 7) + 1
+                 if max_content_week < 1: max_content_week = 1
+            
+            # 3.5 Also consider Course Length (Total lessons / 5)
+            from src.schemas.models import CourseGroupAccess, Lesson, Module
+            course_max_week = 1
+            course_access = db.query(CourseGroupAccess).filter(
+                CourseGroupAccess.group_id == group.id,
+                CourseGroupAccess.is_active == True
+            ).first()
+            if course_access:
+                lesson_count = db.query(func.count(Lesson.id)).join(Module).filter(
+                    Module.course_id == course_access.course_id
+                ).scalar()
+                if lesson_count:
+                    course_max_week = (lesson_count + 4) // 5 # Round up
+            
+            # Final max_week logic:
+            # - Always show up to last scheduled event
+            # - Always show up to course length
+            # - If active, show up to current week
+            potential_max = max(max_content_week, course_max_week)
+            if group.is_active:
+                potential_max = max(potential_max, calendar_week)
+            
+            current_week = min(calendar_week, potential_max)
+            max_week = min(potential_max, 52) # Hard cap 52
+
         # Simplified population since we just need the list
         result.append(GroupSchema(
             id=group.id,
@@ -47,7 +131,9 @@ async def get_curator_groups(
             student_count=0, # Not critical
             students=[],
             created_at=group.created_at,
-            is_active=group.is_active
+            is_active=group.is_active,
+            current_week=current_week,
+            max_week=max_week
         ))
     return result
 
@@ -81,12 +167,50 @@ async def get_group_leaderboard(
     students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
     students_map = {s.id: s for s in students}
 
+    # 1.5 Determine Week Start Date & Date Range
+    from src.schemas.models import Event, EventGroup, LessonSchedule
+    
+    first_ev = db.query(Event).join(EventGroup).filter(
+        EventGroup.group_id == group_id,
+        Event.event_type == 'class',
+        Event.is_active == True
+    ).order_by(Event.start_datetime.asc()).first()
+    
+    start_week1 = None
+    if first_ev:
+        start_week1 = first_ev.start_datetime.date()
+    else:
+        first_sc = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == group_id,
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.scheduled_at.asc()).first()
+        if first_sc:
+            start_week1 = first_sc.scheduled_at.date()
+            
+    week_start_dt = None
+    week_end_dt = None
+    if start_week1:
+        start_of_week1 = start_week1 - timedelta(days=start_week1.weekday())
+        w_start_date = start_of_week1 + timedelta(weeks=week_number - 1)
+        w_end_date = w_start_date + timedelta(days=7)
+        week_start_dt = datetime.combine(w_start_date, datetime.min.time())
+        week_end_dt = datetime.combine(w_end_date, datetime.min.time())
+
     # 2. Key logic: Map Week Number to Lesson IDs using LessonSchedule
-    raw_schedules = db.query(LessonSchedule).filter(
-        LessonSchedule.group_id == group_id,
-        LessonSchedule.week_number == week_number,
-        LessonSchedule.is_active == True
-    ).order_by(LessonSchedule.scheduled_at).all()
+    # Filter by date range if available to ensure correct calendar display
+    if week_start_dt and week_end_dt:
+        raw_schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == group_id,
+            LessonSchedule.is_active == True,
+            LessonSchedule.scheduled_at >= week_start_dt,
+            LessonSchedule.scheduled_at < week_end_dt
+        ).order_by(LessonSchedule.scheduled_at).all()
+    else:
+        raw_schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == group_id,
+            LessonSchedule.week_number == week_number,
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.scheduled_at).all()
     
     # Deduplicate by time signature
     schedules = []
@@ -208,6 +332,24 @@ async def get_group_leaderboard(
     ).all()
     entries_map = {e.user_id: e for e in entries}
 
+    # 3.5 FETCH SAT DATA
+    from src.services.sat_service import SATService
+    sat_results_map = {} # user_id -> combinedScore
+    
+    if week_start_dt and week_end_dt:
+        emails = [s.email.lower() for s in students if s.email]
+        if emails:
+            batch_data = await SATService.fetch_batch_test_results(emails)
+            results = batch_data.get("results", [])
+            email_to_id = {s.email.lower(): s.id for s in students if s.email}
+            for res in results:
+                email = res.get("email", "").lower()
+                sid = email_to_id.get(email)
+                if sid and res.get("data"):
+                    pct = SATService.get_percentage_for_week(res["data"], week_start_dt, week_end_dt)
+                    if pct is not None:
+                        sat_results_map[sid] = pct
+
     # 4. Construct Response
     result = []
     
@@ -220,10 +362,14 @@ async def get_group_leaderboard(
         hw_scores = homework_data.get(student_id, {})
         att_scores = attendance_data.get(student_id, {})
         
+        # Priority for mock_exam: SAT Platform data for this week > Manual Entry
+        sat_score = sat_results_map.get(student_id)
+        mock_exam_score = sat_score if sat_score is not None else (entry.mock_exam if entry else 0)
+
         # Manual scores defaults
         manual = {
             "curator_hour": entry.curator_hour if entry else 0,
-            "mock_exam": entry.mock_exam if entry else 0,
+            "mock_exam": mock_exam_score,
             "study_buddy": entry.study_buddy if entry else 0,
             "self_reflection_journal": entry.self_reflection_journal if entry else 0,
             "weekly_evaluation": entry.weekly_evaluation if entry else 0,
@@ -553,26 +699,28 @@ async def get_weekly_lessons_with_hw_status(
                 events.append(instance)
                 seen_times.add(time_sig)
     
-    # 4. Merge LessonSchedule for the current week
-    schedules = db.query(LessonSchedule).filter(
-        LessonSchedule.group_id == group_id,
-        LessonSchedule.week_number == week_number,
-        LessonSchedule.is_active == True
-    ).order_by(LessonSchedule.scheduled_at).all()
-    
-    for sched in schedules:
-        time_sig = sched.scheduled_at.replace(second=0, microsecond=0)
-        if time_sig not in seen_times:
-            lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
-            pseudo_event = Event(
-                id=sched.id,
-                title=lesson_title,
-                start_datetime=sched.scheduled_at,
-                event_type='class'
-            )
-            pseudo_event.lesson_id = sched.lesson_id
-            events.append(pseudo_event)
-            seen_times.add(time_sig)
+        # 4. Merge LessonSchedule for the current week
+        # Filter by date range instead of week_number to avoid cross-week display
+        schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id == group_id,
+            LessonSchedule.is_active == True,
+            LessonSchedule.scheduled_at >= week_start_dt,
+            LessonSchedule.scheduled_at < week_end_dt
+        ).order_by(LessonSchedule.scheduled_at).all()
+        
+        for sched in schedules:
+            time_sig = sched.scheduled_at.replace(second=0, microsecond=0)
+            if time_sig not in seen_times:
+                lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
+                pseudo_event = Event(
+                    id=sched.id,
+                    title=lesson_title,
+                    start_datetime=sched.scheduled_at,
+                    event_type='class'
+                )
+                pseudo_event.lesson_id = sched.lesson_id
+                events.append(pseudo_event)
+                seen_times.add(time_sig)
 
     events.sort(key=lambda x: x.start_datetime)
                 
@@ -693,14 +841,45 @@ async def get_weekly_lessons_with_hw_status(
     ).all()
     manual_map = {e.user_id: e for e in manual_entries}
 
+    # 9.5 FETCH SAT DATA
+    from src.services.sat_service import SATService
+    sat_results_map = {} # user_id -> combinedScore
+    
+    if student_ids and week_start_date and week_end_date:
+        emails = [s.email.lower() for s in students_list if s.email]
+        if emails:
+            # Fetch all results for these emails
+            batch_data = await SATService.fetch_batch_test_results(emails)
+            results = batch_data.get("results", [])
+            
+            # Map email -> data
+            email_to_id = {s.email.lower(): s.id for s in students_list if s.email}
+            
+            # Convert dates to datetime for get_score_for_week
+            w_start = datetime.combine(week_start_date, datetime.min.time())
+            w_end = datetime.combine(week_end_date, datetime.min.time())
+            
+            for res in results:
+                email = res.get("email", "").lower()
+                student_id = email_to_id.get(email)
+                if student_id and res.get("data"):
+                    pct = SATService.get_percentage_for_week(res["data"], w_start, w_end)
+                    if pct is not None:
+                        sat_results_map[student_id] = pct
+
     # 10. Build Student Rows
     student_rows = []
     for student in students_list:
         # Get manual entry
         manual = manual_map.get(student.id)
+        
+        # Priority for mock_exam: SAT Platform data for this week > Manual Entry
+        sat_score = sat_results_map.get(student.id)
+        mock_exam_score = sat_score if sat_score is not None else (manual.mock_exam if manual else 0)
+
         manual_data = {
             "curator_hour": manual.curator_hour if manual else 0,
-            "mock_exam": manual.mock_exam if manual else 0,
+            "mock_exam": mock_exam_score,
             "study_buddy": manual.study_buddy if manual else 0,
             "self_reflection_journal": manual.self_reflection_journal if manual else 0,
             "weekly_evaluation": manual.weekly_evaluation if manual else 0,

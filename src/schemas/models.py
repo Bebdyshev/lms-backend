@@ -682,6 +682,8 @@ class GroupSchema(BaseModel):
     created_at: datetime
     is_active: bool
     schedule_config: Optional[dict] = None
+    current_week: Optional[int] = None
+    max_week: Optional[int] = None
     
     class Config:
         from_attributes = True
