@@ -1196,7 +1196,7 @@ class AssignmentSubmissionSchema(BaseModel):
     graded_by: Optional[int] = None
     grader_name: Optional[str] = None
     submitted_at: datetime
-    is_late: bool = False
+    is_late: Optional[bool] = False
     graded_at: Optional[datetime] = None
     
     @field_validator('answers', mode='before')
