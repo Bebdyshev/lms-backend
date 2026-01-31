@@ -598,6 +598,8 @@ def get_head_curator_dashboard_stats(
         avg_progress = 0
         overdue_count = 0
         pending_grading = 0
+        overdue_perc = 0
+        pending_perc = 0
         
         if c_student_ids:
             # Средний прогресс (за все время, так как это статус завершенности)
@@ -665,6 +667,37 @@ def get_head_curator_dashboard_stats(
                 AssignmentSubmission.is_graded == False,
                 AssignmentSubmission.is_hidden == False
             ).count()
+            
+            # --- Percentages Calculations ---
+            # Total Due (Universe for Overdue)
+            total_due_ga = db.query(GroupAssignment, GroupStudent).join(
+                GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
+            ).filter(
+                GroupAssignment.group_id.in_(c_group_ids),
+                GroupAssignment.due_date < datetime.utcnow(),
+                GroupAssignment.is_active == True,
+                GroupStudent.student_id.in_(c_student_ids)
+            ).count()
+            
+            total_due_direct = db.query(Assignment, GroupStudent).join(
+                GroupStudent, Assignment.group_id == GroupStudent.group_id
+            ).filter(
+                Assignment.group_id.in_(c_group_ids),
+                Assignment.due_date < datetime.utcnow(),
+                Assignment.is_active == True,
+                Assignment.is_hidden == False,
+                GroupStudent.student_id.in_(c_student_ids)
+            ).count()
+            
+            total_due = total_due_ga + total_due_direct
+            overdue_perc = round((overdue_count / total_due * 100), 1) if total_due > 0 else 0
+            
+            # Total Submissions (Universe for Pending Grading)
+            total_submissions = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.user_id.in_(c_student_ids),
+                AssignmentSubmission.is_hidden == False
+            ).count()
+            pending_perc = round((pending_grading / total_submissions * 100), 1) if total_submissions > 0 else 0
 
         curator_performance.append({
             "id": curator.id,
@@ -673,7 +706,11 @@ def get_head_curator_dashboard_stats(
             "students_count": len(c_student_ids),
             "avg_progress": round(avg_progress, 1),
             "overdue_count": overdue_count,
-            "pending_grading": pending_grading
+            "total_due": total_due,
+            "overdue_perc": overdue_perc,
+            "pending_grading": pending_grading,
+            "total_submissions": total_submissions,
+            "pending_perc": pending_perc
         })
 
     # 4. Активность за 14 дней (Engagement Trends in PERCENTAGE)
