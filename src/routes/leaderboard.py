@@ -546,11 +546,12 @@ async def update_leaderboard_config(
 ):
     """Create or update leaderboard column visibility settings for a group/week"""
     # 1. Authorization
+    # 1. Authorization
     if current_user.role == "curator":
         group = db.query(Group).filter(Group.id == payload.group_id, Group.curator_id == current_user.id).first()
         if not group:
             raise HTTPException(status_code=403, detail="Access denied to this group")
-    elif current_user.role == "admin":
+    elif current_user.role in ["admin", "head_curator"]:
         pass
     else:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -589,11 +590,12 @@ async def get_weekly_lessons_with_hw_status(
     Dynamically assumes the group's first event is Week 1.
     """
     # 1. Authorization
+    # 1. Authorization
     if current_user.role == "curator":
         group = db.query(Group).filter(Group.id == group_id, Group.curator_id == current_user.id).first()
         if not group:
             raise HTTPException(status_code=403, detail="Access denied to this group")
-    elif current_user.role == "admin":
+    elif current_user.role in ["admin", "head_curator"]:
         pass
     else:
         raise HTTPException(status_code=403, detail="Access denied")
