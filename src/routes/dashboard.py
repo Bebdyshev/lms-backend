@@ -33,7 +33,7 @@ async def get_dashboard_stats(
     elif current_user.role == "teacher":
         return get_teacher_dashboard_stats(current_user, db)
     elif current_user.role == "curator":
-        return get_curator_dashboard_stats(current_user, db)
+        return get_curator_dashboard_stats(current_user, db, group_id, start_date, end_date)
     elif current_user.role == "head_curator":
         return get_head_curator_dashboard_stats(current_user, db, group_id, start_date, end_date)
     elif current_user.role == "admin":
@@ -371,13 +371,23 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
         recent_courses=course_stats[:6]
     )
 
-def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+def get_curator_dashboard_stats(
+    user: UserInDB, 
+    db: Session,
+    group_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+) -> DashboardStatsSchema:
     """Get dashboard stats for curator - matched to head curator layout but scoped to their groups"""
     from src.schemas.models import Group, Assignment, AssignmentSubmission, GroupStudent, GroupAssignment, StepProgress
     from sqlalchemy import func
     
     # 1. Curator's Groups and Students
-    curator_groups = db.query(Group).filter(Group.curator_id == user.id, Group.is_active == True).all()
+    group_query = db.query(Group).filter(Group.curator_id == user.id, Group.is_active == True)
+    if group_id:
+        group_query = group_query.filter(Group.id == group_id)
+    
+    curator_groups = group_query.all()
     curator_group_ids = [g.id for g in curator_groups]
     total_groups = len(curator_groups)
     
@@ -390,24 +400,42 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     total_students = len(curator_students)
     current_student_ids = [s.id for s in curator_students]
     
-    # Activity за 7 дней
-    seven_days_ago = datetime.utcnow() - timedelta(days=7)
-    active_student_ids_set = set()
+    # Activity Trends Period
+    if start_date:
+        try:
+            date_start = datetime.fromisoformat(start_date)
+        except:
+            date_start = datetime.utcnow() - timedelta(days=7)
+    else:
+        date_start = datetime.utcnow() - timedelta(days=7)
+    
+    if end_date:
+        try:
+            date_end = datetime.fromisoformat(end_date)
+        except:
+            date_end = datetime.utcnow()
+    else:
+        date_end = datetime.utcnow()
+
+    total_active_students = 0
     if current_student_ids:
+        active_student_ids_set = set()
         active_steps = db.query(StepProgress.user_id).filter(
             StepProgress.user_id.in_(current_student_ids),
-            StepProgress.visited_at >= seven_days_ago
+            StepProgress.visited_at >= date_start,
+            StepProgress.visited_at <= date_end
         ).distinct().all()
         for s in active_steps: active_student_ids_set.add(s[0])
         
         active_submissions = db.query(AssignmentSubmission.user_id).filter(
             AssignmentSubmission.user_id.in_(current_student_ids),
-            AssignmentSubmission.submitted_at >= seven_days_ago,
+            AssignmentSubmission.submitted_at >= date_start,
+            AssignmentSubmission.submitted_at <= date_end,
             AssignmentSubmission.is_hidden == False
         ).distinct().all()
         for s in active_submissions: active_student_ids_set.add(s[0])
+        total_active_students = len(active_student_ids_set)
 
-    total_active_students = len(active_student_ids_set)
     total_inactive_students = total_students - total_active_students
     
     # 2. Global stats for curator's groups
@@ -538,11 +566,16 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "pending_perc": round(pending_grading / total_submissions * 100, 1) if total_submissions > 0 else 0
         })
 
-    # 4. Activity Trends (14 days)
+    # 4. Activity Trends
     activity_trends = []
-    base_date = datetime.utcnow() - timedelta(days=13)
-    for i in range(14):
-        day = (base_date + timedelta(days=i)).date()
+    
+    # Calculate days between start and end
+    delta = date_end - date_start
+    num_days = delta.days + 1
+    if num_days > 60: num_days = 60 # Cap to 60 days to prevent performance issues
+    
+    for i in range(num_days):
+        day = (date_start + timedelta(days=i)).date()
         day_active_count = db.query(func.count(func.distinct(StepProgress.user_id))).filter(
             func.date(StepProgress.visited_at) == day,
             StepProgress.user_id.in_(current_student_ids) if current_student_ids else False
