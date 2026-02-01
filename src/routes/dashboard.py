@@ -372,59 +372,188 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     )
 
 def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
-    """Get dashboard stats for curator"""
-    # Get groups where current user is curator
-    from src.schemas.models import Group
-    curator_groups = db.query(Group).filter(
-        Group.curator_id == user.id
-    ).all()
+    """Get dashboard stats for curator - matched to head curator layout but scoped to their groups"""
+    from src.schemas.models import Group, Assignment, AssignmentSubmission, GroupStudent, GroupAssignment, StepProgress
+    from sqlalchemy import func
     
-    # Get students assigned to curator (from curator's groups)
-    assigned_students = []
-    if curator_groups:
-        group_ids = [group.id for group in curator_groups]
-        # Get students in curator's groups using GroupStudent association table
-        group_student_ids = db.query(GroupStudent.student_id).filter(
-            GroupStudent.group_id.in_(group_ids)
-        ).subquery()
-        assigned_students = db.query(UserInDB).filter(
-            UserInDB.role == "student",
-            UserInDB.id.in_(group_student_ids),
-            UserInDB.is_active == True
-        ).all()
+    # 1. Curator's Groups and Students
+    curator_groups = db.query(Group).filter(Group.curator_id == user.id, Group.is_active == True).all()
+    curator_group_ids = [g.id for g in curator_groups]
+    total_groups = len(curator_groups)
     
-    total_students = len(assigned_students)
+    curator_students = db.query(UserInDB).join(GroupStudent, UserInDB.id == GroupStudent.student_id).filter(
+        GroupStudent.group_id.in_(curator_group_ids),
+        UserInDB.role == "student",
+        UserInDB.is_active == True
+    ).all() if curator_group_ids else []
     
-    # Calculate stats for assigned students
-    total_courses_monitored = 0
-    students_with_progress = []
+    total_students = len(curator_students)
+    current_student_ids = [s.id for s in curator_students]
     
-    for student in assigned_students:
-        enrollments = db.query(Enrollment).filter(
-            Enrollment.user_id == student.id,
-            Enrollment.is_active == True
+    # Activity за 7 дней
+    seven_days_ago = datetime.utcnow() - timedelta(days=7)
+    active_student_ids_set = set()
+    if current_student_ids:
+        active_steps = db.query(StepProgress.user_id).filter(
+            StepProgress.user_id.in_(current_student_ids),
+            StepProgress.visited_at >= seven_days_ago
+        ).distinct().all()
+        for s in active_steps: active_student_ids_set.add(s[0])
+        
+        active_submissions = db.query(AssignmentSubmission.user_id).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.submitted_at >= seven_days_ago,
+            AssignmentSubmission.is_hidden == False
+        ).distinct().all()
+        for s in active_submissions: active_student_ids_set.add(s[0])
+
+    total_active_students = len(active_student_ids_set)
+    total_inactive_students = total_students - total_active_students
+    
+    # 2. Global stats for curator's groups
+    total_overdue_global = 0
+    total_pending_global = 0
+    
+    if curator_group_ids and current_student_ids:
+        # Overdues (GA + Direct)
+        unsubmitted_ga = db.query(GroupAssignment, GroupStudent).join(
+            GroupStudent, GroupAssignment.group_id == GroupStudent.group_id
+        ).filter(
+            GroupAssignment.group_id.in_(curator_group_ids),
+            GroupAssignment.due_date < datetime.utcnow(),
+            GroupAssignment.is_active == True,
+            GroupStudent.student_id.in_(current_student_ids),
+            ~db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == GroupAssignment.assignment_id,
+                AssignmentSubmission.user_id == GroupStudent.student_id,
+                AssignmentSubmission.is_hidden == False
+            ).exists()
         ).count()
-        total_courses_monitored += enrollments
         
-        # Get average progress for student
-        progress_records = db.query(StudentProgress).filter(
-            StudentProgress.user_id == student.id
-        ).all()
+        late_ga = db.query(AssignmentSubmission).join(
+            GroupAssignment, AssignmentSubmission.assignment_id == GroupAssignment.assignment_id
+        ).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.submitted_at > GroupAssignment.due_date,
+            GroupAssignment.group_id.in_(curator_group_ids),
+            AssignmentSubmission.is_hidden == False
+        ).count()
+
+        unsubmitted_direct = db.query(Assignment, GroupStudent).join(
+            GroupStudent, Assignment.group_id == GroupStudent.group_id
+        ).filter(
+            Assignment.group_id.in_(curator_group_ids),
+            Assignment.due_date < datetime.utcnow(),
+            Assignment.is_active == True,
+            Assignment.is_hidden == False,
+            GroupStudent.student_id.in_(current_student_ids),
+            ~db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.assignment_id == Assignment.id,
+                AssignmentSubmission.user_id == GroupStudent.student_id,
+                AssignmentSubmission.is_hidden == False
+            ).exists()
+        ).count()
         
-        if progress_records:
-            avg_progress = sum(p.completion_percentage for p in progress_records) / len(progress_records)
-        else:
-            avg_progress = 0
+        late_direct = db.query(AssignmentSubmission).join(
+            Assignment, AssignmentSubmission.assignment_id == Assignment.id
+        ).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.submitted_at > Assignment.due_date,
+            Assignment.group_id.in_(curator_group_ids),
+            Assignment.is_active == True,
+            Assignment.is_hidden == False,
+            AssignmentSubmission.is_hidden == False
+        ).count()
         
-        students_with_progress.append({
-            "id": student.id,
-            "name": student.name,
-            "student_id": student.student_id,
-            "progress": round(avg_progress),
-            "total_courses": enrollments,
-            "last_activity": max([p.last_accessed for p in progress_records]) if progress_records else None
+        total_overdue_global = unsubmitted_ga + late_ga + unsubmitted_direct + late_direct
+        
+        # Pending Grading
+        total_pending_global = db.query(AssignmentSubmission).filter(
+            AssignmentSubmission.user_id.in_(current_student_ids),
+            AssignmentSubmission.is_graded == False,
+            AssignmentSubmission.is_hidden == False
+        ).count()
+
+    # 3. Stats per Group (replacing Curator Performance)
+    group_performance = []
+    for g in curator_groups:
+        g_student_ids = [gs.student_id for gs in db.query(GroupStudent).filter(GroupStudent.group_id == g.id).all()]
+        
+        avg_progress = 0
+        overdue_count = 0
+        pending_grading = 0
+        total_due = 0
+        total_submissions = 0
+        
+        if g_student_ids:
+            # Avg Progress
+            progress_records = db.query(StudentProgress).filter(StudentProgress.user_id.in_(g_student_ids)).all()
+            if progress_records:
+                avg_progress = sum(p.completion_percentage for p in progress_records) / len(progress_records)
+            
+            # Overdue calc for this group
+            ug = db.query(GroupAssignment, GroupStudent).join(GroupStudent, GroupAssignment.group_id == GroupStudent.group_id).filter(
+                GroupAssignment.group_id == g.id, GroupAssignment.due_date < datetime.utcnow(), GroupAssignment.is_active == True,
+                GroupStudent.student_id.in_(g_student_ids),
+                ~db.query(AssignmentSubmission).filter(AssignmentSubmission.assignment_id == GroupAssignment.assignment_id, AssignmentSubmission.user_id == GroupStudent.student_id, AssignmentSubmission.is_hidden == False).exists()
+            ).count()
+            lg = db.query(AssignmentSubmission).join(GroupAssignment, AssignmentSubmission.assignment_id == GroupAssignment.assignment_id).filter(
+                AssignmentSubmission.user_id.in_(g_student_ids), AssignmentSubmission.submitted_at > GroupAssignment.due_date, GroupAssignment.group_id == g.id, AssignmentSubmission.is_hidden == False
+            ).count()
+            ud = db.query(Assignment, GroupStudent).join(GroupStudent, Assignment.group_id == GroupStudent.group_id).filter(
+                Assignment.group_id == g.id, Assignment.due_date < datetime.utcnow(), Assignment.is_active == True, GroupStudent.student_id.in_(g_student_ids),
+                ~db.query(AssignmentSubmission).filter(AssignmentSubmission.assignment_id == Assignment.id, AssignmentSubmission.user_id == GroupStudent.student_id, AssignmentSubmission.is_hidden == False).exists()
+            ).count()
+            ld = db.query(AssignmentSubmission).join(Assignment, AssignmentSubmission.assignment_id == Assignment.id).filter(
+                AssignmentSubmission.user_id.in_(g_student_ids), AssignmentSubmission.submitted_at > Assignment.due_date, Assignment.group_id == g.id, Assignment.is_active == True, AssignmentSubmission.is_hidden == False
+            ).count()
+            overdue_count = ug + lg + ud + ld
+            
+            # Pending Grading
+            pending_grading = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.user_id.in_(g_student_ids), AssignmentSubmission.is_graded == False, AssignmentSubmission.is_hidden == False
+            ).count()
+            
+            # Totals for percentages
+            total_due = db.query(GroupAssignment, GroupStudent).join(GroupStudent, GroupAssignment.group_id == GroupStudent.group_id).filter(
+                GroupAssignment.group_id == g.id, GroupAssignment.due_date < datetime.utcnow(), GroupAssignment.is_active == True, GroupStudent.student_id.in_(g_student_ids)
+            ).count() + db.query(Assignment, GroupStudent).join(GroupStudent, Assignment.group_id == GroupStudent.group_id).filter(
+                Assignment.group_id == g.id, Assignment.due_date < datetime.utcnow(), Assignment.is_active == True, GroupStudent.student_id.in_(g_student_ids)
+            ).count()
+            
+            total_submissions = db.query(AssignmentSubmission).filter(
+                AssignmentSubmission.user_id.in_(g_student_ids), AssignmentSubmission.is_hidden == False
+            ).count()
+
+        group_performance.append({
+            "id": g.id,
+            "name": g.name,
+            "students_count": len(g_student_ids),
+            "avg_progress": round(avg_progress, 1),
+            "overdue_count": overdue_count,
+            "total_due": total_due,
+            "overdue_perc": round(overdue_count / total_due * 100, 1) if total_due > 0 else 0,
+            "pending_grading": pending_grading,
+            "total_submissions": total_submissions,
+            "pending_perc": round(pending_grading / total_submissions * 100, 1) if total_submissions > 0 else 0
         })
-    
+
+    # 4. Activity Trends (14 days)
+    activity_trends = []
+    base_date = datetime.utcnow() - timedelta(days=13)
+    for i in range(14):
+        day = (base_date + timedelta(days=i)).date()
+        day_active_count = db.query(func.count(func.distinct(StepProgress.user_id))).filter(
+            func.date(StepProgress.visited_at) == day,
+            StepProgress.user_id.in_(current_student_ids) if current_student_ids else False
+        ).scalar() or 0
+        
+        activity_trends.append({
+            "date": day.isoformat(),
+            "count": day_active_count,
+            "percentage": round(day_active_count / total_students * 100, 1) if total_students > 0 else 0
+        })
+
     return DashboardStatsSchema(
         user={
             "name": user.name.split()[0],
@@ -433,12 +562,24 @@ def get_curator_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "avatar_url": user.avatar_url
         },
         stats={
+            "total_groups": total_groups,
             "total_students": total_students,
-            "total_groups": len(curator_groups),
-            "total_courses_monitored": total_courses_monitored,
-            "average_student_progress": round(sum(s["progress"] for s in students_with_progress) / len(students_with_progress)) if students_with_progress else 0
+            "active_students_7d": total_active_students,
+            "inactive_students": total_inactive_students,
+            "total_overdue": total_overdue_global,
+            "total_pending": total_pending_global,
+            "curator_performance": group_performance, # Re-using key name for frontend
+            "activity_trends": activity_trends
         },
-        recent_courses=students_with_progress[:6]  # Show recent student activity instead of courses
+        recent_courses=[
+            {
+                "id": p["id"],
+                "title": p["name"],
+                "curator": user.name,
+                "overdue_count": p["overdue_count"]
+            }
+            for p in group_performance if p["overdue_count"] > 0
+        ]
     )
 
 def get_head_curator_dashboard_stats(
@@ -1949,515 +2090,7 @@ async def get_teacher_students_progress(
     return {"students_progress": students_data}
 
 
-@router.get("/curator/students-progress")
-async def get_curator_students_progress(
-    current_user: UserInDB = Depends(get_current_user_dependency),
-    db: Session = Depends(get_db)
-):
-    """Get list of students with their current lesson progress for curator's groups"""
-    if current_user.role not in ["curator", "head_curator"]:
-        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
-    
-    from src.schemas.models import CourseGroupAccess, Group
-    
-    # Get curator's groups
-    if current_user.role == "head_curator":
-        curator_groups = db.query(Group).all()
-    else:
-        curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
-    
-    if not curator_groups:
-        return {"students_progress": []}
-    
-    curator_group_ids = [g.id for g in curator_groups]
-    curator_groups_map = {g.id: g for g in curator_groups}
-    
-    # Get all students from curator's groups with their group info
-    group_student_records = db.query(GroupStudent).filter(
-        GroupStudent.group_id.in_(curator_group_ids)
-    ).all()
-    
-    if not group_student_records:
-        return {"students_progress": []}
-    
-    students_data = []
-    student_ids_seen = set()
-    
-    # Process each student from curator's groups
-    for gs in group_student_records:
-        if gs.student_id in student_ids_seen:
-            continue
-            
-        student = db.query(UserInDB).filter(UserInDB.id == gs.student_id).first()
-        if not student:
-            continue
-        
-        group = curator_groups_map.get(gs.group_id)
-        group_name = group.name if group else None
-        
-        # Get courses that this student's group has access to
-        group_course_access = db.query(CourseGroupAccess).filter(
-            CourseGroupAccess.group_id == gs.group_id,
-            CourseGroupAccess.is_active == True
-        ).all()
-        
-        if not group_course_access:
-            # Student has no courses assigned - still show them
-            students_data.append({
-                "student_id": student.id,
-                "student_name": student.name,
-                "student_email": student.email,
-                "student_avatar": student.avatar_url,
-                "group_name": group_name,
-                "course_id": None,
-                "course_title": "No courses assigned",
-                "current_lesson_id": None,
-                "current_lesson_title": "Not started",
-                "lesson_progress": 0,
-                "overall_progress": 0,
-                "last_activity": None
-            })
-            student_ids_seen.add(gs.student_id)
-            continue
-        
-        # For each course the student has access to
-        for access in group_course_access:
-            course = db.query(Course).filter(
-                Course.id == access.course_id,
-                Course.is_active == True
-            ).first()
-            
-            if not course:
-                continue
-            
-            # Find last accessed lesson through StepProgress
-            last_step_progress = db.query(StepProgress).filter(
-                StepProgress.user_id == student.id,
-                StepProgress.course_id == course.id
-            ).order_by(desc(StepProgress.visited_at)).first()
-            
-            current_lesson_title = None
-            current_lesson_id = None
-            lesson_progress_percentage = 0
-            
-            if last_step_progress:
-                # Get the lesson from the step
-                step = db.query(Step).filter(Step.id == last_step_progress.step_id).first()
-                if step:
-                    lesson = db.query(Lesson).filter(Lesson.id == step.lesson_id).first()
-                    if lesson:
-                        current_lesson_title = lesson.title
-                        current_lesson_id = lesson.id
-                        
-                        # Calculate lesson progress (completed steps / total steps in lesson)
-                        lesson_steps = db.query(Step).filter(Step.lesson_id == lesson.id).count()
-                        completed_lesson_steps = db.query(StepProgress).filter(
-                            StepProgress.user_id == student.id,
-                            StepProgress.step_id.in_(
-                                db.query(Step.id).filter(Step.lesson_id == lesson.id)
-                            ),
-                            StepProgress.status == 'completed'
-                        ).count()
-                        
-                        lesson_progress_percentage = round((completed_lesson_steps / lesson_steps) * 100) if lesson_steps > 0 else 0
-            
-            # Calculate overall course progress and get last activity
-            all_progress = db.query(StudentProgress).filter(
-                StudentProgress.user_id == student.id,
-                StudentProgress.course_id == course.id
-            ).all()
-            
-            overall_progress = 0
-            last_activity = None
-            
-            if all_progress:
-                overall_progress = round(sum(p.completion_percentage for p in all_progress) / len(all_progress))
-                last_activity = max(p.last_accessed for p in all_progress if p.last_accessed)
 
-            students_data.append({
-                "student_id": student.id,
-                "student_name": student.name,
-                "student_email": student.email,
-                "student_avatar": student.avatar_url,
-                "group_name": group_name,
-                "course_id": course.id,
-                "course_title": course.title,
-                "current_lesson_id": current_lesson_id,
-                "current_lesson_title": current_lesson_title or "Not started",
-                "lesson_progress": lesson_progress_percentage,
-                "overall_progress": overall_progress,
-                "last_activity": last_activity
-            })
-        
-        student_ids_seen.add(gs.student_id)
-    
-    # Sort by last activity (most recent first), then by student name
-    students_data.sort(key=lambda x: (x["last_activity"] or datetime.min, x["student_name"]), reverse=True)
-    
-    return {"students_progress": students_data}
-
-@router.get("/curator/pending-submissions")
-async def get_curator_pending_submissions(
-    current_user: UserInDB = Depends(get_current_user_dependency),
-    db: Session = Depends(get_db)
-):
-    """Get pending submissions for curator's students"""
-    if current_user.role not in ["curator", "head_curator"]:
-        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
-    
-    from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
-    
-    # Get curator's groups
-    if current_user.role == "head_curator":
-        curator_groups = db.query(Group).all()
-    else:
-        curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
-    
-    if not curator_groups:
-        return {"pending_submissions": []}
-    
-    curator_group_ids = [g.id for g in curator_groups]
-    
-    # Get students from curator's groups
-    curator_student_ids = set()
-    group_students = db.query(GroupStudent).filter(
-        GroupStudent.group_id.in_(curator_group_ids)
-    ).all()
-    for gs in group_students:
-        curator_student_ids.add(gs.student_id)
-    
-    if not curator_student_ids:
-        return {"pending_submissions": []}
-    
-    # Get courses that curator's groups have access to
-    course_ids = db.query(CourseGroupAccess.course_id).filter(
-        CourseGroupAccess.group_id.in_(curator_group_ids),
-        CourseGroupAccess.is_active == True
-    ).distinct().all()
-    course_ids = [c[0] for c in course_ids]
-    
-    if not course_ids:
-        return {"pending_submissions": []}
-    
-    # Get assignments from those courses
-    assignments = db.query(Assignment).filter(
-        Assignment.lesson_id.in_(
-            db.query(Lesson.id).filter(
-                Lesson.module_id.in_(
-                    db.query(Module.id).filter(
-                        Module.course_id.in_(course_ids)
-                    )
-                )
-            )
-        ),
-        Assignment.is_active == True
-    ).all()
-    
-    if not assignments:
-        return {"pending_submissions": []}
-    
-    # Get pending submissions ONLY from curator's students
-    pending_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in assignments]),
-        AssignmentSubmission.user_id.in_(curator_student_ids),
-        AssignmentSubmission.is_graded == False
-    ).all()
-    
-    submissions_data = []
-    for submission in pending_submissions:
-        # Get assignment details
-        assignment = db.query(Assignment).filter(Assignment.id == submission.assignment_id).first()
-        
-        # Get student details
-        student = db.query(UserInDB).filter(UserInDB.id == submission.user_id).first()
-        
-        # Get course details
-        course = None
-        if assignment and assignment.lesson_id:
-            lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
-            if lesson:
-                module = db.query(Module).filter(Module.id == lesson.module_id).first()
-                if module:
-                    course = db.query(Course).filter(Course.id == module.course_id).first()
-        
-        submissions_data.append({
-            "id": submission.id,
-            "assignment_id": submission.assignment_id,
-            "assignment_title": assignment.title if assignment else "Unknown Assignment",
-            "course_title": course.title if course else "Unknown Course",
-            "user_id": submission.user_id,
-            "student_name": student.name if student else "Unknown Student",
-            "student_email": student.email if student else "",
-            "submitted_at": submission.submitted_at,
-            "max_score": submission.max_score,
-            "file_url": submission.file_url,
-            "submitted_file_name": submission.submitted_file_name
-        })
-    
-    # Sort by submission date (most recent first), handling potential None values
-    submissions_data.sort(key=lambda x: x["submitted_at"] if x["submitted_at"] is not None else datetime.min, reverse=True)
-    
-    return {"pending_submissions": submissions_data}
-
-@router.get("/curator/recent-submissions")
-async def get_curator_recent_submissions(
-    group_id: Optional[int] = None,
-    limit: int = 10,
-    current_user: UserInDB = Depends(get_current_user_dependency),
-    db: Session = Depends(get_db)
-):
-    """Get recent submissions for curator's students"""
-    if current_user.role not in ["curator", "head_curator"]:
-        raise HTTPException(status_code=403, detail="Only curators and head curators can access this endpoint")
-    
-    from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
-    from typing import Optional
-    
-    # Get curator's groups
-    if current_user.role == "head_curator":
-        curator_groups_query = db.query(Group)
-    else:
-        curator_groups_query = db.query(Group).filter(Group.curator_id == current_user.id)
-        
-    if group_id:
-        curator_groups_query = curator_groups_query.filter(Group.id == group_id)
-    
-    curator_groups = curator_groups_query.all()
-    
-    if not curator_groups:
-        return {"recent_submissions": []}
-    
-    curator_group_ids = [g.id for g in curator_groups]
-    
-    # Get students from curator's groups
-    curator_student_ids = set()
-    group_students = db.query(GroupStudent).filter(
-        GroupStudent.group_id.in_(curator_group_ids)
-    ).all()
-    for gs in group_students:
-        curator_student_ids.add(gs.student_id)
-    
-    if not curator_student_ids:
-        return {"recent_submissions": []}
-    
-    # Get courses that curator's groups have access to
-    course_ids = db.query(CourseGroupAccess.course_id).filter(
-        CourseGroupAccess.group_id.in_(curator_group_ids),
-        CourseGroupAccess.is_active == True
-    ).distinct().all()
-    course_ids = [c[0] for c in course_ids]
-    
-    if not course_ids:
-        return {"recent_submissions": []}
-    
-    # Get assignments
-    assignments = db.query(Assignment).filter(
-        Assignment.lesson_id.in_(
-            db.query(Lesson.id).filter(
-                Lesson.module_id.in_(
-                    db.query(Module.id).filter(
-                        Module.course_id.in_(course_ids)
-                    )
-                )
-            )
-        ),
-        Assignment.is_active == True
-    ).all()
-    
-    if not assignments:
-        return {"recent_submissions": []}
-    
-    # Get recent submissions
-    recent_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in assignments]),
-        AssignmentSubmission.user_id.in_(curator_student_ids)
-    ).order_by(desc(AssignmentSubmission.submitted_at)).limit(limit).all()
-    
-    submissions_data = []
-    for submission in recent_submissions:
-        # Get assignment details
-        assignment = db.query(Assignment).filter(Assignment.id == submission.assignment_id).first()
-        
-        # Get student details
-        student = db.query(UserInDB).filter(UserInDB.id == submission.user_id).first()
-        
-        # Get course details
-        course = None
-        if assignment and assignment.lesson_id:
-            lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
-            if lesson:
-                module = db.query(Module).filter(Module.id == lesson.module_id).first()
-                if module:
-                    course = db.query(Course).filter(Course.id == module.course_id).first()
-                    
-        # Get grader details
-        grader_name = None
-        if submission.graded_by:
-            grader = db.query(UserInDB).filter(UserInDB.id == submission.graded_by).first()
-            grader_name = grader.name if grader else None
-        
-        submissions_data.append({
-            "id": submission.id,
-            "assignment_id": submission.assignment_id,
-            "assignment_title": assignment.title if assignment else "Unknown Assignment",
-            "course_title": course.title if course else "Unknown Course",
-            "user_id": submission.user_id,
-            "student_name": student.name if student else "Unknown Student",
-            "student_email": student.email if student else "",
-            "submitted_at": submission.submitted_at,
-            "graded_at": submission.graded_at,
-            "score": submission.score,
-            "max_score": submission.max_score,
-            "is_graded": submission.is_graded,
-            "feedback": submission.feedback,
-            "grader_name": grader_name,
-            "file_url": submission.file_url,
-            "submitted_file_name": submission.submitted_file_name
-        })
-    
-    return {"recent_submissions": submissions_data}
-@router.get("/curator/assignments-analytics")
-async def get_curator_assignments_analytics(
-    current_user: UserInDB = Depends(get_current_user_dependency),
-    db: Session = Depends(get_db)
-):
-    """Get analytics for assignments relevant to curator's groups"""
-    if current_user.role != "curator":
-        raise HTTPException(status_code=403, detail="Only curators can access this endpoint")
-    
-    from src.schemas.models import Assignment, AssignmentSubmission, CourseGroupAccess, Group
-    
-    # Get curator's groups
-    curator_groups = db.query(Group).filter(
-        Group.curator_id == current_user.id
-    ).all()
-    
-    if not curator_groups:
-        return {"assignments": []}
-    
-    curator_group_ids = [g.id for g in curator_groups]
-    
-    # Get students from curator's groups
-    curator_student_ids = set()
-    group_students = db.query(GroupStudent).filter(
-        GroupStudent.group_id.in_(curator_group_ids)
-    ).all()
-    for gs in group_students:
-        curator_student_ids.add(gs.student_id)
-    
-    if not curator_student_ids:
-        return {"assignments": []}
-    
-    # Get courses that curator's groups have access to
-    course_ids = db.query(CourseGroupAccess.course_id).filter(
-        CourseGroupAccess.group_id.in_(curator_group_ids),
-        CourseGroupAccess.is_active == True
-    ).distinct().all()
-    course_ids = [c[0] for c in course_ids]
-    
-    # Get assignments - BOTH lesson-based AND group-based
-    # Lesson-based assignments from courses
-    lesson_based_assignments = db.query(Assignment).filter(
-        Assignment.lesson_id.in_(
-            db.query(Lesson.id).filter(
-                Lesson.module_id.in_(
-                    db.query(Module.id).filter(
-                        Module.course_id.in_(course_ids)
-                    )
-                )
-            )
-        ),
-        Assignment.is_active == True,
-        Assignment.is_hidden == False
-    ).all()
-    
-    # Group-based assignments (no lesson_id, but have group_id)
-    group_based_assignments = db.query(Assignment).filter(
-        Assignment.group_id.in_(curator_group_ids),
-        Assignment.lesson_id.is_(None),  # Only assignments without lesson_id
-        Assignment.is_active == True,
-        Assignment.is_hidden == False
-    ).all()
-    
-    # Combine both types
-    assignments = lesson_based_assignments + group_based_assignments
-    
-    if not assignments:
-        return {"assignments": []}
-    
-    # Get all submissions for these assignments filtered by curator students
-    all_submissions = db.query(AssignmentSubmission).filter(
-        AssignmentSubmission.assignment_id.in_([a.id for a in assignments]),
-        AssignmentSubmission.user_id.in_(curator_student_ids),
-        AssignmentSubmission.is_hidden == False
-    ).all()
-    
-    # Group submissions by assignment
-    submissions_by_assignment = {}
-    for sub in all_submissions:
-        if sub.assignment_id not in submissions_by_assignment:
-            submissions_by_assignment[sub.assignment_id] = []
-        submissions_by_assignment[sub.assignment_id].append(sub)
-            
-    # Prepare result
-    results = []
-    for assignment in assignments:
-        subs = submissions_by_assignment.get(assignment.id, [])
-        submitted_count = len(subs)
-        graded_count = len([s for s in subs if s.is_graded])
-        
-        scores = [s.score for s in subs if s.is_graded and s.score is not None]
-        avg_score = sum(scores) / len(scores) if scores else 0
-        
-        # Get course info and count enrolled students from curator's groups
-        course_title = "Unknown Course"
-        total_students_for_assignment = 0
-        
-        if assignment.lesson_id:
-            # Lesson-based assignment - get course from lesson hierarchy
-            lesson = db.query(Lesson).filter(Lesson.id == assignment.lesson_id).first()
-            if lesson:
-                module = db.query(Module).filter(Module.id == lesson.module_id).first()
-                if module:
-                    course = db.query(Course).filter(Course.id == module.course_id).first()
-                    if course:
-                        course_title = course.title
-                        
-                        # Count students from curator's groups enrolled in this course
-                        enrolled_curator_students = db.query(Enrollment).filter(
-                            Enrollment.course_id == course.id,
-                            Enrollment.user_id.in_(curator_student_ids),
-                            Enrollment.is_active == True
-                        ).count()
-                        total_students_for_assignment = enrolled_curator_students
-        elif assignment.group_id:
-            # Group-based assignment - get group name as "course"
-            group = db.query(Group).filter(Group.id == assignment.group_id).first()
-            if group:
-                course_title = f"Group: {group.name}"
-                
-                # Count students in this specific group
-                students_in_group = db.query(GroupStudent).filter(
-                    GroupStudent.group_id == assignment.group_id
-                ).count()
-                total_students_for_assignment = students_in_group
-
-        results.append({
-            "id": assignment.id,
-            "title": assignment.title,
-            "course_title": course_title,
-            "due_date": assignment.due_date,
-            "max_score": assignment.max_score,
-            "total_students": total_students_for_assignment,
-            "submitted_count": submitted_count,
-            "graded_count": graded_count,
-            "average_score": round(avg_score, 1)
-        })
-        
-    # Sort by due date (descending) or title
-    results.sort(key=lambda x: x["due_date"] or datetime.min, reverse=True)
-    
-    return {"assignments": results}
 
 
 
