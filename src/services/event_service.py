@@ -114,7 +114,7 @@ class EventService:
                     
         return generated_events
     @staticmethod
-    def materialize_virtual_event(db: Session, pseudo_id: int) -> Optional[int]:
+    def materialize_virtual_event(db: Session, pseudo_id: int, user_id: int) -> Optional[int]:
         """
         Scans all recurring events to find which one generated the given pseudo_id.
         If found, creates a real Event record in the database and returns its real ID.
@@ -182,7 +182,7 @@ class EventService:
             location=target_parent.location,
             is_online=target_parent.is_online,
             meeting_url=target_parent.meeting_url,
-            created_by=target_parent.created_by,
+            created_by=user_id,
             is_recurring=False, # It's a specific materialized instance
             lesson_id=target_parent.lesson_id,
             teacher_id=target_parent.teacher_id,
@@ -204,7 +204,7 @@ class EventService:
         return new_event.id
 
     @staticmethod
-    def materialize_lesson_schedule(db: Session, schedule_id: int) -> Optional[int]:
+    def materialize_lesson_schedule(db: Session, schedule_id: int, user_id: int) -> Optional[int]:
         """
         Converts a LessonSchedule into a real Event.
         Used when an assignment is linked to a planned lesson.
@@ -230,6 +230,7 @@ class EventService:
             location="Online (Scheduled)",
             is_online=True,
             meeting_url="",
+            created_by=user_id,
             is_recurring=False,
             lesson_id=sched.lesson_id,
             teacher_id=sched.group.teacher_id if sched.group else None,
@@ -245,7 +246,7 @@ class EventService:
         return new_event.id
 
     @staticmethod
-    def resolve_event_id(db: Session, event_id: Optional[int]) -> Optional[int]:
+    def resolve_event_id(db: Session, event_id: Optional[int], user_id: int) -> Optional[int]:
         """
         Check if event_id exists, or try to materialize it if it's virtual.
         """
@@ -260,7 +261,7 @@ class EventService:
         # 2. Check if it's a virtual LessonSchedule ID
         if event_id >= 2000000000:
             schedule_id = event_id - 2000000000
-            return EventService.materialize_lesson_schedule(db, schedule_id)
+            return EventService.materialize_lesson_schedule(db, schedule_id, user_id)
 
         # 3. Try to materialize from recurring
-        return EventService.materialize_virtual_event(db, event_id)
+        return EventService.materialize_virtual_event(db, event_id, user_id)

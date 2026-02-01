@@ -1384,7 +1384,7 @@ async def update_attendance_bulk(
 
         # Priority: event_id
         if item.event_id:
-            real_event_id = EventService.resolve_event_id(db, item.event_id)
+            real_event_id = EventService.resolve_event_id(db, item.event_id, current_user.id)
             if not real_event_id: continue
 
             participant = db.query(EventParticipant).filter(
@@ -1475,7 +1475,7 @@ async def update_attendance(
         from src.schemas.models import EventParticipant
         
         # Ensure event exists (materialize if pseudo-id)
-        real_event_id = EventService.resolve_event_id(db, data.event_id)
+        real_event_id = EventService.resolve_event_id(db, data.event_id, current_user.id)
         if not real_event_id:
              raise HTTPException(status_code=404, detail="Event could not be resolved/materialized")
 

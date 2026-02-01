@@ -242,10 +242,10 @@ async def create_assignment(
     # Cache for resolved event IDs to avoid redundant materialization in same request
     _resolved_ids_cache = {}
 
-    def resolve_eid(eid: Optional[int], db: Session) -> Optional[int]:
+    def resolve_eid(eid: Optional[int], db: Session, user_id: int) -> Optional[int]:
         if eid is None: return None
         if eid not in _resolved_ids_cache:
-            _resolved_ids_cache[eid] = EventService.resolve_event_id(db, eid)
+            _resolved_ids_cache[eid] = EventService.resolve_event_id(db, eid, user_id)
         return _resolved_ids_cache[eid]
     
     # If we have target groups, create an assignment for each group
@@ -261,9 +261,9 @@ async def create_assignment(
                 raise HTTPException(status_code=403, detail=f"Access denied to group {gid}")
                 
             # Determine settings for this group
-            event_id_for_group = resolve_eid(assignment_data.event_id, db)
+            event_id_for_group = resolve_eid(assignment_data.event_id, db, current_user.id)
             if assignment_data.event_mapping and gid in assignment_data.event_mapping:
-                event_id_for_group = resolve_eid(assignment_data.event_mapping[gid], db)
+                event_id_for_group = resolve_eid(assignment_data.event_mapping[gid], db, current_user.id)
                 
             # Determine due date for this group
             due_date_for_group = assignment_data.due_date
@@ -305,7 +305,7 @@ async def create_assignment(
             due_date=assignment_data.due_date,
             allowed_file_types=assignment_data.allowed_file_types,
             max_file_size_mb=assignment_data.max_file_size_mb,
-            event_id=resolve_eid(assignment_data.event_id, db),
+            event_id=resolve_eid(assignment_data.event_id, db, current_user.id),
             late_penalty_enabled=assignment_data.late_penalty_enabled,
             late_penalty_multiplier=assignment_data.late_penalty_multiplier
         )
@@ -522,7 +522,7 @@ async def update_assignment(
     assignment.time_limit_minutes = assignment_data.time_limit_minutes
     assignment.due_date = assignment_data.due_date
     assignment.group_id = assignment_data.group_id
-    assignment.event_id = EventService.resolve_event_id(db, assignment_data.event_id)
+    assignment.event_id = EventService.resolve_event_id(db, assignment_data.event_id, current_user.id)
     assignment.allowed_file_types = assignment_data.allowed_file_types
     assignment.max_file_size_mb = assignment_data.max_file_size_mb
     
