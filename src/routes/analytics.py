@@ -459,14 +459,27 @@ async def get_course_analytics_overview(
 
             # SURGICAL FALLBACK: Fetch individual results for anyone STILL missing
             missing_students = [s for s in enrolled_students if s.id not in student_sat_map]
+            
+            # FAIL-FAST: If too many are missing, the batch API might be broken or we're stressing it
+            # Fetching 200+ individuals sequentially/parallelly is too slow and risky
             if missing_students:
-                logger.info(f"Surgical fallback: Fetching individual SAT for {len(missing_students)} missing students (e.g. {missing_students[0].email})")
-                tasks = [fetch_sat_for_student(s, client) for s in missing_students]
-                individual_results = await asyncio.gather(*tasks)
-                for sid, data in individual_results:
-                    if data:
-                        parsed = parse_sat_data(sid, data)
-                        if parsed: student_sat_map[sid] = parsed
+                if len(missing_students) > 50:
+                    logger.warning(f"Surgical fallback skipped: {len(missing_students)} students missing SAT data. Batch API might be failing or data missing at source.")
+                else:
+                    logger.info(f"Surgical fallback: Fetching individual SAT for {len(missing_students)} missing students")
+                    # Use semaphore to limit concurrency
+                    semaphore = asyncio.Semaphore(10)
+                    
+                    async def sem_fetch(student_obj):
+                        async with semaphore:
+                            return await fetch_sat_for_student(student_obj, client)
+                            
+                    tasks = [sem_fetch(s) for s in missing_students]
+                    individual_results = await asyncio.gather(*tasks)
+                    for sid, data in individual_results:
+                        if data:
+                            parsed = parse_sat_data(sid, data)
+                            if parsed: student_sat_map[sid] = parsed
     # Pre-fetch Quiz Attempts (Internal) as fallback (optional, or remove if strictly separated)
     # Keeping it compatible with previous logic but External overrides
     quiz_attempts_query = db.query(QuizAttempt).filter(

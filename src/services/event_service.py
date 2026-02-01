@@ -4,7 +4,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 
-from src.schemas.models import Event, EventGroup, EventCourse
+from src.schemas.models import Event, EventGroup, EventCourse, LessonSchedule
 
 class EventService:
     @staticmethod
@@ -204,6 +204,47 @@ class EventService:
         return new_event.id
 
     @staticmethod
+    def materialize_lesson_schedule(db: Session, schedule_id: int) -> Optional[int]:
+        """
+        Converts a LessonSchedule into a real Event.
+        Used when an assignment is linked to a planned lesson.
+        """
+        sched = db.query(LessonSchedule).options(
+            joinedload(LessonSchedule.group),
+            joinedload(LessonSchedule.lesson)
+        ).filter(LessonSchedule.id == schedule_id).first()
+        
+        if not sched:
+            return None
+            
+        # Create real event
+        lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
+        group_name = sched.group.name if sched.group else "Group"
+        
+        new_event = Event(
+            title=f"{group_name}: {lesson_title}",
+            description=f"Planned lesson: {lesson_title}",
+            event_type="class",
+            start_datetime=sched.scheduled_at,
+            end_datetime=sched.scheduled_at + timedelta(minutes=90), # Default 1.5h
+            location="Online (Scheduled)",
+            is_online=True,
+            meeting_url="",
+            is_recurring=False,
+            lesson_id=sched.lesson_id,
+            teacher_id=sched.group.teacher_id if sched.group else None,
+            is_active=True
+        )
+        db.add(new_event)
+        db.flush()
+        
+        # Link to group
+        eg = EventGroup(event_id=new_event.id, group_id=sched.group_id)
+        db.add(eg)
+        
+        return new_event.id
+
+    @staticmethod
     def resolve_event_id(db: Session, event_id: Optional[int]) -> Optional[int]:
         """
         Check if event_id exists, or try to materialize it if it's virtual.
@@ -216,5 +257,10 @@ class EventService:
         if exists:
             return event_id
             
-        # 2. Try to materialize
+        # 2. Check if it's a virtual LessonSchedule ID
+        if event_id >= 2000000000:
+            schedule_id = event_id - 2000000000
+            return EventService.materialize_lesson_schedule(db, schedule_id)
+
+        # 3. Try to materialize from recurring
         return EventService.materialize_virtual_event(db, event_id)
