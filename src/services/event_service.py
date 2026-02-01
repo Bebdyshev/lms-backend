@@ -114,7 +114,7 @@ class EventService:
                     
         return generated_events
     @staticmethod
-    def materialize_virtual_event(db: Session, pseudo_id: int, user_id: int) -> Optional[int]:
+    def materialize_virtual_event(db: Session, pseudo_id: int, user_id: int) -> Optional[Event]:
         """
         Scans all recurring events to find which one generated the given pseudo_id.
         If found, creates a real Event record in the database and returns its real ID.
@@ -201,10 +201,10 @@ class EventService:
             new_ec = EventCourse(event_id=new_event.id, course_id=ec.course_id)
             db.add(new_ec)
             
-        return new_event.id
+        return new_event
 
     @staticmethod
-    def materialize_lesson_schedule(db: Session, schedule_id: int, user_id: int) -> Optional[int]:
+    def materialize_lesson_schedule(db: Session, schedule_id: int, user_id: int) -> Optional[Event]:
         """
         Converts a LessonSchedule into a real Event.
         Used when an assignment is linked to a planned lesson.
@@ -238,15 +238,14 @@ class EventService:
         )
         db.add(new_event)
         db.flush()
-        
         # Link to group
         eg = EventGroup(event_id=new_event.id, group_id=sched.group_id)
         db.add(eg)
-        
-        return new_event.id
+        db.flush()
+        return new_event
 
     @staticmethod
-    def resolve_event_id(db: Session, event_id: Optional[int], user_id: int) -> Optional[int]:
+    def resolve_event_id(db: Session, event_id: Optional[int], user_id: int) -> Optional[Event]:
         """
         Check if event_id exists, or try to materialize it if it's virtual.
         """
@@ -254,9 +253,9 @@ class EventService:
             return None
             
         # 1. Check if exists
-        exists = db.query(Event.id).filter(Event.id == event_id).first()
+        exists = db.query(Event).filter(Event.id == event_id).first()
         if exists:
-            return event_id
+            return exists
             
         # 2. Check if it's a virtual LessonSchedule ID
         if event_id >= 2000000000:

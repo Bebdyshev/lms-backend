@@ -21,10 +21,21 @@ from src.schemas.models import GroupStudent
 from src.services.event_service import EventService
 from src.routes.gamification import award_points
 
-def _to_enriched_schema(assignment: Assignment) -> AssignmentSchema:
+def _to_enriched_schema(assignment: Assignment, db: Session = None) -> AssignmentSchema:
     schema = AssignmentSchema.from_orm(assignment)
-    if assignment.event:
-        schema.event_start_datetime = assignment.event.start_datetime
+    
+    # If event relationship is not loaded but ID is present, try to load it
+    event = assignment.event
+    if not event and assignment.event_id and db:
+        from src.schemas.models import Event
+        event = db.query(Event).filter(Event.id == assignment.event_id).first()
+        
+    if event:
+        schema.event_start_datetime = event.start_datetime
+        # Fallback for due_date if it was somehow null
+        if not schema.due_date:
+            schema.due_date = event.start_datetime
+            
     return schema
 
 router = APIRouter()
@@ -148,7 +159,7 @@ async def get_assignments(
         )
     
     assignments = query.options(joinedload(Assignment.event)).offset(skip).limit(limit).all()
-    return [_to_enriched_schema(a) for a in assignments]
+    return [_to_enriched_schema(a, db) for a in assignments]
 
 @router.patch("/{assignment_id}/toggle-visibility", response_model=AssignmentSchema)
 async def toggle_assignment_visibility(
@@ -242,7 +253,7 @@ async def create_assignment(
     # Cache for resolved event IDs to avoid redundant materialization in same request
     _resolved_ids_cache = {}
 
-    def resolve_eid(eid: Optional[int], db: Session, user_id: int) -> Optional[int]:
+    def resolve_eid(eid: Optional[int], db: Session, user_id: int) -> Optional[Event]:
         if eid is None: return None
         if eid not in _resolved_ids_cache:
             _resolved_ids_cache[eid] = EventService.resolve_event_id(db, eid, user_id)
@@ -261,12 +272,17 @@ async def create_assignment(
                 raise HTTPException(status_code=403, detail=f"Access denied to group {gid}")
                 
             # Determine settings for this group
-            event_id_for_group = resolve_eid(assignment_data.event_id, db, current_user.id)
+            event_obj = resolve_eid(assignment_data.event_id, db, current_user.id)
             if assignment_data.event_mapping and gid in assignment_data.event_mapping:
-                event_id_for_group = resolve_eid(assignment_data.event_mapping[gid], db, current_user.id)
+                event_obj = resolve_eid(assignment_data.event_mapping[gid], db, current_user.id)
+            
+            event_id_for_group = event_obj.id if event_obj else None
                 
             # Determine due date for this group
             due_date_for_group = assignment_data.due_date
+            if not due_date_for_group and event_obj:
+                due_date_for_group = event_obj.start_datetime
+
             if assignment_data.due_date_mapping and gid in assignment_data.due_date_mapping:
                 due_date_for_group = assignment_data.due_date_mapping[gid]
 
@@ -302,10 +318,10 @@ async def create_assignment(
             correct_answers=json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None,
             max_score=assignment_data.max_score,
             time_limit_minutes=assignment_data.time_limit_minutes if hasattr(assignment_data, 'time_limit_minutes') else None,
-            due_date=assignment_data.due_date,
+            due_date=assignment_data.due_date if assignment_data.due_date else (event_obj.start_datetime if event_obj else None),
             allowed_file_types=assignment_data.allowed_file_types,
             max_file_size_mb=assignment_data.max_file_size_mb,
-            event_id=resolve_eid(assignment_data.event_id, db, current_user.id),
+            event_id=event_id_for_group,
             late_penalty_enabled=assignment_data.late_penalty_enabled,
             late_penalty_multiplier=assignment_data.late_penalty_multiplier
         )
@@ -415,7 +431,7 @@ async def create_assignment(
     except Exception as e:
         print(f"Failed to send email notifications: {e}")
 
-    return result_assignment
+    return _to_enriched_schema(created_assignments[0], db)
 
 @router.get("/{assignment_id}", response_model=AssignmentSchema)
 async def get_assignment(
@@ -469,7 +485,7 @@ async def get_assignment(
     
     print(f"Access granted, returning assignment data")
     
-    assignment_data = _to_enriched_schema(assignment)
+    assignment_data = _to_enriched_schema(assignment, db)
     
     # Hide correct answers from students
     if current_user.role == "student":
@@ -520,9 +536,14 @@ async def update_assignment(
     assignment.correct_answers = json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None
     assignment.max_score = assignment_data.max_score
     assignment.time_limit_minutes = assignment_data.time_limit_minutes
-    assignment.due_date = assignment_data.due_date
-    assignment.group_id = assignment_data.group_id
-    assignment.event_id = EventService.resolve_event_id(db, assignment_data.event_id, current_user.id)
+    event_obj = EventService.resolve_event_id(db, assignment_data.event_id, current_user.id)
+    assignment.event_id = event_obj.id if event_obj else None
+    
+    # Sync due_date if not explicitly provided
+    if not assignment_data.due_date and event_obj:
+        assignment.due_date = event_obj.start_datetime
+    else:
+        assignment.due_date = assignment_data.due_date
     assignment.allowed_file_types = assignment_data.allowed_file_types
     assignment.max_file_size_mb = assignment_data.max_file_size_mb
     
