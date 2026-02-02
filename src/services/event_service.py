@@ -14,10 +14,12 @@ class EventService:
         end_date: datetime, 
         group_ids: List[int] = [], 
         course_ids: List[int] = [],
-        parent_events: Optional[List[Event]] = None
+        parent_events: Optional[List[Event]] = None,
+        skip_class_events: bool = True  # Skip class events - use LessonSchedule instead
     ) -> List[Event]:
         """
         Generates virtual event instances for recurring events within a date range.
+        For event_type='class', we skip expansion because LessonSchedule provides better data.
         """
         if not group_ids and not course_ids and not parent_events:
             return []
@@ -33,6 +35,10 @@ class EventService:
                     Event.recurrence_end_date >= start_date.date()
                 )
             )
+            
+            # Skip class events if requested - they come from LessonSchedule
+            if skip_class_events:
+                query = query.filter(Event.event_type != "class")
             
             if group_ids or course_ids:
                 query = query.filter(
@@ -57,8 +63,11 @@ class EventService:
             
             original_start_day = parent.start_datetime.day
             
-            # Pre-extract group IDs from parent (relationships won't work on transient objects)
+            # Pre-extract group IDs from parent (relationships don't work on transient objects)
             parent_group_ids = [eg.group_id for eg in parent.event_groups] if parent.event_groups else []
+            
+            # Instance counter for this recurring event
+            instance_counter = 1
             
             # Simple iteration (TODO: Optimize fast-forward if needed)
             while current_start <= end_date:
@@ -92,8 +101,11 @@ class EventService:
                     )
                     # Store group_ids directly for deduplication (relationships don't copy to transient objects)
                     virtual_event._group_ids = parent_group_ids
+                    # Store instance number
+                    virtual_event._instance_number = instance_counter
                     
                     generated_events.append(virtual_event)
+                    instance_counter += 1  # Increment after each generated event
                 
                 # Increment
                 if parent.recurrence_pattern == "daily":

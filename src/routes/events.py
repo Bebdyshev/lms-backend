@@ -231,8 +231,8 @@ async def get_my_events(
         event_data.groups = group_names
         event_data.participant_count = count_map.get(event.id, 0)
         
-        # Ensure title includes group name if it's a class and title is generic
-        if event.event_type == "class" and group_names:
+        # Ensure title includes group name for events
+        if group_names:
             main_group = group_names[0]
             if not event.title.startswith(main_group):
                 event_data.title = f"{main_group}: {event.title}"
@@ -255,7 +255,25 @@ async def get_my_events(
         lessons_schedules = ls_query.options(
             joinedload(LessonSchedule.lesson),
             joinedload(LessonSchedule.group)
-        ).all()
+        ).order_by(LessonSchedule.scheduled_at).all()
+        
+        # Pre-calculate lesson numbers for each group
+        # Get all schedules for user's groups to calculate lesson numbers
+        all_group_schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.group_id, LessonSchedule.scheduled_at).all()
+        
+        # Build lesson_number map: {schedule_id: lesson_number}
+        lesson_number_map = {}
+        current_group = None
+        counter = 0
+        for sched in all_group_schedules:
+            if sched.group_id != current_group:
+                current_group = sched.group_id
+                counter = 0
+            counter += 1
+            lesson_number_map[sched.id] = counter
         
         # Mapping course_id -> group_ids for current context
         course_to_groups = {}
@@ -294,9 +312,11 @@ async def get_my_events(
                 continue # Skip, real event exists
                 
             virtual_id = 2000000000 + sched.id 
-            # Simple title: just group name and class number
+            # Get lesson number from pre-calculated map
             group_name = sched.group.name if sched.group else "Group"
-            title = f"{group_name}: Class {sched.week_number}"
+            lesson_number = lesson_number_map.get(sched.id, sched.week_number)
+            
+            title = f"{group_name}: Lesson {lesson_number}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             result.append(EventSchema(
@@ -462,7 +482,24 @@ async def get_calendar_events(
         ).options(
             joinedload(LessonSchedule.group),
             joinedload(LessonSchedule.lesson)
-        ).all()
+        ).order_by(LessonSchedule.scheduled_at).all()
+        
+        # Pre-calculate lesson numbers for each group
+        all_group_schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.group_id, LessonSchedule.scheduled_at).all()
+        
+        # Build lesson_number map: {schedule_id: lesson_number}
+        lesson_number_map = {}
+        current_group = None
+        counter = 0
+        for sched in all_group_schedules:
+            if sched.group_id != current_group:
+                current_group = sched.group_id
+                counter = 0
+            counter += 1
+            lesson_number_map[sched.id] = counter
         
         # Convert schedules to virtual events
         # Check against existing real events to avoid duplicates?
@@ -509,9 +546,10 @@ async def get_calendar_events(
             # Use negative ID or large offset to distinguish
             virtual_id = 2000000000 + sched.id 
             
-            # Simple title: just group name and class number (week)
+            # Get lesson number from pre-calculated map
             group_name = sched.group.name if sched.group else "Group"
-            title = f"{group_name}: Class {sched.week_number}"
+            lesson_number = lesson_number_map.get(sched.id, sched.week_number)
+            title = f"{group_name}: Lesson {lesson_number}"
             
             # Duration default 1.5 hours?
             end_dt = sched.scheduled_at + timedelta(minutes=90)
@@ -562,8 +600,8 @@ async def get_calendar_events(
         # Add participant count
         event_data.participant_count = count_map.get(event.id, 0)
         
-        # Ensure title includes group name
-        if event.event_type == "class" and group_names:
+        # Ensure title includes group name for events (non-class events from recurring)
+        if group_names:
             main_group = group_names[0]
             if not event.title.startswith(main_group):
                 event_data.title = f"{main_group}: {event.title}"
@@ -739,8 +777,16 @@ async def get_upcoming_events(
     for event in events:
         event_data = EventSchema.from_orm(event)
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
-        event_data.groups = [eg.group.name for eg in event.event_groups if eg.group]
+        group_names = [eg.group.name for eg in event.event_groups if eg.group]
+        event_data.groups = group_names
         event_data.participant_count = count_map.get(event.id, 0)
+        
+        # Ensure title includes group name for events
+        if group_names:
+            main_group = group_names[0]
+            if not event.title.startswith(main_group):
+                event_data.title = f"{main_group}: {event.title}"
+        
         result.append(event_data)
         
     # Mapping course_id -> group_ids for current context
@@ -784,6 +830,23 @@ async def get_upcoming_events(
             joinedload(LessonSchedule.group)
         ).order_by(LessonSchedule.scheduled_at).limit(limit).all()
         
+        # Pre-calculate lesson numbers for each group
+        all_group_schedules = db.query(LessonSchedule).filter(
+            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.is_active == True
+        ).order_by(LessonSchedule.group_id, LessonSchedule.scheduled_at).all()
+        
+        # Build lesson_number map
+        lesson_number_map = {}
+        current_group = None
+        counter = 0
+        for sched in all_group_schedules:
+            if sched.group_id != current_group:
+                current_group = sched.group_id
+                counter = 0
+            counter += 1
+            lesson_number_map[sched.id] = counter
+        
         for sched in ls_query:
             # Deduplicate against real events
             sched_time = sched.scheduled_at.replace(second=0, microsecond=0)
@@ -791,9 +854,10 @@ async def get_upcoming_events(
                 continue
 
             lesson_event_id = 2000000000 + sched.id
-            # Simple title: just group name and class number
+            # Get lesson number from pre-calculated map
             group_name = sched.group.name if sched.group else "Group"
-            title = f"{group_name}: Class {sched.week_number}"
+            lesson_number = lesson_number_map.get(sched.id, sched.week_number)
+            title = f"{group_name}: Lesson {lesson_number}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             lesson_event = EventSchema(
