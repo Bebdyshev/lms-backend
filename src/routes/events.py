@@ -240,7 +240,7 @@ async def get_my_events(
         result.append(event_data)
         
     # Add Lesson Schedules (Planned) if no real event exists
-    # Use group_id parameter if provided, otherwise user_group_ids
+    # Use group_id if specified, otherwise use all user's groups
     schedule_group_ids = [group_id] if group_id else user_group_ids
     
     if schedule_group_ids and (not event_type or event_type == "class"):
