@@ -8,7 +8,7 @@ echo "================================================================"
 echo ""
 
 # Check for class events
-docker compose exec -T web python3 -c "
+docker compose exec -T backend python3 -c "
 import sys
 sys.path.insert(0, 'src')
 from config import SessionLocal
@@ -51,7 +51,7 @@ if [ "$answer" = "yes" ]; then
     echo ""
     echo "Deactivating class events..."
     
-    docker compose exec -T web python3 -c "
+    docker compose exec -T backend python3 -c "
 import sys
 sys.path.insert(0, 'src')
 from config import SessionLocal
