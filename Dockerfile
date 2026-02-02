@@ -27,5 +27,4 @@ RUN chmod +x scripts/start.sh
 # Открытие порта
 EXPOSE 8000
 
-# Запуск приложения с автоматическими миграциями
 CMD ["./scripts/start.sh"]
