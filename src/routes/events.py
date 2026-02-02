@@ -58,18 +58,6 @@ async def get_my_events(
             # Deduplicate
             user_course_ids = list(set(user_course_ids))
         
-        # Get courses accessible via user's groups
-        if user_group_ids:
-            from src.schemas.models import CourseGroupAccess
-            group_access = db.query(CourseGroupAccess).filter(
-                CourseGroupAccess.group_id.in_(user_group_ids),
-                CourseGroupAccess.is_active == True
-            ).all()
-            group_course_ids = [ga.course_id for ga in group_access]
-            user_course_ids.extend(group_course_ids)
-            # Deduplicate
-            user_course_ids = list(set(user_course_ids))
-        
     elif current_user.role in ["teacher", "curator"]:
         # Get groups where user is teacher or curator
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
@@ -191,24 +179,31 @@ async def get_my_events(
     if not events:
         return []
 
-    # Final Deduplication by Signature (Group, Time, Title)
-    # This ensures that even if multiple series/events cover the same slot, only one is shown.
+    # Final Deduplication by Signature (Group, Time)
+    # For class events, deduplicate by group_id and start_datetime only to ensure
+    # only one entry exists per time slot per group regardless of source
     seen_signatures = set()
     unique_events = []
     for e in events:
-        # Create a signature for each group this event belongs to
-        # If any group + time + title combo is seen, skip. 
-        # (This is better than just ID because virtual instances have different IDs)
-        
         # Round time to nearest minute for comparison
         time_sig = e.start_datetime.replace(second=0, microsecond=0)
         
         # For events with multiple groups, we check if WE (the user) are interested in this one
         # If group_id filter was used, check only that
-        relevant_groups = [group_id] if group_id else [eg.group_id for eg in e.event_groups]
+        # Use _group_ids for virtual events
+        virtual_group_ids = getattr(e, '_group_ids', None)
+        if virtual_group_ids:
+            relevant_groups = [group_id] if group_id else virtual_group_ids
+        else:
+            relevant_groups = [group_id] if group_id else [eg.group_id for eg in e.event_groups]
         
         for g_id in relevant_groups:
-            sig = (g_id, time_sig, e.title)
+            # For class events, use simpler signature to catch all duplicates
+            if e.event_type == "class":
+                sig = (g_id, time_sig)
+            else:
+                sig = (g_id, time_sig, e.title)
+            
             if sig not in seen_signatures:
                 unique_events.append(e)
                 seen_signatures.add(sig)
@@ -278,8 +273,9 @@ async def get_my_events(
         # Deduplication map
         existing_event_map = set()
         for e in events:
-            # Group IDs directly linked
-            e_group_ids = [eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else []
+            # Group IDs directly linked OR from _group_ids for virtual events
+            virtual_gids = getattr(e, '_group_ids', None)
+            e_group_ids = virtual_gids or ([eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else [])
             for g_id in e_group_ids:
                 sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
                 existing_event_map.add(sig)
@@ -298,15 +294,15 @@ async def get_my_events(
                 continue # Skip, real event exists
                 
             virtual_id = 2000000000 + sched.id 
-            item_title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            # Simple title: just group name and class number
             group_name = sched.group.name if sched.group else "Group"
-            title = f"{group_name}: {item_title}"
+            title = f"{group_name}: Class {sched.week_number}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             result.append(EventSchema(
                 id=virtual_id,
                 title=title,
-                description="Planned topic from group schedule",
+                description=f"Scheduled class for {group_name}",
                 event_type="class",
                 start_datetime=sched.scheduled_at,
                 end_datetime=end_dt,
@@ -357,18 +353,6 @@ async def get_calendar_events(
             Enrollment.is_active == True
         ).all()
         user_course_ids = [e.course_id for e in enrollments]
-        
-        # Get courses accessible via user's groups
-        if user_group_ids:
-            from src.schemas.models import CourseGroupAccess
-            group_access = db.query(CourseGroupAccess).filter(
-                CourseGroupAccess.group_id.in_(user_group_ids),
-                CourseGroupAccess.is_active == True
-            ).all()
-            group_course_ids = [ga.course_id for ga in group_access]
-            user_course_ids.extend(group_course_ids)
-            # Deduplicate
-            user_course_ids = list(set(user_course_ids))
         
         # Get courses accessible via user's groups
         if user_group_ids:
@@ -502,8 +486,8 @@ async def get_calendar_events(
 
         existing_event_map = set()
         for e in all_events:
-            # Group IDs directly linked
-            e_group_ids = [eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else []
+            # Group IDs directly linked OR from _group_ids for virtual events
+            e_group_ids = getattr(e, '_group_ids', None) or [eg.group_id for eg in e.event_groups] if hasattr(e, 'event_groups') else []
             for g_id in e_group_ids:
                 sig = (g_id, e.start_datetime.replace(second=0, microsecond=0))
                 existing_event_map.add(sig)
@@ -525,9 +509,9 @@ async def get_calendar_events(
             # Use negative ID or large offset to distinguish
             virtual_id = 2000000000 + sched.id 
             
-            item_title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            # Simple title: just group name and class number (week)
             group_name = sched.group.name if sched.group else "Group"
-            title = f"{group_name}: {item_title}"
+            title = f"{group_name}: Class {sched.week_number}"
             
             # Duration default 1.5 hours?
             end_dt = sched.scheduled_at + timedelta(minutes=90)
@@ -535,7 +519,7 @@ async def get_calendar_events(
             sched_event = EventSchema(
                 id=virtual_id,
                 title=title,
-                description="Planned topic from group schedule",
+                description=f"Scheduled class for {group_name}",
                 event_type="class",
                 start_datetime=sched.scheduled_at,
                 end_datetime=end_dt,
@@ -563,12 +547,17 @@ async def get_calendar_events(
         # Add creator name
         event_data.creator_name = event.creator.name if event.creator else "Unknown"
         
-        # Add group names
-        group_names = [eg.group.name for eg in event.event_groups if eg.group]
+        # Add group names - use _group_ids for virtual events
+        virtual_group_ids = getattr(event, '_group_ids', None)
+        if virtual_group_ids:
+            # For virtual events, fetch group names
+            groups = db.query(Group).filter(Group.id.in_(virtual_group_ids)).all()
+            group_names = [g.name for g in groups]
+            event_data.group_ids = virtual_group_ids
+        else:
+            group_names = [eg.group.name for eg in event.event_groups if eg.group]
+            event_data.group_ids = [eg.group_id for eg in event.event_groups]
         event_data.groups = group_names
-        
-        # Add group IDs - CRITICAL for frontend filtering
-        event_data.group_ids = [eg.group_id for eg in event.event_groups]
         
         # Add participant count
         event_data.participant_count = count_map.get(event.id, 0)
@@ -705,18 +694,6 @@ async def get_upcoming_events(
             # Deduplicate
             user_course_ids = list(set(user_course_ids))
         
-        # Get courses accessible via user's groups
-        if user_group_ids:
-            from src.schemas.models import CourseGroupAccess
-            group_access = db.query(CourseGroupAccess).filter(
-                CourseGroupAccess.group_id.in_(user_group_ids),
-                CourseGroupAccess.is_active == True
-            ).all()
-            group_course_ids = [ga.course_id for ga in group_access]
-            user_course_ids.extend(group_course_ids)
-            # Deduplicate
-            user_course_ids = list(set(user_course_ids))
-        
     elif current_user.role in ["teacher", "curator"]:
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
@@ -814,15 +791,15 @@ async def get_upcoming_events(
                 continue
 
             lesson_event_id = 2000000000 + sched.id
-            item_title = sched.lesson.title if sched.lesson else f"Lesson {sched.week_number}"
+            # Simple title: just group name and class number
             group_name = sched.group.name if sched.group else "Group"
-            title = f"{group_name}: {item_title}"
+            title = f"{group_name}: Class {sched.week_number}"
             end_dt = sched.scheduled_at + timedelta(minutes=90)
             
             lesson_event = EventSchema(
                 id=lesson_event_id,
                 title=title,
-                description=f"Planned topic for group {sched.group.name}",
+                description=f"Scheduled class for {group_name}",
                 event_type="class",
                 start_datetime=sched.scheduled_at,
                 end_datetime=end_dt,

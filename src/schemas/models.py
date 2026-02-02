@@ -1921,6 +1921,11 @@ class LessonSchedule(Base):
     week_number = Column(Integer, nullable=False)
     is_active = Column(Boolean, default=True)
     
+    # Unique constraint: only one schedule per group at a given time
+    __table_args__ = (
+        UniqueConstraint('group_id', 'scheduled_at', name='uq_lesson_schedule_group_time'),
+    )
+    
     # Relationships
     group = relationship("Group", backref="lesson_schedules")
     lesson = relationship("Lesson")

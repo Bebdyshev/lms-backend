@@ -1384,7 +1384,7 @@ async def update_attendance_bulk(
 
         # Priority: event_id
         if item.event_id:
-            real_event_id = EventService.resolve_event_id(db, item.event_id, current_user.id)
+            real_event_id = EventService.resolve_event_id(db, item.event_id)
             if not real_event_id: continue
 
             participant = db.query(EventParticipant).filter(
@@ -1475,7 +1475,7 @@ async def update_attendance(
         from src.schemas.models import EventParticipant
         
         # Ensure event exists (materialize if pseudo-id)
-        real_event_id = EventService.resolve_event_id(db, data.event_id, current_user.id)
+        real_event_id = EventService.resolve_event_id(db, data.event_id)
         if not real_event_id:
              raise HTTPException(status_code=404, detail="Event could not be resolved/materialized")
 
@@ -1689,6 +1689,17 @@ async def generate_schedule(
         start_dt = datetime.combine(first_date, time_obj)
         end_dt = start_dt + timedelta(minutes=90) # Default 1.5h
         
+        # Check if an event already exists for this group at this time
+        existing_event = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id == data.group_id,
+            Event.start_datetime == start_dt,
+            Event.is_active == True
+        ).first()
+        
+        if existing_event:
+            # Skip creating duplicate event
+            continue
+        
         # Create Recurring Event
         event = Event(
             title=f"{group.name}: Online Class",
@@ -1746,14 +1757,22 @@ async def generate_schedule(
             target_date = start_date + timedelta(weeks=week, days=days_ahead)
             target_dt = datetime.combine(target_date, time_obj)
             
-            new_sched = LessonSchedule(
-                group_id=data.group_id,
-                lesson_id=lesson.id,
-                week_number=week + 1,
-                scheduled_at=target_dt,
-                is_active=True
-            )
-            db.add(new_sched)
+            # Check if schedule already exists for this group at this time
+            existing = db.query(LessonSchedule).filter(
+                LessonSchedule.group_id == data.group_id,
+                LessonSchedule.scheduled_at == target_dt,
+                LessonSchedule.is_active == True
+            ).first()
+            
+            if not existing:
+                new_sched = LessonSchedule(
+                    group_id=data.group_id,
+                    lesson_id=lesson.id,
+                    week_number=week + 1,
+                    scheduled_at=target_dt,
+                    is_active=True
+                )
+                db.add(new_sched)
             lessons_scheduled += 1
 
     # Save config for future use

@@ -1369,14 +1369,22 @@ async def bulk_schedule_upload(
                     target_date = start_date + timedelta(weeks=week, days=days_ahead)
                     target_dt = datetime.combine(target_date, time_obj)
                     
-                    new_sched = LessonSchedule(
-                        group_id=group.id,
-                        lesson_id=lesson.id,
-                        week_number=week + 1,
-                        scheduled_at=target_dt,
-                        is_active=True
-                    )
-                    db.add(new_sched)
+                    # Check if schedule already exists for this group at this time
+                    existing = db.query(LessonSchedule).filter(
+                        LessonSchedule.group_id == group.id,
+                        LessonSchedule.scheduled_at == target_dt,
+                        LessonSchedule.is_active == True
+                    ).first()
+                    
+                    if not existing:
+                        new_sched = LessonSchedule(
+                            group_id=group.id,
+                            lesson_id=lesson.id,
+                            week_number=week + 1,
+                            scheduled_at=target_dt,
+                            is_active=True
+                        )
+                        db.add(new_sched)
                     lessons_scheduled += 1
                 
             # Save config
@@ -2358,6 +2366,36 @@ async def create_recurring_events(db: Session, base_event: Event, event_data: Cr
         current_end = current_end.replace(year=year_end, month=month_end, day=day_end)
     
     while current_start.date() <= event_data.recurrence_end_date:
+        # Check if event already exists for any of the target groups at this time
+        existing_event = None
+        for group_id in event_data.group_ids:
+            existing = db.query(Event).join(EventGroup).filter(
+                EventGroup.group_id == group_id,
+                Event.start_datetime == current_start,
+                Event.is_active == True
+            ).first()
+            if existing:
+                existing_event = existing
+                break
+        
+        if existing_event:
+            # Skip this time slot - event already exists
+            # Increment and continue
+            if event_data.recurrence_pattern == "monthly":
+                year = current_start.year + (current_start.month // 12)
+                month = (current_start.month % 12) + 1
+                day = min(original_start_day, calendar.monthrange(year, month)[1])
+                current_start = current_start.replace(year=year, month=month, day=day)
+                
+                year_end = current_end.year + (current_end.month // 12)
+                month_end = (current_end.month % 12) + 1
+                day_end = min(original_end_day, calendar.monthrange(year_end, month_end)[1])
+                current_end = current_end.replace(year=year_end, month=month_end, day=day_end)
+            else:
+                current_start += delta
+                current_end += delta
+            continue
+        
         recurring_event = Event(
             title=base_event.title,
             description=base_event.description,

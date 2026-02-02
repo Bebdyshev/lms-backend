@@ -57,6 +57,9 @@ class EventService:
             
             original_start_day = parent.start_datetime.day
             
+            # Pre-extract group IDs from parent (relationships won't work on transient objects)
+            parent_group_ids = [eg.group_id for eg in parent.event_groups] if parent.event_groups else []
+            
             # Simple iteration (TODO: Optimize fast-forward if needed)
             while current_start <= end_date:
                 # Check intersection
@@ -82,14 +85,13 @@ class EventService:
                         recurrence_pattern=parent.recurrence_pattern,
                         max_participants=parent.max_participants,
                         creator=parent.creator,
-                        event_groups=parent.event_groups,
+                        event_groups=parent.event_groups,  # Keep for first instance
                         created_at=parent.created_at,
                         updated_at=parent.updated_at,
                         is_active=True
                     )
-                    # Attach relationship data manually if needed by schema
-                    # (SQLAlchemy might not attach relations to transient objects automatically in standard way, 
-                    # but since we copied them from parent loaded from DB, they are available objects)
+                    # Store group_ids directly for deduplication (relationships don't copy to transient objects)
+                    virtual_event._group_ids = parent_group_ids
                     
                     generated_events.append(virtual_event)
                 
@@ -114,7 +116,7 @@ class EventService:
                     
         return generated_events
     @staticmethod
-    def materialize_virtual_event(db: Session, pseudo_id: int, user_id: int) -> Optional[Event]:
+    def materialize_virtual_event(db: Session, pseudo_id: int) -> Optional[int]:
         """
         Scans all recurring events to find which one generated the given pseudo_id.
         If found, creates a real Event record in the database and returns its real ID.
@@ -182,7 +184,7 @@ class EventService:
             location=target_parent.location,
             is_online=target_parent.is_online,
             meeting_url=target_parent.meeting_url,
-            created_by=user_id,
+            created_by=target_parent.created_by,
             is_recurring=False, # It's a specific materialized instance
             lesson_id=target_parent.lesson_id,
             teacher_id=target_parent.teacher_id,
@@ -201,10 +203,10 @@ class EventService:
             new_ec = EventCourse(event_id=new_event.id, course_id=ec.course_id)
             db.add(new_ec)
             
-        return new_event
+        return new_event.id
 
     @staticmethod
-    def materialize_lesson_schedule(db: Session, schedule_id: int, user_id: int) -> Optional[Event]:
+    def materialize_lesson_schedule(db: Session, schedule_id: int) -> Optional[int]:
         """
         Converts a LessonSchedule into a real Event.
         Used when an assignment is linked to a planned lesson.
@@ -230,7 +232,6 @@ class EventService:
             location="Online (Scheduled)",
             is_online=True,
             meeting_url="",
-            created_by=user_id,
             is_recurring=False,
             lesson_id=sched.lesson_id,
             teacher_id=sched.group.teacher_id if sched.group else None,
@@ -238,14 +239,15 @@ class EventService:
         )
         db.add(new_event)
         db.flush()
+        
         # Link to group
         eg = EventGroup(event_id=new_event.id, group_id=sched.group_id)
         db.add(eg)
-        db.flush()
-        return new_event
+        
+        return new_event.id
 
     @staticmethod
-    def resolve_event_id(db: Session, event_id: Optional[int], user_id: int) -> Optional[Event]:
+    def resolve_event_id(db: Session, event_id: Optional[int]) -> Optional[int]:
         """
         Check if event_id exists, or try to materialize it if it's virtual.
         """
@@ -253,14 +255,14 @@ class EventService:
             return None
             
         # 1. Check if exists
-        exists = db.query(Event).filter(Event.id == event_id).first()
+        exists = db.query(Event.id).filter(Event.id == event_id).first()
         if exists:
-            return exists
+            return event_id
             
         # 2. Check if it's a virtual LessonSchedule ID
         if event_id >= 2000000000:
             schedule_id = event_id - 2000000000
-            return EventService.materialize_lesson_schedule(db, schedule_id, user_id)
+            return EventService.materialize_lesson_schedule(db, schedule_id)
 
         # 3. Try to materialize from recurring
-        return EventService.materialize_virtual_event(db, event_id, user_id)
+        return EventService.materialize_virtual_event(db, event_id)
