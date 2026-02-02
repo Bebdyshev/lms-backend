@@ -264,6 +264,11 @@ async def create_assignment(
             event_id_for_group = resolve_eid(assignment_data.event_id, db)
             if assignment_data.event_mapping and gid in assignment_data.event_mapping:
                 event_id_for_group = resolve_eid(assignment_data.event_mapping[gid], db)
+            
+            # Determine schedule_id for this group (for linking to LessonSchedule)
+            schedule_id_for_group = assignment_data.schedule_id
+            if assignment_data.schedule_mapping and gid in assignment_data.schedule_mapping:
+                schedule_id_for_group = assignment_data.schedule_mapping[gid]
                 
             # Determine due date for this group
             due_date_for_group = assignment_data.due_date
@@ -284,6 +289,7 @@ async def create_assignment(
                 allowed_file_types=assignment_data.allowed_file_types,
                 max_file_size_mb=assignment_data.max_file_size_mb,
                 event_id=event_id_for_group,
+                schedule_id=schedule_id_for_group,
                 late_penalty_enabled=assignment_data.late_penalty_enabled,
                 late_penalty_multiplier=assignment_data.late_penalty_multiplier
             )

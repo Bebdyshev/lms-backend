@@ -997,9 +997,10 @@ class LessonMaterialSchema(BaseModel):
 class Assignment(Base):
     __tablename__ = "assignments"
     id = Column(Integer, primary_key=True, index=True)
-    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)  # Can be standalone
+    lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)  # For course unit completion
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)  # For group-specific assignments
-    event_id = Column(Integer, ForeignKey("events.id", ondelete="SET NULL"), nullable=True)  # Link to zoom lesson (Event)
+    event_id = Column(Integer, ForeignKey("events.id", ondelete="SET NULL"), nullable=True)  # Link to calendar event
+    schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="SET NULL"), nullable=True)  # Link to scheduled lesson for homework deadlines
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     assignment_type = Column(String, nullable=False)  # single_choice, multiple_choice, etc.
@@ -1022,7 +1023,8 @@ class Assignment(Base):
     # Relationships
     lesson = relationship("Lesson", back_populates="assignments")
     group = relationship("Group")
-    event = relationship("Event")  # Link to zoom lesson
+    event = relationship("Event")  # Link to calendar event
+    schedule = relationship("LessonSchedule")  # Link to scheduled lesson
     submissions = relationship("AssignmentSubmission", back_populates="assignment", cascade="all, delete-orphan")
 
 class AssignmentSubmission(Base):
@@ -1162,7 +1164,9 @@ class AssignmentCreateSchema(BaseModel):
     due_date: Optional[datetime] = None
     group_id: Optional[int] = None
     group_ids: Optional[List[int]] = None
-    event_id: Optional[int] = None  # Link to zoom lesson (Event)
+    event_id: Optional[int] = None  # Link to calendar event
+    schedule_id: Optional[int] = None  # Link to scheduled lesson (LessonSchedule)
+    schedule_mapping: Optional[Dict[int, int]] = None  # Map group_id -> schedule_id
     event_mapping: Optional[Dict[int, int]] = None  # Map group_id -> event_id
     due_date_mapping: Optional[Dict[int, datetime]] = None # Map group_id -> specific due_date
     allowed_file_types: Optional[List[str]] = None

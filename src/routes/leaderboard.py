@@ -645,13 +645,21 @@ async def get_weekly_lessons_with_hw_status(
     # Default config if not exists
     if not config:
         config_data = {
-            "extra_points_enabled": True,
-            "curator_hour_date": None
+            "curator_hour_enabled": True,
+            "curator_hour_date": None,
+            "study_buddy_enabled": True,
+            "self_reflection_journal_enabled": True,
+            "weekly_evaluation_enabled": True,
+            "extra_points_enabled": True
         }
     else:
         config_data = {
-            "extra_points_enabled": config.extra_points_enabled,
-            "curator_hour_date": config.curator_hour_date
+            "curator_hour_enabled": config.curator_hour_enabled,
+            "curator_hour_date": config.curator_hour_date,
+            "study_buddy_enabled": config.study_buddy_enabled,
+            "self_reflection_journal_enabled": config.self_reflection_journal_enabled,
+            "weekly_evaluation_enabled": config.weekly_evaluation_enabled,
+            "extra_points_enabled": config.extra_points_enabled
         }
 
     # 2. Determine Week Start Date based on first event OR first schedule
@@ -772,15 +780,18 @@ async def get_weekly_lessons_with_hw_status(
     if not week_start_date:
          week_start_date = datetime.utcnow() # Warning: Should not happen if events exist
     
-    # 4. Get Assignments linked
+    # 4. Get Assignments linked to these lessons/events
     event_homework_map = {}
     
-    # Process event types
+    # Collect IDs for querying
     real_event_ids = [e.id for e in events if not getattr(e, 'is_pseudo', False)]
+    schedule_ids = [getattr(e, 'schedule_id', e.id) for e in events if getattr(e, 'is_pseudo', False)]
     lesson_ids = [e.lesson_id for e in events if hasattr(e, 'lesson_id') and e.lesson_id is not None]
     
-    # Query assignments by event_id OR lesson_id
+    # Query assignments by schedule_id, event_id, OR lesson_id
     query_filters = []
+    if schedule_ids:
+        query_filters.append(Assignment.schedule_id.in_(schedule_ids))
     if real_event_ids:
         query_filters.append(Assignment.event_id.in_(real_event_ids))
     if lesson_ids:
@@ -792,26 +803,36 @@ async def get_weekly_lessons_with_hw_status(
             Assignment.is_active == True
         ).all()
         
-        # Priority: Event-specific assignment > Lesson-specific assignment
+        # Build maps by different keys
+        # Priority: schedule_id > event_id > lesson_id
         
-        # First, map by lesson_id (base)
+        schedule_assignment_map = {}
+        for a in assignments:
+            if a.schedule_id:
+                schedule_assignment_map[a.schedule_id] = a
+        
+        event_assignment_map = {}
+        for a in assignments:
+            if a.event_id:
+                event_assignment_map[a.event_id] = a
+                
         lesson_assignment_map = {}
         for a in assignments:
             if a.lesson_id:
-                 lesson_assignment_map[a.lesson_id] = a
-    
-        # Then map by event_id (override/specific)
-        event_specific_map = {}
-        for a in assignments:
-            if a.event_id:
-                event_specific_map[a.event_id] = a
+                lesson_assignment_map[a.lesson_id] = a
                 
-        # Now populate event_homework_map
+        # Now populate event_homework_map based on priority
         for e in events:
-            # Check specific event assignment first (ONLY for real events)
-            if not getattr(e, 'is_pseudo', False) and e.id in event_specific_map:
-                event_homework_map[e.id] = event_specific_map[e.id]
-            # Check lesson assignment
+            is_pseudo = getattr(e, 'is_pseudo', False)
+            schedule_id = getattr(e, 'schedule_id', e.id) if is_pseudo else None
+            
+            # Priority 1: Check schedule_id (for pseudo events from LessonSchedule)
+            if schedule_id and schedule_id in schedule_assignment_map:
+                event_homework_map[e.id] = schedule_assignment_map[schedule_id]
+            # Priority 2: Check event_id (for real calendar events)
+            elif not is_pseudo and e.id in event_assignment_map:
+                event_homework_map[e.id] = event_assignment_map[e.id]
+            # Priority 3: Fallback to lesson_id
             elif hasattr(e, 'lesson_id') and e.lesson_id and e.lesson_id in lesson_assignment_map:
                 event_homework_map[e.id] = lesson_assignment_map[e.lesson_id]
     
@@ -1163,12 +1184,17 @@ async def update_leaderboard_entry(
     """
     Update or create a manual leaderboard entry.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Received leaderboard entry update: {data.dict()}")
+    
     if current_user.role == "curator":
          group = db.query(Group).filter(
              Group.id == data.group_id, 
              Group.curator_id == current_user.id
          ).first()
          if not group:
+             logger.warning(f"Access denied: curator {current_user.id} not owner of group {data.group_id}")
              raise HTTPException(status_code=403, detail="Access denied to this group")
     elif current_user.role in ["admin", "head_curator"]:
         pass
