@@ -218,22 +218,48 @@ class EventService:
         return new_event.id
 
     @staticmethod
-    def materialize_lesson_schedule(db: Session, schedule_id: int) -> Optional[int]:
+    def materialize_lesson_schedule(db: Session, schedule_id: int, user_id: Optional[int] = None) -> Optional[int]:
         """
-        Converts a LessonSchedule into a real Event.
-        Used when an assignment is linked to a planned lesson.
+        Convert a virtual LessonSchedule into a real Event record.
+        Returns the ID of the new (or existing) Event.
         """
-        sched = db.query(LessonSchedule).options(
-            joinedload(LessonSchedule.group),
-            joinedload(LessonSchedule.lesson)
-        ).filter(LessonSchedule.id == schedule_id).first()
+        # Check if already linked to an event?
+        # Actually LessonSchedule doesn't have a link to Event, Event has lesson_id.
+        # But here we are creating a specific class instance.
+        # Ideally we should prevent duplicates if one already exists for this schedule?
+        # The uniqueness is (group_id, start_time).
+        
+        sched = db.query(LessonSchedule).filter(LessonSchedule.id == schedule_id).first()
         
         if not sched:
             return None
             
+        # Check if event already exists for this group + time
+        existing = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id == sched.group_id,
+            Event.start_datetime == sched.scheduled_at,
+            Event.event_type == "class"
+        ).first()
+        
+        if existing:
+            return existing.id
+            
         # Create real event
         lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
         group_name = sched.group.name if sched.group else "Group"
+        
+        # Determine creator
+        creator_id = user_id
+        if not creator_id and sched.group:
+            creator_id = sched.group.teacher_id
+            
+        # Fallback if still None (e.g. group has no teacher and no user passed)
+        if not creator_id:
+             from src.schemas.models import UserInDB
+             # Try to find an admin if no teacher associated
+             admin = db.query(UserInDB).filter(UserInDB.role == "admin").first()
+             if admin:
+                 creator_id = admin.id
         
         new_event = Event(
             title=f"{group_name}: {lesson_title}",
@@ -247,6 +273,7 @@ class EventService:
             is_recurring=False,
             lesson_id=sched.lesson_id,
             teacher_id=sched.group.teacher_id if sched.group else None,
+            created_by=creator_id,
             is_active=True
         )
         db.add(new_event)
@@ -259,7 +286,7 @@ class EventService:
         return new_event.id
 
     @staticmethod
-    def resolve_event_id(db: Session, event_id: Optional[int]) -> Optional[int]:
+    def resolve_event_id(db: Session, event_id: Optional[int], user_id: Optional[int] = None) -> Optional[int]:
         """
         Check if event_id exists, or try to materialize it if it's virtual.
         """
@@ -274,7 +301,7 @@ class EventService:
         # 2. Check if it's a virtual LessonSchedule ID
         if event_id >= 2000000000:
             schedule_id = event_id - 2000000000
-            return EventService.materialize_lesson_schedule(db, schedule_id)
+            return EventService.materialize_lesson_schedule(db, schedule_id, user_id=user_id)
 
         # 3. Try to materialize from recurring
         return EventService.materialize_virtual_event(db, event_id)

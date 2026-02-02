@@ -53,29 +53,23 @@ async def get_courses(
         ).subquery()
         
         # Get group access course IDs
-        group_student = db.query(GroupStudent).filter(
+        student_group_ids = db.query(GroupStudent.group_id).filter(
             GroupStudent.student_id == current_user.id
-        ).first()
+        ).subquery()
         
-        group_course_ids = None
-        if group_student:
-            group_course_ids = db.query(CourseGroupAccess.course_id).filter(
-                CourseGroupAccess.group_id == group_student.group_id,
-                CourseGroupAccess.is_active == True
-            ).subquery()
+        group_course_ids = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id.in_(student_group_ids),
+            CourseGroupAccess.is_active == True
+        ).subquery()
         
         # Combine both sets of course IDs
-        if group_course_ids is not None:
-            # Use UNION to combine both queries
-            from sqlalchemy import union
-            combined_course_ids = db.query(union(
-                enrolled_course_ids.select(),
-                group_course_ids.select()
-            ).alias('course_id')).subquery()
-            query = query.filter(Course.id.in_(combined_course_ids), Course.is_active == True)
-        else:
-            # Only enrolled courses
-            query = query.filter(Course.id.in_(enrolled_course_ids), Course.is_active == True)
+        from sqlalchemy import union
+        combined_course_ids = db.query(union(
+            enrolled_course_ids.select(),
+            group_course_ids.select()
+        ).alias('course_id')).subquery()
+        
+        query = query.filter(Course.id.in_(combined_course_ids), Course.is_active == True)
         
     elif current_user.role == "teacher":
         # Teachers see their own courses AND courses their groups have access to
@@ -167,35 +161,27 @@ async def get_my_courses(
     ).subquery()
     
     # Get group access course IDs
-    group_student = db.query(GroupStudent).filter(
+    student_group_ids = db.query(GroupStudent.group_id).filter(
         GroupStudent.student_id == current_user.id
-    ).first()
+    ).subquery()
     
-    group_course_ids = None
-    if group_student:
-        group_course_ids = db.query(CourseGroupAccess.course_id).filter(
-            CourseGroupAccess.group_id == group_student.group_id,
-            CourseGroupAccess.is_active == True
-        ).subquery()
+    group_course_ids = db.query(CourseGroupAccess.course_id).filter(
+        CourseGroupAccess.group_id.in_(student_group_ids),
+        CourseGroupAccess.is_active == True
+    ).subquery()
     
     # Combine both sets of course IDs
-    if group_course_ids is not None:
-        # Use UNION to combine both queries
-        from sqlalchemy import union
-        combined_course_ids = db.query(union(
-            enrolled_course_ids.select(),
-            group_course_ids.select()
-        ).alias('course_id')).subquery()
-        courses = db.query(Course).filter(
-            Course.id.in_(combined_course_ids), 
-            Course.is_active == True
-        ).all()
-    else:
-        # Only enrolled courses
-        courses = db.query(Course).filter(
-            Course.id.in_(enrolled_course_ids), 
-            Course.is_active == True
-        ).all()
+    # Use UNION to combine both queries
+    from sqlalchemy import union
+    combined_course_ids = db.query(union(
+        enrolled_course_ids.select(),
+        group_course_ids.select()
+    ).alias('course_id')).subquery()
+    
+    courses = db.query(Course).filter(
+        Course.id.in_(combined_course_ids), 
+        Course.is_active == True
+    ).all()
     
     
     if not courses:

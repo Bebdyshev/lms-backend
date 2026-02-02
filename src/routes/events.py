@@ -175,9 +175,6 @@ async def get_my_events(
         # Re-apply limit after expansion
         if limit:
             events = events[:limit]
-            
-    if not events:
-        return []
 
     # Final Deduplication by Signature (Group, Time)
     # For class events, deduplicate by group_id and start_datetime only to ensure
@@ -259,6 +256,7 @@ async def get_my_events(
             joinedload(LessonSchedule.lesson),
             joinedload(LessonSchedule.group)
         ).order_by(LessonSchedule.scheduled_at).all()
+
         
         # Pre-calculate lesson numbers for each group
         # Get all schedules for user's groups to calculate lesson numbers

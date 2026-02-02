@@ -245,7 +245,7 @@ async def create_assignment(
     def resolve_eid(eid: Optional[int], db: Session) -> Optional[int]:
         if eid is None: return None
         if eid not in _resolved_ids_cache:
-            _resolved_ids_cache[eid] = EventService.resolve_event_id(db, eid)
+            _resolved_ids_cache[eid] = EventService.resolve_event_id(db, eid, user_id=current_user.id)
         return _resolved_ids_cache[eid]
     
     # If we have target groups, create an assignment for each group
