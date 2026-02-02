@@ -240,9 +240,12 @@ async def get_my_events(
         result.append(event_data)
         
     # Add Lesson Schedules (Planned) if no real event exists
-    if user_group_ids and (not event_type or event_type == "class"):
+    # Use group_id parameter if provided, otherwise user_group_ids
+    schedule_group_ids = [group_id] if group_id else user_group_ids
+    
+    if schedule_group_ids and (not event_type or event_type == "class"):
         ls_query = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.group_id.in_(schedule_group_ids),
             LessonSchedule.is_active == True
         )
         if start_date:
@@ -260,7 +263,7 @@ async def get_my_events(
         # Pre-calculate lesson numbers for each group
         # Get all schedules for user's groups to calculate lesson numbers
         all_group_schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id.in_(user_group_ids),
+            LessonSchedule.group_id.in_(schedule_group_ids),
             LessonSchedule.is_active == True
         ).order_by(LessonSchedule.group_id, LessonSchedule.scheduled_at).all()
         
@@ -277,10 +280,10 @@ async def get_my_events(
         
         # Mapping course_id -> group_ids for current context
         course_to_groups = {}
-        if user_group_ids:
+        if schedule_group_ids:
             from src.schemas.models import CourseGroupAccess
             accesses = db.query(CourseGroupAccess).filter(
-                CourseGroupAccess.group_id.in_(user_group_ids),
+                CourseGroupAccess.group_id.in_(schedule_group_ids),
                 CourseGroupAccess.is_active == True
             ).all()
             for acc in accesses:
