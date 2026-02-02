@@ -154,38 +154,39 @@ async def get_my_courses(
     if current_user.role != "student":
         raise HTTPException(status_code=403, detail="Only students can access this endpoint")
     
-    # Get enrolled course IDs
-    enrolled_course_ids = db.query(Enrollment.course_id).filter(
-        Enrollment.user_id == current_user.id,
-        Enrollment.is_active == True
-    ).subquery()
-    
     # Get group access course IDs
     student_group_ids = db.query(GroupStudent.group_id).filter(
         GroupStudent.student_id == current_user.id
-    ).subquery()
+    ) # .all() will be called later to get values
     
-    group_course_ids = db.query(CourseGroupAccess.course_id).filter(
-        CourseGroupAccess.group_id.in_(student_group_ids),
-        CourseGroupAccess.is_active == True
-    ).subquery()
+    # Execute to get list of IDs
+    student_group_id_list = [g[0] for g in student_group_ids.all()]
+    
+    group_course_ids = []
+    if student_group_id_list:
+        group_courses = db.query(CourseGroupAccess.course_id).filter(
+            CourseGroupAccess.group_id.in_(student_group_id_list),
+            CourseGroupAccess.is_active == True
+        ).all()
+        group_course_ids = [c[0] for c in group_courses]
+    
+    # Get enrolled course IDs
+    enrolled_courses = db.query(Enrollment.course_id).filter(
+        Enrollment.user_id == current_user.id,
+        Enrollment.is_active == True
+    ).all()
+    enrolled_course_ids = [c[0] for c in enrolled_courses]
     
     # Combine both sets of course IDs
-    # Use UNION to combine both queries
-    from sqlalchemy import union
-    combined_course_ids = db.query(union(
-        enrolled_course_ids.select(),
-        group_course_ids.select()
-    ).alias('course_id')).subquery()
+    all_course_ids = list(set(group_course_ids + enrolled_course_ids))
     
+    if not all_course_ids:
+        return []
+
     courses = db.query(Course).filter(
-        Course.id.in_(combined_course_ids), 
+        Course.id.in_(all_course_ids), 
         Course.is_active == True
     ).all()
-    
-    
-    if not courses:
-        return []
 
     # Batch fetch teachers
     teacher_ids = list(set(c.teacher_id for c in courses if c.teacher_id))

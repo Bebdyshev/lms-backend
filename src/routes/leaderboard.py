@@ -232,21 +232,41 @@ async def get_group_leaderboard(
         schedule_map = {s.id: s for s in schedules}
         schedule_ids = [s.id for s in schedules]
         
-        # Get Assignments for these lessons
+        # Get Assignments for these lessons (by lesson_id OR event_id)
+        from sqlalchemy import or_
         assignments = db.query(Assignment).filter(
-            Assignment.lesson_id.in_(scheduled_lesson_ids),
+            or_(
+                Assignment.lesson_id.in_(scheduled_lesson_ids),
+                Assignment.event_id.in_(schedule_ids)
+            ),
             Assignment.is_active == True
         ).all()
         
-        assignment_lesson_map = {a.id: a.lesson_id for a in assignments}
         assignment_ids = [a.id for a in assignments]
         
-        # Map lesson_id to schedule_index (1-based)
-        lesson_to_schedule_indices = {} 
-        for idx, s in enumerate(schedules):
-            if s.lesson_id not in lesson_to_schedule_indices:
-                lesson_to_schedule_indices[s.lesson_id] = []
-            lesson_to_schedule_indices[s.lesson_id].append(idx + 1)
+        # Create map: assignment_id -> list of schedule indices (1-based)
+        assignment_to_schedule_indices = {}
+        
+        for a in assignments:
+            assignment_to_schedule_indices[a.id] = []
+            
+            # 1. Check event_id match (Specific Schedule)
+            if a.event_id in schedule_ids:
+                # Find which schedule index confirms to this event_id
+                for idx, s in enumerate(schedules):
+                    if s.id == a.event_id:
+                        assignment_to_schedule_indices[a.id].append(idx + 1)
+            
+            # 2. Check lesson_id match (Generic Lesson) - ONLY if not matched by event_id? 
+            # Or add both? User said "based on event_id", implying specificity.
+            # Let's include lesson_id matches too, but event_id matches are more precise.
+            # The previous logic relied on lesson_id.
+            if a.lesson_id:
+                for idx, s in enumerate(schedules):
+                    if s.lesson_id == a.lesson_id:
+                         # Avoid adding duplicates if event_id already covered it (unlikely but safe)
+                         if (idx + 1) not in assignment_to_schedule_indices[a.id]:
+                             assignment_to_schedule_indices[a.id].append(idx + 1)
 
         # Get Submissions
         submissions = db.query(AssignmentSubmission).filter(
@@ -256,11 +276,11 @@ async def get_group_leaderboard(
         ).all()
         
         for sub in submissions:
-            lid = assignment_lesson_map.get(sub.assignment_id)
-            indices = lesson_to_schedule_indices.get(lid, [])
+            indices = assignment_to_schedule_indices.get(sub.assignment_id, [])
             for idx in indices:
                 if sub.user_id not in homework_data:
                     homework_data[sub.user_id] = {}
+                # Store score. If multiple assignments map to same slot, last one wins (or logic could avg)
                 homework_data[sub.user_id][idx] = sub.score
                 
         # Get Attendance
@@ -692,12 +712,14 @@ async def get_weekly_lessons_with_hw_status(
         for e in standard_events:
             time_sig = e.start_datetime.replace(second=0, microsecond=0)
             if time_sig not in seen_times:
+                e.is_pseudo = False
                 events.append(e)
                 seen_times.add(time_sig)
                 
         for instance in recurring_instances:
             time_sig = instance.start_datetime.replace(second=0, microsecond=0)
             if time_sig not in seen_times:
+                instance.is_pseudo = False
                 events.append(instance)
                 seen_times.add(time_sig)
     
@@ -721,6 +743,8 @@ async def get_weekly_lessons_with_hw_status(
                     event_type='class'
                 )
                 pseudo_event.lesson_id = sched.lesson_id
+                pseudo_event.is_pseudo = True
+                pseudo_event.schedule_id = sched.id
                 events.append(pseudo_event)
                 seen_times.add(time_sig)
 
@@ -734,37 +758,50 @@ async def get_weekly_lessons_with_hw_status(
     
     # 4. Get Assignments linked
     event_homework_map = {}
-    event_ids = []
-    assignment_ids = []
     
-    if mode == "event":
-        event_ids = [e.id for e in events]
+    # Process event types
+    real_event_ids = [e.id for e in events if not getattr(e, 'is_pseudo', False)]
+    lesson_ids = [e.lesson_id for e in events if hasattr(e, 'lesson_id') and e.lesson_id is not None]
+    
+    # Query assignments by event_id OR lesson_id
+    query_filters = []
+    if real_event_ids:
+        query_filters.append(Assignment.event_id.in_(real_event_ids))
+    if lesson_ids:
+        query_filters.append(Assignment.lesson_id.in_(lesson_ids))
+    
+    if query_filters:
         assignments = db.query(Assignment).filter(
-            Assignment.event_id.in_(event_ids),
+            or_(*query_filters),
             Assignment.is_active == True
         ).all()
-        # Map event_id -> Assignment
-        event_homework_map = {a.event_id: a for a in assignments}
-        assignment_ids = [a.id for a in assignments]
         
-    elif mode == "schedule":
-        # Legacy: Link by Lesson ID
-        lesson_ids = [e.lesson_id for e in events if hasattr(e, 'lesson_id') and e.lesson_id]
-        if lesson_ids:
-            assignments = db.query(Assignment).filter(
-                Assignment.lesson_id.in_(lesson_ids),
-                Assignment.is_active == True
-            ).all()
-            
-            # Map lesson_id -> Assignment. Then we map event (which has lesson_id) -> Assignment
-            lesson_assignment_map = {a.lesson_id: a for a in assignments}
-            for e in events:
-                if hasattr(e, 'lesson_id') and e.lesson_id in lesson_assignment_map:
-                    event_homework_map[e.id] = lesson_assignment_map[e.lesson_id] # Map pseudo-event ID to HW
-            
-            assignment_ids = [a.id for a in assignments]
+        # Priority: Event-specific assignment > Lesson-specific assignment
+        
+        # First, map by lesson_id (base)
+        lesson_assignment_map = {}
+        for a in assignments:
+            if a.lesson_id:
+                 lesson_assignment_map[a.lesson_id] = a
+    
+        # Then map by event_id (override/specific)
+        event_specific_map = {}
+        for a in assignments:
+            if a.event_id:
+                event_specific_map[a.event_id] = a
+                
+        # Now populate event_homework_map
+        for e in events:
+            # Check specific event assignment first (ONLY for real events)
+            if not getattr(e, 'is_pseudo', False) and e.id in event_specific_map:
+                event_homework_map[e.id] = event_specific_map[e.id]
+            # Check lesson assignment
+            elif hasattr(e, 'lesson_id') and e.lesson_id and e.lesson_id in lesson_assignment_map:
+                event_homework_map[e.id] = lesson_assignment_map[e.lesson_id]
+    
+        # Collect final assignment IDs for submission lookup
+        assignment_ids = list(set([a.id for a in event_homework_map.values()]))
     else:
-        event_ids = []
         assignment_ids = []
     
     # 5. Build Lesson Columns metadata
@@ -803,28 +840,31 @@ async def get_weekly_lessons_with_hw_status(
     from src.schemas.models import EventParticipant
     
     attendance_map = {}
-    if event_ids:
-        attendances = db.query(EventParticipant).filter(
-            EventParticipant.event_id.in_(event_ids),
+    
+    # 7.1 Real Events (EventParticipant)
+    if real_event_ids:
+        event_attendances = db.query(EventParticipant).filter(
+            EventParticipant.event_id.in_(real_event_ids),
             EventParticipant.user_id.in_(student_ids)
         ).all()
         # Map (user_id, event_id) -> status
-        attendance_map = {(a.user_id, a.event_id): a.registration_status for a in attendances}
-        
-    elif mode == "schedule":
-        # Legacy Attendance
-        sched_ids = [e.id for e in events] # IDs are schedule IDs
-        attendances = db.query(Attendance).filter(
-            Attendance.lesson_schedule_id.in_(sched_ids),
+        for a in event_attendances:
+            attendance_map[(a.user_id, a.event_id)] = a.registration_status
+            
+    # 7.2 Pseudo Events (Attendance from LessonSchedule)
+    schedule_ids = [e.schedule_id for e in events if getattr(e, 'is_pseudo', False) and hasattr(e, 'schedule_id')]
+    if schedule_ids:
+        sched_attendances = db.query(Attendance).filter(
+            Attendance.lesson_schedule_id.in_(schedule_ids),
             Attendance.user_id.in_(student_ids)
         ).all()
         
         # Map (user_id, schedule_id) -> status
-        # status in Attendance is "present" or "absent", score is int
-        # EventAttendance expects "attended"
-        for att in attendances:
-            status = "attended" if att.score > 0 else "absent"
-            attendance_map[(att.user_id, att.lesson_schedule_id)] = status
+        # Note: Event ID in events list for pseudo event IS schedule_id
+        for a in sched_attendances:
+            status = "attended" if a.score > 0 else "absent"
+            attendance_map[(a.user_id, a.lesson_schedule_id)] = status
+
     
     # 8. Get HW Submissions
     submission_map = {}
