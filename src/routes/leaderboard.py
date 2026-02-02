@@ -2111,3 +2111,75 @@ async def get_student_ranking(
         "period": period,
         "steps_to_next_rank": steps_to_next_rank
     }
+
+
+@router.get("/group-schedules/{group_id}")
+async def get_group_schedules(
+    group_id: int,
+    weeks_back: int = Query(default=1, ge=0, le=12),
+    weeks_ahead: int = Query(default=8, ge=0, le=24),
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """
+    Get scheduled lessons for a group (from LessonSchedule).
+    Used for linking assignments to specific scheduled classes.
+    Returns virtual event IDs (2000000000 + schedule_id) matching calendar view.
+    Shows only upcoming/recent lessons by default.
+    """
+    # Check permissions
+    if current_user.role not in ["admin", "teacher", "head_curator"]:
+        group = db.query(Group).filter(
+            Group.id == group_id,
+            or_(Group.teacher_id == current_user.id, Group.curator_id == current_user.id)
+        ).first()
+        if not group:
+            raise HTTPException(status_code=403, detail="Access denied to this group")
+    
+    # Get group info
+    group = db.query(Group).filter(Group.id == group_id).first()
+    group_name = group.name if group else "Group"
+    
+    # Calculate date range - focus on upcoming lessons
+    now = datetime.utcnow()
+    start_date = now - timedelta(weeks=weeks_back)
+    end_date = now + timedelta(weeks=weeks_ahead)
+    
+    # Get LessonSchedules for this group (upcoming + recent past)
+    schedules = db.query(LessonSchedule).filter(
+        LessonSchedule.group_id == group_id,
+        LessonSchedule.is_active == True,
+        LessonSchedule.scheduled_at >= start_date,
+        LessonSchedule.scheduled_at <= end_date
+    ).order_by(LessonSchedule.scheduled_at.asc()).all()  # Ascending - upcoming first
+    
+    # Calculate lesson numbers (same logic as calendar)
+    all_schedules = db.query(LessonSchedule).filter(
+        LessonSchedule.group_id == group_id,
+        LessonSchedule.is_active == True
+    ).order_by(LessonSchedule.scheduled_at).all()
+    
+    lesson_number_map = {}
+    for idx, sched in enumerate(all_schedules, start=1):
+        lesson_number_map[sched.id] = idx
+    
+    result = []
+    for sched in schedules:
+        virtual_id = 2000000000 + sched.id  # Same virtual ID as calendar
+        lesson_number = lesson_number_map.get(sched.id, sched.week_number)
+        title = f"{group_name}: Lesson {lesson_number}"
+        
+        # Mark if lesson is in the past
+        is_past = sched.scheduled_at < now
+        
+        result.append({
+            "id": virtual_id,
+            "schedule_id": sched.id,  # Real schedule ID for backend use
+            "title": title,
+            "scheduled_at": sched.scheduled_at.isoformat(),
+            "group_id": group_id,
+            "lesson_number": lesson_number,
+            "is_past": is_past
+        })
+    
+    return result
