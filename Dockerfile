@@ -15,16 +15,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копирование кода
 COPY src/ ./src/
 COPY alembic/ ./alembic/
-COPY scripts/ ./scripts/
 COPY alembic.ini .
 
 # Создание директории для uploads
 RUN mkdir -p uploads
 
-# Make start script executable
-RUN chmod +x scripts/start.sh
+# Создание стартового скрипта с миграциями
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "🔄 Running Alembic migrations..."\n\
+alembic upgrade head\n\
+echo "✅ Migrations completed"\n\
+echo "🚀 Starting FastAPI application..."\n\
+uvicorn src.app:app --host 0.0.0.0 --port 8000\n\
+' > /app/start.sh && chmod +x /app/start.sh
 
 # Открытие порта
 EXPOSE 8000
 
-CMD ["./scripts/start.sh"]
+# Запуск приложения с автоматическими миграциями
+CMD ["/app/start.sh"]
