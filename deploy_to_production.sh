@@ -28,7 +28,9 @@ echo ""
 
 # Copy files
 scp src/services/event_service.py $SERVER:/root/projects/lms/src/services/ && \
-scp src/routes/events.py $SERVER:/root/projects/lms/src/routes/
+scp src/routes/events.py $SERVER:/root/projects/lms/src/routes/ && \
+scp src/routes/courses.py $SERVER:/root/projects/lms/src/routes/ && \
+scp src/routes/leaderboard.py $SERVER:/root/projects/lms/src/routes/
 
 if [ $? -eq 0 ]; then
     echo ""

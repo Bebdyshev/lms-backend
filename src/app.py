@@ -138,30 +138,7 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.44.0",
-            "update": 44,
-            "features": {
-                "progress_tracking": "enabled",
-                "analytics_system": "enhanced",
-                "pdf_reports": "enabled",
-                "progress_snapshots": "enabled",
-                "step_timing": "enabled",
-                "export_all_students": "fixed",
-                "enhanced_quiz_types": "enabled",
-                "long_text_questions": "enabled",
-                "media_questions": "enabled",
-                "flashcard_steps": "enabled",
-                "question_media_upload": "enabled",
-                "curator_permissions": "fixed",
-                "analytics_access_control": "improved",
-                "course_overview_student_discovery": "fixed",
-                "groups_analytics_fixed": "enabled",
-                "course_groups_view": "enabled",
-                "group_students_analytics_fixed": "enabled",
-                "excel_export_with_charts": "enabled",
-                "unsaved_changes_warnings": "implemented",
-                "onboarding_tracking": "enabled"
-            }
+            "version": "1.45.0",
         }
     )
 #-----------------------------------------------------------------------------
