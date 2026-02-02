@@ -565,6 +565,9 @@ async def update_leaderboard_config(
     db: Session = Depends(get_db)
 ):
     """Create or update leaderboard column visibility settings for a group/week"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     # 1. Authorization
     # 1. Authorization
     if current_user.role == "curator":
@@ -575,7 +578,9 @@ async def update_leaderboard_config(
         pass
     else:
         raise HTTPException(status_code=403, detail="Access denied")
-        
+    
+    logger.warning(f"Received config update: {payload.model_dump()}")
+    
     # 2. Get or create config
     config = db.query(LeaderboardConfig).filter(
         LeaderboardConfig.group_id == payload.group_id,
@@ -583,19 +588,30 @@ async def update_leaderboard_config(
     ).first()
     
     if not config:
+        logger.warning(f"Creating new config for group {payload.group_id}, week {payload.week_number}")
         config = LeaderboardConfig(
             group_id=payload.group_id,
             week_number=payload.week_number
         )
         db.add(config)
+    else:
+        logger.warning(f"Updating existing config ID {config.id}")
     
     # 3. Update fields
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+    logger.warning(f"Update data (exclude_unset): {update_data}")
+    
+    for field, value in update_data.items():
         if field not in ["group_id", "week_number"] and hasattr(config, field):
+            old_value = getattr(config, field)
             setattr(config, field, value)
+            logger.warning(f"Updated {field}: {old_value} -> {value}")
             
     db.commit()
     db.refresh(config)
+    
+    logger.warning(f"Final config state: curator_hour_enabled={config.curator_hour_enabled}, study_buddy_enabled={config.study_buddy_enabled}")
+    
     return config
 
 @router.get("/curator/weekly-lessons/{group_id}")
