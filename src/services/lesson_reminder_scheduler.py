@@ -1,6 +1,6 @@
 """
 Lesson Reminder Scheduler
-Periodically checks for upcoming lessons and sends email reminders 30 minutes before.
+Periodically checks for upcoming lessons (Events) and sends email reminders 30 minutes before.
 """
 import logging
 import threading
@@ -10,21 +10,21 @@ from typing import List, Dict
 from sqlalchemy.orm import Session
 
 from src.config import SessionLocal
-from src.schemas.models import LessonSchedule, UserInDB, Group, Lesson, GroupStudent
+from src.schemas.models import Event, EventGroup, EventParticipant, UserInDB, Group, GroupStudent
 from src.services.email_service import send_lesson_reminder_notification
 
 logger = logging.getLogger(__name__)
 
 
 class LessonReminderScheduler:
-    """Background scheduler to send lesson reminders"""
+    """Background scheduler to send reminders for upcoming class events"""
     
     def __init__(self, check_interval: int = 60):
         """
         Initialize the scheduler
         
         Args:
-            check_interval: How often to check for upcoming lessons (in seconds)
+            check_interval: How often to check for upcoming events (in seconds)
         """
         self.check_interval = check_interval
         self.running = False
@@ -51,19 +51,23 @@ class LessonReminderScheduler:
         
     def _run(self):
         """Main scheduler loop"""
-        logger.info("📧 Lesson reminder scheduler is running...")
+        logger.info("� [SCHEDULER] Lesson reminder scheduler thread started")
+        logger.info(f"   Check interval: {self.check_interval} seconds")
+        logger.info(f"   Reminder window: 28-32 minutes before lesson")
         
         while self.running:
             try:
+                now = datetime.utcnow()
+                logger.info(f"⏰ [SCHEDULER] Checking at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 self._check_and_send_reminders()
             except Exception as e:
-                logger.error(f"❌ Error in lesson reminder scheduler: {e}", exc_info=True)
+                logger.error(f"❌ [SCHEDULER] Error in lesson reminder scheduler: {e}", exc_info=True)
             
             # Wait for next check
             time.sleep(self.check_interval)
     
     def _check_and_send_reminders(self):
-        """Check for upcoming lessons and send reminders"""
+        """Check for upcoming lesson events and send reminders"""
         db = SessionLocal()
         try:
             now = datetime.utcnow()
@@ -71,133 +75,177 @@ class LessonReminderScheduler:
             reminder_time_start = now + timedelta(minutes=28)
             reminder_time_end = now + timedelta(minutes=32)
             
-            # Query for active lesson schedules in the reminder window
-            upcoming_schedules = db.query(LessonSchedule).filter(
-                LessonSchedule.is_active == True,
-                LessonSchedule.scheduled_at >= reminder_time_start,
-                LessonSchedule.scheduled_at <= reminder_time_end
+            logger.debug(f"🔍 [SCHEDULER] Checking for events between {reminder_time_start.strftime('%H:%M')} and {reminder_time_end.strftime('%H:%M')} UTC")
+            
+            # Query for active class events in the reminder window
+            upcoming_events = db.query(Event).filter(
+                Event.is_active == True,
+                Event.event_type == 'class',  # Only class events (lessons)
+                Event.start_datetime >= reminder_time_start,
+                Event.start_datetime <= reminder_time_end
             ).all()
             
-            if not upcoming_schedules:
+            if not upcoming_events:
+                logger.debug(f"✓ [SCHEDULER] No upcoming class events found in the next 30 minutes")
                 return
                 
-            logger.info(f"📅 Found {len(upcoming_schedules)} upcoming lessons for reminders")
+            logger.info(f"📅 [SCHEDULER] Found {len(upcoming_events)} upcoming class event(s) for reminders")
             
-            for schedule in upcoming_schedules:
+            for event in upcoming_events:
                 # Create unique key to avoid duplicate sends
-                reminder_key = f"{schedule.id}_{schedule.scheduled_at.isoformat()}"
+                reminder_key = f"event_{event.id}_{event.start_datetime.isoformat()}"
                 
                 if reminder_key in self.sent_reminders:
-                    continue  # Already sent reminder for this lesson
+                    logger.debug(f"⏭️  [SCHEDULER] Already sent reminder for event ID {event.id}, skipping")
+                    continue  # Already sent reminder for this event
                 
-                # Send reminders for this lesson
-                success = self._send_lesson_reminders(db, schedule)
+                logger.info(f"📨 [SCHEDULER] Processing reminder for event ID {event.id} at {event.start_datetime.strftime('%H:%M')}")
+                
+                # Send reminders for this event
+                success = self._send_event_reminders(db, event)
                 
                 if success:
                     self.sent_reminders.add(reminder_key)
+                    logger.info(f"✅ [SCHEDULER] Marked event ID {event.id} as sent")
                     
                     # Clean up old entries from sent_reminders to prevent memory bloat
                     # Keep only reminders from last 24 hours
                     cutoff_time = now - timedelta(hours=24)
+                    old_count = len(self.sent_reminders)
                     self.sent_reminders = {
                         key for key in self.sent_reminders 
-                        if not key.split('_')[1] or 
-                        datetime.fromisoformat(key.split('_')[1]) > cutoff_time
+                        if '_' in key and len(key.split('_')) >= 3 and
+                        datetime.fromisoformat(key.split('_', 2)[2]) > cutoff_time
                     }
+                    cleaned = old_count - len(self.sent_reminders)
+                    if cleaned > 0:
+                        logger.debug(f"🧹 [SCHEDULER] Cleaned {cleaned} old reminder(s) from cache")
+                else:
+                    logger.error(f"❌ [SCHEDULER] Failed to send reminders for event ID {event.id}")
                     
         except Exception as e:
-            logger.error(f"❌ Error checking for lesson reminders: {e}", exc_info=True)
+            logger.error(f"❌ [SCHEDULER] Error checking for lesson reminders: {e}", exc_info=True)
         finally:
             db.close()
     
-    def _send_lesson_reminders(self, db: Session, schedule: LessonSchedule) -> bool:
+    def _send_event_reminders(self, db: Session, event: Event) -> bool:
         """
-        Send reminders for a specific lesson schedule
+        Send reminders for a specific class event
         
         Args:
             db: Database session
-            schedule: LessonSchedule to send reminders for
+            event: Event to send reminders for
             
         Returns:
             True if reminders sent successfully
         """
         try:
-            # Get lesson details
-            lesson = db.query(Lesson).filter(Lesson.id == schedule.lesson_id).first()
-            if not lesson:
-                logger.warning(f"⚠️  Lesson not found for schedule {schedule.id}")
-                return False
+            logger.info(f"🎯 [REMINDER] Processing event ID {event.id}")
+            logger.info(f"   📚 Event: '{event.title}' (Type: {event.event_type})")
             
-            # Get group details
-            group = db.query(Group).filter(Group.id == schedule.group_id).first()
-            if not group:
-                logger.warning(f"⚠️  Group not found for schedule {schedule.id}")
-                return False
+            # Format event datetime for display
+            event_datetime_str = event.start_datetime.strftime("%d.%m.%Y в %H:%M")
             
-            # Format lesson datetime for display
-            lesson_datetime_str = schedule.scheduled_at.strftime("%d.%m.%Y в %H:%M")
-            
-            # Get all students in the group
-            students = db.query(UserInDB).join(
-                GroupStudent, UserInDB.id == GroupStudent.user_id
-            ).filter(
-                GroupStudent.group_id == group.id,
-                UserInDB.is_active == True,
-                UserInDB.email.isnot(None)
+            # Get groups associated with this event
+            event_groups = db.query(EventGroup).filter(
+                EventGroup.event_id == event.id
             ).all()
             
-            # Get teacher (curator) of the group
-            teacher = None
-            if group.curator_id:
-                teacher = db.query(UserInDB).filter(
-                    UserInDB.id == group.curator_id,
-                    UserInDB.is_active == True,
-                    UserInDB.email.isnot(None)
-                ).first()
+            if not event_groups:
+                logger.warning(f"⚠️  [REMINDER] No groups found for event {event.id}")
+                return False
+            
+            logger.info(f"   � Found {len(event_groups)} group(s) for this event")
             
             sent_count = 0
+            failed_count = 0
             
-            # Send reminders to all students
-            for student in students:
-                try:
-                    result = send_lesson_reminder_notification(
-                        to_email=student.email,
-                        recipient_name=student.name or student.email.split('@')[0],
-                        lesson_title=lesson.title,
-                        lesson_datetime=lesson_datetime_str,
-                        group_name=group.name,
-                        role="student"
-                    )
-                    if result:
-                        sent_count += 1
-                except Exception as e:
-                    logger.error(f"❌ Failed to send reminder to student {student.email}: {e}")
-            
-            # Send reminder to teacher
-            if teacher:
-                try:
-                    result = send_lesson_reminder_notification(
-                        to_email=teacher.email,
-                        recipient_name=teacher.name or teacher.email.split('@')[0],
-                        lesson_title=lesson.title,
-                        lesson_datetime=lesson_datetime_str,
-                        group_name=group.name,
-                        role="teacher"
-                    )
-                    if result:
-                        sent_count += 1
-                except Exception as e:
-                    logger.error(f"❌ Failed to send reminder to teacher {teacher.email}: {e}")
+            # Process each group
+            for event_group in event_groups:
+                group = db.query(Group).filter(Group.id == event_group.group_id).first()
+                if not group:
+                    logger.warning(f"⚠️  [REMINDER] Group {event_group.group_id} not found")
+                    continue
+                
+                logger.info(f"   📋 Processing group: '{group.name}' (ID: {group.id})")
+                
+                # Get students from the group
+                students = db.query(UserInDB).join(
+                    GroupStudent, UserInDB.id == GroupStudent.student_id
+                ).filter(
+                    GroupStudent.group_id == group.id,
+                    UserInDB.is_active == True,
+                    UserInDB.email.isnot(None)
+                ).all()
+                
+                logger.info(f"      👨‍🎓 Found {len(students)} active student(s) with email in group")
+                
+                # Get teacher (curator) of the group
+                teacher = None
+                if group.curator_id:
+                    teacher = db.query(UserInDB).filter(
+                        UserInDB.id == group.curator_id,
+                        UserInDB.is_active == True,
+                        UserInDB.email.isnot(None)
+                    ).first()
+                    
+                    if teacher:
+                        logger.info(f"      👨‍🏫 Teacher: {teacher.name or teacher.email} (ID: {teacher.id})")
+                    else:
+                        logger.warning(f"⚠️  [REMINDER] Teacher with ID {group.curator_id} not found or has no email")
+                else:
+                    logger.warning(f"⚠️  [REMINDER] No curator assigned to group {group.id}")
+                
+                # Send reminders to all students in this group
+                logger.info(f"      📤 Sending reminders to students...")
+                for student in students:
+                    try:
+                        result = send_lesson_reminder_notification(
+                            to_email=student.email,
+                            recipient_name=student.name or student.email.split('@')[0],
+                            lesson_title=event.title,
+                            lesson_datetime=event_datetime_str,
+                            group_name=group.name,
+                            role="student"
+                        )
+                        if result:
+                            sent_count += 1
+                        else:
+                            failed_count += 1
+                    except Exception as e:
+                        logger.error(f"❌ [REMINDER] Failed to send reminder to student {student.email}: {e}")
+                        failed_count += 1
+                
+                # Send reminder to teacher
+                if teacher:
+                    logger.info(f"      📤 Sending reminder to teacher...")
+                    try:
+                        result = send_lesson_reminder_notification(
+                            to_email=teacher.email,
+                            recipient_name=teacher.name or teacher.email.split('@')[0],
+                            lesson_title=event.title,
+                            lesson_datetime=event_datetime_str,
+                            group_name=group.name,
+                            role="teacher"
+                        )
+                        if result:
+                            sent_count += 1
+                        else:
+                            failed_count += 1
+                    except Exception as e:
+                        logger.error(f"❌ [REMINDER] Failed to send reminder to teacher {teacher.email}: {e}")
+                        failed_count += 1
             
             logger.info(
-                f"✅ Sent {sent_count} reminders for lesson '{lesson.title}' "
-                f"(Group: {group.name}, Time: {lesson_datetime_str})"
+                f"✅ [REMINDER] Completed for event '{event.title}' "
+                f"(Time: {event_datetime_str})"
             )
+            logger.info(f"   📊 Sent: {sent_count}, Failed: {failed_count}")
             
             return sent_count > 0
             
         except Exception as e:
-            logger.error(f"❌ Error sending lesson reminders for schedule {schedule.id}: {e}", exc_info=True)
+            logger.error(f"❌ [REMINDER] Error sending event reminders for event {event.id}: {e}", exc_info=True)
             return False
 
 

@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 # Load configuration from environment variables
 RESEND_API_KEY = os.getenv("RESEND_API_KEY")
-SENDER_EMAIL = os.getenv("EMAIL_SENDER", "noreply@mail.mastereducation.kz")
-SENDER_NAME = os.getenv("EMAIL_SENDER_NAME", "MasterED Platform")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER", "noreply@mail.mastereducation.kz")
+EMAIL_SENDER_NAME = os.getenv("EMAIL_SENDER_NAME", "MasterED Platform")
 LMS_URL = os.getenv("LMS_URL", "https://lms.mastereducation.kz/homework")
 
 
@@ -28,8 +28,8 @@ class EmailService:
     
     def __init__(self):
         self.api_key = RESEND_API_KEY
-        self.sender_email = SENDER_EMAIL
-        self.sender_name = SENDER_NAME
+        self.sender_email = EMAIL_SENDER
+        self.sender_name = EMAIL_SENDER_NAME
         
         if not self.api_key:
             logger.warning("RESEND_API_KEY not configured. Email notifications will be disabled.")
@@ -63,19 +63,26 @@ class EmailService:
         Returns:
             Response from Resend API or None if failed
         """
+        logger.info(f"📧 [EMAIL] Attempting to send email: '{subject}'")
+        logger.info(f"   Recipients: {to_emails}")
+        
         if not self.is_configured:
-            logger.warning("Email service not configured, skipping send")
+            logger.error("❌ [EMAIL] Email service not configured - RESEND_API_KEY is missing!")
+            logger.error(f"   Current RESEND_API_KEY value: {self.api_key or 'None'}")
             return None
             
         if not to_emails:
-            logger.warning("No recipients provided for email")
+            logger.warning("⚠️  [EMAIL] No recipients provided for email")
             return None
         
         # Filter out empty/invalid emails
         valid_emails = [e.strip() for e in to_emails if e and "@" in e]
         if not valid_emails:
-            logger.warning("No valid email addresses provided")
+            logger.warning(f"⚠️  [EMAIL] No valid email addresses provided. Input was: {to_emails}")
             return None
+        
+        if len(valid_emails) < len(to_emails):
+            logger.warning(f"⚠️  [EMAIL] Filtered {len(to_emails) - len(valid_emails)} invalid emails")
         
         payload = {
             "from": f"{self.sender_name} <{self.sender_email}>",
@@ -87,6 +94,9 @@ class EmailService:
         if text_content:
             payload["text"] = text_content
         
+        logger.info(f"📤 [EMAIL] Sending to Resend API ({self.RESEND_API_URL})...")
+        logger.debug(f"   Payload: from={payload['from']}, to={payload['to']}, subject={payload['subject']}")
+        
         try:
             response = requests.post(
                 self.RESEND_API_URL, 
@@ -94,16 +104,24 @@ class EmailService:
                 headers=self._get_headers(),
                 timeout=10
             )
+            
+            logger.info(f"📥 [EMAIL] Resend API response status: {response.status_code}")
+            
             response.raise_for_status()
-            logger.info(f"Email sent successfully to {len(valid_emails)} recipients")
-            return response.json()
+            
+            response_data = response.json()
+            logger.info(f"✅ [EMAIL] Successfully sent to {len(valid_emails)} recipient(s)")
+            logger.debug(f"   Response data: {response_data}")
+            
+            return response_data
         except requests.exceptions.Timeout:
-            logger.error("Email send timed out")
+            logger.error("❌ [EMAIL] Request timed out after 10 seconds")
             return None
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send email: {e}")
+            logger.error(f"❌ [EMAIL] Failed to send email: {e}")
             if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response: {e.response.text}")
+                logger.error(f"   Response status: {e.response.status_code}")
+                logger.error(f"   Response body: {e.response.text}")
             return None
 
 
@@ -440,9 +458,13 @@ def send_lesson_reminder_notification(
     Returns:
         Response from email API or None
     """
+    logger.info(f"📧 [REMINDER] Attempting to send lesson reminder to {to_email} (role: {role})")
+    logger.info(f"   📚 Lesson: '{lesson_title}' | 👥 Group: '{group_name}' | ⏰ Time: {lesson_datetime}")
+    
     service = get_email_service()
     
     if not service.is_configured:
+        logger.error("❌ [REMINDER] Email service not configured - RESEND_API_KEY missing!")
         return None
     
     # Customize content based on role
@@ -587,4 +609,12 @@ def send_lesson_reminder_notification(
     Master Education Team
     """
     
-    return service.send_email([to_email], subject, html_content, text_content)
+    logger.info(f"📤 [REMINDER] Sending email to {to_email}...")
+    result = service.send_email([to_email], subject, html_content, text_content)
+    
+    if result:
+        logger.info(f"✅ [REMINDER] Successfully sent reminder to {to_email}")
+    else:
+        logger.error(f"❌ [REMINDER] Failed to send reminder to {to_email}")
+    
+    return result

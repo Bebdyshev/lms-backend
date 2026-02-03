@@ -198,7 +198,6 @@ class EventService:
             meeting_url=target_parent.meeting_url,
             created_by=target_parent.created_by,
             is_recurring=False, # It's a specific materialized instance
-            lesson_id=target_parent.lesson_id,
             teacher_id=target_parent.teacher_id,
             is_active=True
         )
@@ -271,7 +270,6 @@ class EventService:
             is_online=True,
             meeting_url="",
             is_recurring=False,
-            lesson_id=sched.lesson_id,
             teacher_id=sched.group.teacher_id if sched.group else None,
             created_by=creator_id,
             is_active=True

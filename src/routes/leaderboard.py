@@ -746,31 +746,6 @@ async def get_weekly_lessons_with_hw_status(
                 instance.is_pseudo = False
                 events.append(instance)
                 seen_times.add(time_sig)
-    
-        # 4. Merge LessonSchedule for the current week
-        # Filter by date range instead of week_number to avoid cross-week display
-        schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id == group_id,
-            LessonSchedule.is_active == True,
-            LessonSchedule.scheduled_at >= week_start_dt,
-            LessonSchedule.scheduled_at < week_end_dt
-        ).order_by(LessonSchedule.scheduled_at).all()
-        
-        for sched in schedules:
-            time_sig = sched.scheduled_at.replace(second=0, microsecond=0)
-            if time_sig not in seen_times:
-                lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
-                pseudo_event = Event(
-                    id=sched.id,
-                    title=lesson_title,
-                    start_datetime=sched.scheduled_at,
-                    event_type='class'
-                )
-                pseudo_event.lesson_id = sched.lesson_id
-                pseudo_event.is_pseudo = True
-                pseudo_event.schedule_id = sched.id
-                events.append(pseudo_event)
-                seen_times.add(time_sig)
 
     events.sort(key=lambda x: x.start_datetime)
                 
@@ -780,66 +755,32 @@ async def get_weekly_lessons_with_hw_status(
     if not week_start_date:
          week_start_date = datetime.utcnow() # Warning: Should not happen if events exist
     
-    # 4. Get Assignments linked to these lessons/events
+    # 4. Get Assignments linked to these events
     event_homework_map = {}
     
-    # Collect IDs for querying
-    real_event_ids = [e.id for e in events if not getattr(e, 'is_pseudo', False)]
-    schedule_ids = [getattr(e, 'schedule_id', e.id) for e in events if getattr(e, 'is_pseudo', False)]
-    lesson_ids = [e.lesson_id for e in events if hasattr(e, 'lesson_id') and e.lesson_id is not None]
+    # Collect event IDs for querying
+    real_event_ids = [e.id for e in events]
     
-    # Query assignments by schedule_id, event_id, OR lesson_id
-    query_filters = []
-    if schedule_ids:
-        query_filters.append(Assignment.schedule_id.in_(schedule_ids))
+    # Query assignments by event_id only (simplified architecture)
     if real_event_ids:
-        query_filters.append(Assignment.event_id.in_(real_event_ids))
-    if lesson_ids:
-        query_filters.append(Assignment.lesson_id.in_(lesson_ids))
-    
-    if query_filters:
         assignments = db.query(Assignment).filter(
-            or_(*query_filters),
+            Assignment.event_id.in_(real_event_ids),
             Assignment.is_active == True
         ).all()
         
-        # Build maps by different keys
-        # Priority: schedule_id > event_id > lesson_id
-        
-        schedule_assignment_map = {}
-        for a in assignments:
-            if a.schedule_id:
-                schedule_assignment_map[a.schedule_id] = a
-        
+        # Build event_id -> assignment map
         event_assignment_map = {}
         for a in assignments:
             if a.event_id:
                 event_assignment_map[a.event_id] = a
                 
-        lesson_assignment_map = {}
-        for a in assignments:
-            if a.lesson_id:
-                lesson_assignment_map[a.lesson_id] = a
-                
-        # Now populate event_homework_map based on priority
+        # Populate event_homework_map
         for e in events:
-            is_pseudo = getattr(e, 'is_pseudo', False)
-            schedule_id = getattr(e, 'schedule_id', e.id) if is_pseudo else None
-            
-            # Priority 1: Check schedule_id (for pseudo events from LessonSchedule)
-            if schedule_id and schedule_id in schedule_assignment_map:
-                event_homework_map[e.id] = schedule_assignment_map[schedule_id]
-            # Priority 2: Check event_id (for real calendar events)
-            elif not is_pseudo and e.id in event_assignment_map:
+            if e.id in event_assignment_map:
                 event_homework_map[e.id] = event_assignment_map[e.id]
-            # Priority 3: Fallback to lesson_id
-            elif hasattr(e, 'lesson_id') and e.lesson_id and e.lesson_id in lesson_assignment_map:
-                event_homework_map[e.id] = lesson_assignment_map[e.lesson_id]
-    
-        # Collect final assignment IDs for submission lookup
-        assignment_ids = list(set([a.id for a in event_homework_map.values()]))
-    else:
-        assignment_ids = []
+
+    # Collect final assignment IDs for submission lookup
+    assignment_ids = list(set([a.id for a in event_homework_map.values()])) if event_homework_map else []
     
     # 5. Build Lesson Columns metadata
     lessons_meta = []
@@ -878,7 +819,7 @@ async def get_weekly_lessons_with_hw_status(
     
     attendance_map = {}
     
-    # 7.1 Real Events (EventParticipant)
+    # Get attendance from EventParticipant for real events
     if real_event_ids:
         event_attendances = db.query(EventParticipant).filter(
             EventParticipant.event_id.in_(real_event_ids),
@@ -887,20 +828,6 @@ async def get_weekly_lessons_with_hw_status(
         # Map (user_id, event_id) -> status
         for a in event_attendances:
             attendance_map[(a.user_id, a.event_id)] = a.registration_status
-            
-    # 7.2 Pseudo Events (Attendance from LessonSchedule)
-    schedule_ids = [e.schedule_id for e in events if getattr(e, 'is_pseudo', False) and hasattr(e, 'schedule_id')]
-    if schedule_ids:
-        sched_attendances = db.query(Attendance).filter(
-            Attendance.lesson_schedule_id.in_(schedule_ids),
-            Attendance.user_id.in_(student_ids)
-        ).all()
-        
-        # Map (user_id, schedule_id) -> status
-        # Note: Event ID in events list for pseudo event IS schedule_id
-        for a in sched_attendances:
-            status = "attended" if a.score > 0 else "absent"
-            attendance_map[(a.user_id, a.lesson_schedule_id)] = status
 
     
     # 8. Get HW Submissions
@@ -1093,32 +1020,9 @@ async def get_group_full_attendance_matrix(
             seen_times.add(time_sig)
             
     all_events = combined_events
-
-    # 6. Always include LessonSchedule to ensure all intended slots are visible
-    schedules = db.query(LessonSchedule).filter(
-        LessonSchedule.group_id == group_id,
-        LessonSchedule.is_active == True
-    ).order_by(LessonSchedule.scheduled_at).all()
-    
-    for sched in schedules:
-        time_sig = sched.scheduled_at.replace(second=0, microsecond=0)
-        if time_sig not in seen_times:
-            lesson_title = sched.lesson.title if sched.lesson else f"Lesson {sched.id}"
-            pseudo_event = Event(
-                id=sched.id,
-                title=lesson_title,
-                start_datetime=sched.scheduled_at,
-                event_type='class'
-            )
-            pseudo_event.lesson_id = sched.lesson_id
-            all_events.append(pseudo_event)
-            seen_times.add(time_sig)
-
     all_events.sort(key=lambda x: x.start_datetime)
 
-    all_events.sort(key=lambda x: x.start_datetime)
-
-    # 9. Build Lessons Meta
+    # 6. Build Lessons Meta
     lessons_meta = []
     for idx, event in enumerate(all_events):
         lessons_meta.append({
@@ -1665,39 +1569,17 @@ async def generate_schedule(
 ):
     """
     Generate lesson schedules for a group.
-    Iteratively finds lessons in the course and schedules them.
-    Also creates GroupAssignment records for automated homework tracking.
+    Creates individual Event entries for each lesson (no more recurring events or LessonSchedule).
+    Events are completely independent of course content.
     """
-    if current_user.role not in ["curator", "admin", "head_curator"]:
+    if current_user.role not in ["curator", "admin", "head_curator", "teacher"]:
        raise HTTPException(status_code=403, detail="Access denied")
-
-    # Fetch group and course
-    from src.schemas.models import CourseGroupAccess
-    
-    course_access = db.query(CourseGroupAccess).filter(
-        CourseGroupAccess.group_id == data.group_id,
-        CourseGroupAccess.is_active == True
-    ).first()
     
     group = db.query(Group).filter(Group.id == data.group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    
-    if not course_access:
-        raise HTTPException(status_code=400, detail="Group has no active course")
-        
-    # Fetch all lessons
-    lessons = db.query(Lesson).join(Module).filter(
-        Module.course_id == course_access.course_id
-    ).order_by(Module.order_index, Lesson.order_index).all()
-    
-    if not lessons:
-        raise HTTPException(status_code=400, detail="Course has no lessons")
 
-    # Parse times
-    # schedule_items = [{day_of_week: 0, time_of_day: "19:00"}, ...]
-    
-    # CLEANUP: Deactivate existing active schedules for this group to avoid duplicates
+    # CLEANUP: Deactivate existing active schedules for this group
     # 1. Legacy LessonSchedules
     existing_schedules = db.query(LessonSchedule).filter(
         LessonSchedule.group_id == data.group_id,
@@ -1714,16 +1596,10 @@ async def generate_schedule(
         for oa in old_assignments:
             oa.is_active = False
             
-    # 2. Existing Recurring Events (of type 'class' created by generator)
-    # We identify them by group link and type.
-    # To be safe, we only deactivate events that look like "Online Class" or are recurring classes for this group
-    # during the target period? Or just all recurring classes?
-    # User wants a clean slate. Let's deactivate all ACTIVE RECURRING class events for this group.
-    
+    # 2. Deactivate ALL existing class events for this group (both recurring and non-recurring)
     existing_events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id == data.group_id,
         Event.event_type == 'class',
-        Event.is_recurring == True,
         Event.is_active == True
     ).all()
     
@@ -1732,141 +1608,86 @@ async def generate_schedule(
             
     db.flush()
 
-    # Generate NEW Schedule (Recurring Events)
-    # Instead of creating 100 individual events, we create 1 recurring event per Weekly Slot.
-    # e.g. Mon 19:00 -> 1 Recurring Event (Weekly)
+    # Calculate number of weeks needed
+    import math
+    lessons_count = data.lessons_count if data.lessons_count else (len(data.schedule_items) * data.weeks_count)
+    frequency = len(data.schedule_items)  # lessons per week
+    week_limit = math.ceil(lessons_count / frequency) + 2  # +2 for safety margin
     
-    # Calculate duration
-    if data.lessons_count and data.schedule_items:
-        import math
-        # Frequency = count of lessons per week
-        frequency = len(data.schedule_items)
-        # Duration in weeks = lessons / frequency
-        # Note: This is an approximation for recurring events end_date
-        week_limit = math.ceil(data.lessons_count / frequency)
-    else:
-        week_limit = data.weeks_count
-        
     start_date = data.start_date
-    end_recurrence = start_date + timedelta(weeks=week_limit)
     
-    generated_count = 0
-    
-    for item in data.schedule_items:
-        # Find first occurrence of this day after/on start_date
-        # item.day_of_week: 0=Mon, 6=Sun
-        
-        # Parse time
-        try:
-            time_obj = datetime.strptime(item.time_of_day, "%H:%M").time()
-        except ValueError:
-            continue
-            
-        # Calculate first date
-        days_ahead = item.day_of_week - start_date.weekday()
-        if days_ahead < 0:
-            days_ahead += 7
-        
-        first_date = start_date + timedelta(days=days_ahead)
-        start_dt = datetime.combine(first_date, time_obj)
-        end_dt = start_dt + timedelta(minutes=90) # Default 1.5h
-        
-        # Check if an event already exists for this group at this time
-        existing_event = db.query(Event).join(EventGroup).filter(
-            EventGroup.group_id == data.group_id,
-            Event.start_datetime == start_dt,
-            Event.is_active == True
-        ).first()
-        
-        if existing_event:
-            # Skip creating duplicate event
-            continue
-        
-        # Create Recurring Event
-        event = Event(
-            title=f"{group.name}: Online Class",
-            description="Regular scheduled class via Zoom",
-            event_type="class",
-            start_datetime=start_dt,
-            end_datetime=end_dt,
-            location="Online (Scheduled)",
-            is_online=True,
-            meeting_url="",
-            created_by=current_user.id,
-            is_active=True,
-            is_recurring=True,
-            recurrence_pattern="weekly",
-            recurrence_end_date=end_recurrence,
-            max_participants=50
-        )
-        db.add(event)
-        db.flush()
-        
-        # Link to group
-        event_group = EventGroup(
-            event_id=event.id,
-            group_id=data.group_id
-        )
-        db.add(event_group)
-        
-        generated_count += 1
-            
-    # Also generate individual LessonSchedule entries for leaderboard tracking
-    # (These will be hidden in calendar by deduplication if real events exist)
-    lessons_scheduled = 0
-    total_lessons = data.lessons_count if data.lessons_count else (len(data.schedule_items) * week_limit)
+    # STEP 1: Generate all possible lesson dates first
+    all_lesson_dates = []
     
     for week in range(week_limit):
         for item in data.schedule_items:
-            if lessons_scheduled >= total_lessons:
-                break
-                
-            if lessons_scheduled >= len(lessons):
-                break
-                
-            lesson = lessons[lessons_scheduled]
-            
-            # Find date for this week and day
             try:
                 time_obj = datetime.strptime(item.time_of_day, "%H:%M").time()
             except ValueError:
-                time_obj = datetime.min.time()
-                
+                time_obj = datetime.strptime("19:00", "%H:%M").time()
+            
+            # Calculate target date for this week and day
+            # Find the first occurrence of this weekday on or after start_date
             days_ahead = item.day_of_week - start_date.weekday()
             if days_ahead < 0:
                 days_ahead += 7
             
-            target_date = start_date + timedelta(weeks=week, days=days_ahead)
+            target_date = start_date + timedelta(days=days_ahead) + timedelta(weeks=week)
             target_dt = datetime.combine(target_date, time_obj)
             
-            # Check if schedule already exists for this group at this time
-            existing = db.query(LessonSchedule).filter(
-                LessonSchedule.group_id == data.group_id,
-                LessonSchedule.scheduled_at == target_dt,
-                LessonSchedule.is_active == True
-            ).first()
-            
-            if not existing:
-                new_sched = LessonSchedule(
-                    group_id=data.group_id,
-                    lesson_id=lesson.id,
-                    week_number=week + 1,
-                    scheduled_at=target_dt,
-                    is_active=True
-                )
-                db.add(new_sched)
-            lessons_scheduled += 1
+            # Only include dates on or after start_date
+            if target_date >= start_date:
+                all_lesson_dates.append(target_dt)
+    
+    # STEP 2: Sort all dates chronologically and take only lessons_count
+    all_lesson_dates.sort()
+    all_lesson_dates = all_lesson_dates[:lessons_count]
+    
+    # STEP 3: Create Events with correct sequential numbering
+    lessons_created = 0
+    
+    for lesson_number, target_dt in enumerate(all_lesson_dates, start=1):
+        end_dt = target_dt + timedelta(minutes=90)
+        
+        # Check if event already exists for this group at this time
+        existing = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id == data.group_id,
+            Event.start_datetime == target_dt,
+            Event.event_type == "class",
+            Event.is_active == True
+        ).first()
+        
+        if not existing:
+            new_event = Event(
+                title=f"{group.name}: Lesson {lesson_number}",
+                description=f"Scheduled class for {group.name}",
+                event_type="class",
+                start_datetime=target_dt,
+                end_datetime=end_dt,
+                location="Online",
+                is_online=True,
+                created_by=current_user.id,
+                teacher_id=group.teacher_id,
+                is_active=True,
+                is_recurring=False,
+                max_participants=50
+            )
+            db.add(new_event)
+            db.flush()
+            db.add(EventGroup(event_id=new_event.id, group_id=data.group_id))
+        
+        lessons_created += 1
 
     # Save config for future use
     group.schedule_config = {
         "start_date": data.start_date.isoformat(),
         "weeks_count": week_limit,
-        "lessons_count": total_lessons,
+        "lessons_count": lessons_count,
         "schedule_items": [item.dict() for item in data.schedule_items]
     }
     db.commit()
     
-    return {"message": f"Schedule generated successfully. Created {generated_count} recurring event series and {lessons_scheduled} planned lessons."}
+    return {"message": f"Schedule generated successfully. Created {lessons_created} individual lessons."}
 
 @router.get("/curator/schedule/{group_id}", response_model=GroupScheduleResponse)
 async def get_group_schedule(

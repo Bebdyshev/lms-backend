@@ -1330,106 +1330,74 @@ async def bulk_schedule_upload(
             weeks_diff = (end_date - start_date).days // 7
             week_limit = max(1, weeks_diff)  # At least 1 week
             
-            # Deactivate existing recurring classes for this group
-            existing_event_ids = db.query(Event.id).join(EventGroup).filter(
-                EventGroup.group_id == group.id,
-                Event.event_type == 'class',
-                Event.is_recurring == True
-            ).subquery()
-            
-            db.query(Event).filter(Event.id.in_(existing_event_ids)).update(
-                {Event.is_active: False}, synchronize_session=False
-            )
-            
-            for item in schedule_items:
-                # Calculate first date
-                days_ahead = item["day_of_week"] - start_date.weekday()
-                if days_ahead < 0:
-                    days_ahead += 7
-                first_date = start_date + timedelta(days=days_ahead)
-                
-                try:
-                    t_str = item["time_of_day"]
-                    time_obj = datetime.strptime(t_str, "%H:%M").time()
-                except:
-                    time_obj = time(19, 0)
-                    
-                start_dt = datetime.combine(first_date, time_obj)
-                end_dt = start_dt + timedelta(minutes=90)
-                
-                event = Event(
-                    title=f"{group.name}: Online Class",
-                    description=f"Scheduled via Bulk Upload. Total {lessons_count} lessons.",
-                    event_type="class",
-                    start_datetime=start_dt,
-                    end_datetime=end_dt,
-                    location="Online (Scheduled)",
-                    is_online=True,
-                    created_by=current_user.id,
-                    is_active=True,
-                    is_recurring=True,
-                    recurrence_pattern="weekly",
-                    recurrence_end_date=end_recurrence,
-                    max_participants=50
+            # 9. Create individual Event entries for each lesson (no more recurring events or LessonSchedule)
+            # Deactivate old events for this group
+            existing_event_ids = [eg.event_id for eg in db.query(EventGroup).filter(EventGroup.group_id == group.id).all()]
+            if existing_event_ids:
+                db.query(Event).filter(Event.id.in_(existing_event_ids)).update(
+                    {Event.is_active: False}, synchronize_session=False
                 )
-                db.add(event)
-                db.flush()
-                db.add(EventGroup(event_id=event.id, group_id=group.id))
-                
-            # 10. Also generate individual LessonSchedule entries for leaderboard tracking
-            # Fetch lessons for this course
-            from src.schemas.models import Lesson, Module, LessonSchedule
-            lessons = db.query(Lesson).join(Module).filter(
-                Module.course_id == course.id
-            ).order_by(Module.order_index, Lesson.order_index).all()
             
-            # Deactivate existing schedules for this group
-            db.query(LessonSchedule).filter(
-                LessonSchedule.group_id == group.id,
-                LessonSchedule.is_active == True
-            ).update({LessonSchedule.is_active: False}, synchronize_session=False)
-
-            lessons_scheduled = 0
-            for week in range(week_limit):
+            # STEP 1: Generate all possible lesson dates first
+            all_lesson_dates = []
+            
+            for week in range(week_limit + 2):  # +2 for safety margin
                 for item in schedule_items:
-                    if lessons_scheduled >= lessons_count:
-                        break
-                    
-                    if lessons_scheduled >= len(lessons):
-                        break
-                        
-                    lesson = lessons[lessons_scheduled]
-                    
-                    # Find date for this week and day
                     try:
                         time_obj = datetime.strptime(item["time_of_day"], "%H:%M").time()
                     except:
-                        time_obj = datetime.min.time()
-                        
+                        time_obj = time(19, 0)
+                    
+                    # Calculate target date for this week and day
                     days_ahead = item["day_of_week"] - start_date.weekday()
                     if days_ahead < 0:
                         days_ahead += 7
                     
-                    target_date = start_date + timedelta(weeks=week, days=days_ahead)
+                    target_date = start_date + timedelta(days=days_ahead) + timedelta(weeks=week)
                     target_dt = datetime.combine(target_date, time_obj)
                     
-                    # Check if schedule already exists for this group at this time
-                    existing = db.query(LessonSchedule).filter(
-                        LessonSchedule.group_id == group.id,
-                        LessonSchedule.scheduled_at == target_dt,
-                        LessonSchedule.is_active == True
-                    ).first()
-                    
-                    if not existing:
-                        new_sched = LessonSchedule(
-                            group_id=group.id,
-                            lesson_id=lesson.id,
-                            week_number=week + 1,
-                            scheduled_at=target_dt,
-                            is_active=True
-                        )
-                        db.add(new_sched)
-                    lessons_scheduled += 1
+                    # Only include dates on or after start_date
+                    if target_date >= start_date:
+                        all_lesson_dates.append(target_dt)
+            
+            # STEP 2: Sort all dates chronologically and take only lessons_count
+            all_lesson_dates.sort()
+            all_lesson_dates = all_lesson_dates[:lessons_count]
+            
+            # STEP 3: Create Events with correct sequential numbering
+            lessons_created = 0
+            
+            for lesson_number, target_dt in enumerate(all_lesson_dates, start=1):
+                end_dt = target_dt + timedelta(minutes=90)
+                
+                # Check if event already exists for this group at this time
+                existing = db.query(Event).join(EventGroup).filter(
+                    EventGroup.group_id == group.id,
+                    Event.start_datetime == target_dt,
+                    Event.event_type == "class",
+                    Event.is_active == True
+                ).first()
+                
+                if not existing:
+                    new_event = Event(
+                        title=f"{group.name}: Lesson {lesson_number}",
+                        description=f"Scheduled class for {group.name}",
+                        event_type="class",
+                        start_datetime=target_dt,
+                        end_datetime=end_dt,
+                        location="Online",
+                        is_online=True,
+                        created_by=current_user.id,
+                        teacher_id=group.teacher_id,
+                        is_active=True,
+                        is_recurring=False,
+                        max_participants=50
+                    )
+                    db.add(new_event)
+                    db.flush()
+                    db.add(EventGroup(event_id=new_event.id, group_id=group.id))
+                
+                lessons_created += 1
                 
             # Save config
             group.schedule_config = {

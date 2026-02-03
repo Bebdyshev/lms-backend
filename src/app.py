@@ -42,8 +42,11 @@ app = FastAPI(
 # Initialize database
 init_db()
 
-# Set global logging level to WARNING to reduce noise
-logging.basicConfig(level=logging.WARNING)
+# Set logging level to INFO to see email and reminder logs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # Gzip middleware for compressing large responses (e.g. quizzes)
 from fastapi.middleware.gzip import GZipMiddleware

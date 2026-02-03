@@ -887,6 +887,55 @@ async def get_upcoming_events(
     result.sort(key=lambda x: x.start_datetime)
     return result[:limit]
 
+@router.get("/group/{group_id}/classes", response_model=List[EventSchema])
+async def get_group_class_events(
+    group_id: int,
+    weeks_back: int = Query(1, ge=0, le=52),
+    weeks_ahead: int = Query(8, ge=0, le=52),
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_user_dependency)
+):
+    """
+    Get class events for a specific group within a time window.
+    Used for linking assignments to class sessions.
+    """
+    # Verify access to group
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Check permissions
+    if current_user.role == "student":
+        is_member = db.query(GroupStudent).filter(
+            GroupStudent.group_id == group_id,
+            GroupStudent.student_id == current_user.id
+        ).first()
+        if not is_member:
+            raise HTTPException(status_code=403, detail="Access denied to this group")
+    elif current_user.role == "teacher":
+        if group.teacher_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this group")
+    elif current_user.role == "curator":
+        if group.curator_id != current_user.id and group.teacher_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Access denied to this group")
+    # admin has access to all groups
+    
+    # Calculate time window
+    now = datetime.now()
+    start_date = now - timedelta(weeks=weeks_back)
+    end_date = now + timedelta(weeks=weeks_ahead)
+    
+    # Get class events for this group
+    events = db.query(Event).join(EventGroup).filter(
+        EventGroup.group_id == group_id,
+        Event.event_type == "class",
+        Event.is_active == True,
+        Event.start_datetime >= start_date,
+        Event.start_datetime <= end_date
+    ).order_by(Event.start_datetime).all()
+    
+    return events
+
 @router.get("/{event_id}", response_model=EventSchema)
 async def get_event_details(
     event_id: int,
@@ -1113,7 +1162,6 @@ async def create_curator_event(
         recurrence_pattern=event_data.recurrence_pattern,
         recurrence_end_date=event_data.recurrence_end_date,
         max_participants=event_data.max_participants,
-        lesson_id=event_data.lesson_id,
         teacher_id=event_data.teacher_id
     )
     
