@@ -112,6 +112,7 @@ class UpdateGroupRequest(BaseModel):
     description: Optional[str] = None
     teacher_id: Optional[int] = None
     curator_id: Optional[int] = None
+    course_id: Optional[int] = None  # Курс, к которому привязана группа
     is_active: Optional[bool] = None
     student_ids: Optional[List[int]] = None  # Update student list
 
