@@ -26,8 +26,8 @@ set -e\n\
 echo "🔄 Running Alembic migrations..."\n\
 alembic upgrade head\n\
 echo "✅ Migrations completed"\n\
-echo "🚀 Starting FastAPI application..."\n\
-uvicorn src.app:app --host 0.0.0.0 --port 8000\n\
+echo "🚀 Starting FastAPI application with 4 workers..."\n\
+uvicorn src.app:app --host 0.0.0.0 --port 8000 --workers 4\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 # Открытие порта
