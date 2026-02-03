@@ -28,8 +28,15 @@ class EmailService:
     
     def __init__(self):
         self.api_key = RESEND_API_KEY
-        self.sender_email = EMAIL_SENDER
-        self.sender_name = EMAIL_SENDER_NAME
+        
+        # If EMAIL_SENDER already contains name (e.g., "Name <email@domain.com>"), use as-is
+        # Otherwise, combine EMAIL_SENDER_NAME and EMAIL_SENDER
+        if "<" in EMAIL_SENDER and ">" in EMAIL_SENDER:
+            # Already formatted as "Name <email@domain.com>"
+            self.from_email = EMAIL_SENDER
+        else:
+            # Combine name and email
+            self.from_email = f"{EMAIL_SENDER_NAME} <{EMAIL_SENDER}>"
         
         if not self.api_key:
             logger.warning("RESEND_API_KEY not configured. Email notifications will be disabled.")
@@ -85,7 +92,7 @@ class EmailService:
             logger.warning(f"⚠️  [EMAIL] Filtered {len(to_emails) - len(valid_emails)} invalid emails")
         
         payload = {
-            "from": f"{self.sender_name} <{self.sender_email}>",
+            "from": self.from_email,
             "to": valid_emails,
             "subject": subject,
             "html": html_content
