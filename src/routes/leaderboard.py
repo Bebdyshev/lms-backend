@@ -958,115 +958,116 @@ async def get_weekly_lessons_with_hw_status(
 ):
     """
     Enhanced leaderboard endpoint returning structured lessons, homework status, 
-    student rows and configuration.
+    student rows and configuration. Uses Events (not LessonSchedule).
     """
     if current_user.role not in ["curator", "admin", "head_curator"]:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # 1. Get Group and Schedules
+    # 1. Get Group
     group = db.query(Group).filter(Group.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
-    schedules = db.query(LessonSchedule).filter(
-        LessonSchedule.group_id == group_id,
-        LessonSchedule.week_number == week_number,
-        LessonSchedule.is_active == True
-    ).order_by(LessonSchedule.scheduled_at).all()
+    # 2. Get all Events for this group
+    all_events = db.query(Event).join(EventGroup).filter(
+        EventGroup.group_id == group_id,
+        Event.event_type == 'class',
+        Event.is_active == True
+    ).order_by(Event.start_datetime.asc()).all()
     
     lessons_meta = []
-    if not schedules:
-        # FALLBACK: Legacy Logic (No schedules found)
-        # Anchor week start to Group creation or Course start
-        # Assume Week 1 starts on the Monday of the week the group was created
-        group_base_date = group.created_at or datetime.utcnow()
-        # Find the Monday of that week
-        week1_start = group_base_date - timedelta(days=group_base_date.weekday())
-        week_start = week1_start + timedelta(weeks=week_number - 1)
+    week_start = None
+    week_events = []
+    
+    if all_events:
+        # Calculate week boundaries based on first event
+        first_event_date = all_events[0].start_datetime.date()
+        start_of_week1 = first_event_date - timedelta(days=first_event_date.weekday())
         
-        start_lesson_index = (week_number - 1) * 5
-        course_access = db.query(CourseGroupAccess).filter(
-            CourseGroupAccess.group_id == group_id,
-            CourseGroupAccess.is_active == True
-        ).first()
-
-        if course_access:
-            lessons_query = db.query(Lesson).join(Module).filter(
-                Module.course_id == course_access.course_id
-            ).order_by(Module.order_index, Lesson.order_index).offset(start_lesson_index).limit(5).all()
-            
-            for idx, lesson in enumerate(lessons_query):
-                # Find assignment
-                assignment = db.query(Assignment).filter(
-                    Assignment.lesson_id == lesson.id,
-                    Assignment.is_active == True
-                ).first()
-                
-                # Distribute lessons: Mon, Tue, Wed, Thu, Fri
-                lesson_date = week_start + timedelta(days=idx)
-                
-                lessons_meta.append({
-                    "lesson_number": idx + 1,
-                    "event_id": 0, # No schedule ID
-                    "title": lesson.title,
-                    "start_datetime": lesson_date.isoformat(),
-                    "homework": {
-                        "id": assignment.id,
-                        "title": assignment.title
-                    } if assignment else None
-                })
-    else:
-        week_start = schedules[0].scheduled_at
-        for idx, s in enumerate(schedules):
-            # Find assignment
-            assignment = db.query(Assignment).filter(
-                Assignment.lesson_id == s.lesson_id,
+        week_start_date = start_of_week1 + timedelta(weeks=week_number - 1)
+        week_end_date = week_start_date + timedelta(days=7)
+        week_start_dt = datetime.combine(week_start_date, datetime.min.time())
+        week_end_dt = datetime.combine(week_end_date, datetime.min.time())
+        week_start = week_start_dt
+        
+        # Get events for this specific week
+        week_events = [e for e in all_events 
+                       if week_start_dt <= e.start_datetime < week_end_dt]
+        week_events.sort(key=lambda e: e.start_datetime)
+        
+        # Get homework for this week (by group_id and due_date)
+        week_assignments = db.query(Assignment).filter(
+            Assignment.group_id == group_id,
+            Assignment.is_active == True,
+            Assignment.due_date >= week_start_dt,
+            Assignment.due_date < week_end_dt
+        ).order_by(Assignment.due_date).all()
+        
+        # Also check assignments linked to events via event_id
+        event_ids = [e.id for e in week_events]
+        if event_ids:
+            event_linked_assignments = db.query(Assignment).filter(
+                Assignment.event_id.in_(event_ids),
                 Assignment.is_active == True
-            ).first()
+            ).all()
+            # Merge
+            existing_ids = {a.id for a in week_assignments}
+            for a in event_linked_assignments:
+                if a.id not in existing_ids:
+                    week_assignments.append(a)
+            week_assignments.sort(key=lambda a: a.due_date if a.due_date else datetime.max)
+        
+        # Create assignment lookup by event_id or by index
+        assignment_by_event = {a.event_id: a for a in week_assignments if a.event_id}
+        assignments_without_event = [a for a in week_assignments if not a.event_id]
+        
+        for idx, event in enumerate(week_events[:5]):
+            # Find homework for this lesson
+            # Priority: assignment linked to this event, then by order
+            assignment = assignment_by_event.get(event.id)
+            if not assignment and idx < len(assignments_without_event):
+                assignment = assignments_without_event[idx]
             
             lessons_meta.append({
                 "lesson_number": idx + 1,
-                "event_id": s.id, # We use schedule ID as event_id for attendance tracking
-                "title": s.lesson.title if s.lesson else f"Lesson {idx+1}",
-                "start_datetime": s.scheduled_at.isoformat(),
+                "event_id": event.id,
+                "title": event.title,
+                "start_datetime": event.start_datetime.isoformat(),
                 "homework": {
                     "id": assignment.id,
                     "title": assignment.title
                 } if assignment else None
             })
+    else:
+        # No events - use group creation date as fallback
+        group_base_date = group.created_at or datetime.utcnow()
+        week1_start = group_base_date - timedelta(days=group_base_date.weekday())
+        week_start = week1_start + timedelta(weeks=week_number - 1)
 
-    # 2. Get Student Rows
-    # Re-use existing get_group_leaderboard logic or similar data
+    # 2. Get Student Rows (re-use existing function)
     students_data = await get_group_leaderboard(group_id, week_number, current_user, db)
     
     # 3. Format students for the frontend expected structure
     formatted_students = []
     for row in students_data:
-        # Map flat row to structured lessons
         student_lessons = {}
-        # We always expect up to 5 lessons in fallback or dynamic
-        lessons_count = len(schedules) if schedules else len(lessons_meta)
         
         for i in range(1, 6):
-            # Extract HW score
             hw_score = row.get(f"hw_lesson_{i}")
+            att_score = row.get(f"lesson_{i}", 0)
             
-            # Extract Attendance
-            attendance_status = "absent"
-            att_score = row.get(f"lesson_{i}")
-            
-            if schedules:
-                if att_score == 10: attendance_status = "attended"
-                elif att_score > 0: attendance_status = "late"
+            # Determine attendance status
+            if att_score >= 1:
+                attendance_status = "attended"
+            elif att_score > 0:
+                attendance_status = "late"
             else:
-                # In legacy mode, attendance score IS the lesson score
-                if att_score >= 10: attendance_status = "attended"
-                elif att_score > 0: attendance_status = "late"
+                attendance_status = "missed"
             
-            # Find schedule ID for this lesson
+            # Get event_id for this lesson
             event_id = 0
-            if schedules and i <= len(schedules):
-                event_id = schedules[i-1].id
+            if i <= len(week_events):
+                event_id = week_events[i-1].id
 
             student_lessons[str(i)] = {
                 "event_id": event_id,
@@ -1074,7 +1075,7 @@ async def get_weekly_lessons_with_hw_status(
                 "homework_status": {
                     "submitted": hw_score is not None,
                     "score": hw_score
-                } if row.get(f"hw_lesson_{i}") is not None else None
+                } if hw_score is not None else None
             }
 
         formatted_students.append({
