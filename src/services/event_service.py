@@ -265,7 +265,7 @@ class EventService:
             description=f"Planned lesson: {lesson_title}",
             event_type="class",
             start_datetime=sched.scheduled_at,
-            end_datetime=sched.scheduled_at + timedelta(minutes=90), # Default 1.5h
+            end_datetime=sched.scheduled_at + timedelta(minutes=60), # Default 1h
             location="Online (Scheduled)",
             is_online=True,
             meeting_url="",

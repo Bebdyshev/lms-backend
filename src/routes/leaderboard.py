@@ -1470,7 +1470,7 @@ async def generate_schedule(
     lessons_created = 0
     
     for lesson_number, target_dt in enumerate(all_lesson_dates, start=1):
-        end_dt = target_dt + timedelta(minutes=90)
+        end_dt = target_dt + timedelta(minutes=60)
         
         # Check if event already exists for this group at this time
         existing = db.query(Event).join(EventGroup).filter(

@@ -318,7 +318,7 @@ async def get_my_events(
             lesson_number = lesson_number_map.get(sched.id, sched.week_number)
             
             title = f"{group_name}: Lesson {lesson_number}"
-            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            end_dt = sched.scheduled_at + timedelta(minutes=60)
             
             result.append(EventSchema(
                 id=virtual_id,
@@ -552,8 +552,8 @@ async def get_calendar_events(
             lesson_number = lesson_number_map.get(sched.id, sched.week_number)
             title = f"{group_name}: Lesson {lesson_number}"
             
-            # Duration default 1.5 hours?
-            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            # Duration default 1 hour
+            end_dt = sched.scheduled_at + timedelta(minutes=60)
             
             sched_event = EventSchema(
                 id=virtual_id,
@@ -859,7 +859,7 @@ async def get_upcoming_events(
             group_name = sched.group.name if sched.group else "Group"
             lesson_number = lesson_number_map.get(sched.id, sched.week_number)
             title = f"{group_name}: Lesson {lesson_number}"
-            end_dt = sched.scheduled_at + timedelta(minutes=90)
+            end_dt = sched.scheduled_at + timedelta(minutes=60)
             
             lesson_event = EventSchema(
                 id=lesson_event_id,
