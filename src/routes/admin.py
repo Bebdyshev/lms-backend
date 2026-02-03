@@ -1338,6 +1338,9 @@ async def bulk_schedule_upload(
                     {Event.is_active: False}, synchronize_session=False
                 )
             
+            # Kazakhstan timezone offset (GMT+5)
+            KZ_OFFSET = timedelta(hours=5)
+            
             # STEP 1: Generate all possible lesson dates first
             all_lesson_dates = []
             
@@ -1354,7 +1357,10 @@ async def bulk_schedule_upload(
                         days_ahead += 7
                     
                     target_date = start_date + timedelta(days=days_ahead) + timedelta(weeks=week)
-                    target_dt = datetime.combine(target_date, time_obj)
+                    target_dt_kz = datetime.combine(target_date, time_obj)
+                    
+                    # Convert from Kazakhstan time (GMT+5) to UTC
+                    target_dt = target_dt_kz - KZ_OFFSET
                     
                     # Only include dates on or after start_date
                     if target_date >= start_date:
