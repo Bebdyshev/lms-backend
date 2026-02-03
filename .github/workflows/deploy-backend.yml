@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: deploy-backend
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -23,11 +23,27 @@ jobs:
           set -e
           echo "🚀 Starting backend deployment..."
           cd ~/projects/lms
-          git fetch origin main
+          
+          echo "📌 Current commit before update:"
+          git rev-parse HEAD
+          
+          echo "📥 Fetching latest changes from origin..."
+          git fetch --all --prune --force
+          
+          echo "🌐 Latest origin/main commit:"
+          git rev-parse origin/main
+          
+          echo "🔄 Resetting to origin/main..."
           git reset --hard origin/main
+          git clean -fd
+          
+          echo "✅ Current commit after update:"
+          git rev-parse HEAD
+          
+          echo "🐳 Building Docker containers..."
           docker compose pull || true
-          docker compose build
-          docker compose up -d
+          docker compose build --no-cache
+          docker compose up -d --force-recreate
           echo "✅ Backend deployment completed!"
 
     - name: Health Check
