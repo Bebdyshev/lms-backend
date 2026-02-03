@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
+COPY run_scheduler.py .
 
 # Создание директории для uploads
 RUN mkdir -p uploads

@@ -64,7 +64,7 @@ services:
       - LMS_URL=${LMS_URL}
       - RABBITMQ_URL=${RABBITMQ_URL}
       - RABBITMQ_EXCHANGE=${RABBITMQ_EXCHANGE}
-    command: python ./services/run_scheduler.py
+    command: python run_scheduler.py
     depends_on:
       - postgres
       - backend
