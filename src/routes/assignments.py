@@ -1855,14 +1855,17 @@ async def get_assignment_types():
                 "schema": {
                     "tasks": [{
                         "id": "str",
-                        "task_type": "str (course_unit, file_task, text_task, link_task)",
+                        "task_type": "str (course_unit, file_task, text_task, link_task, pdf_text_task)",
                         "title": "str",
                         "description": "str (optional)",
                         "order_index": "int",
                         "points": "int",
+                        "is_optional": "bool (optional, default false) - marks task as bonus/optional",
                         "content": "dict (task-specific)"
                     }],
                     "total_points": "int",
+                    "required_points": "int (sum of non-optional task points)",
+                    "bonus_points": "int (sum of optional task points)",
                     "instructions": "str (optional)"
                 }
             }
