@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import List, Dict
+from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 
 from src.config import SessionLocal
@@ -162,7 +162,20 @@ class LessonReminderScheduler:
             sent_count = 0
             failed_count = 0
             
-            # Process each group
+            # Get teachers from EventParticipant (only teacher/curator roles)
+            teacher_participants = db.query(EventParticipant).join(
+                UserInDB, EventParticipant.user_id == UserInDB.id
+            ).filter(
+                EventParticipant.event_id == event.id,
+                UserInDB.is_active == True,
+                UserInDB.email.isnot(None),
+                UserInDB.role.in_(['teacher', 'curator'])
+            ).all()
+            
+            teachers = [p.user for p in teacher_participants]
+            logger.info(f"   👨‍🏫 Found {len(teachers)} teacher(s) from EventParticipant")
+            
+            # Process each group to get students
             for event_group in event_groups:
                 group = db.query(Group).filter(Group.id == event_group.group_id).first()
                 if not group:
@@ -181,22 +194,6 @@ class LessonReminderScheduler:
                 ).all()
                 
                 logger.info(f"      👨‍🎓 Found {len(students)} active student(s) with email in group")
-                
-                # Get teacher (curator) of the group
-                teacher = None
-                if group.curator_id:
-                    teacher = db.query(UserInDB).filter(
-                        UserInDB.id == group.curator_id,
-                        UserInDB.is_active == True,
-                        UserInDB.email.isnot(None)
-                    ).first()
-                    
-                    if teacher:
-                        logger.info(f"      👨‍🏫 Teacher: {teacher.name or teacher.email} (ID: {teacher.id})")
-                    else:
-                        logger.warning(f"⚠️  [REMINDER] Teacher with ID {group.curator_id} not found or has no email")
-                else:
-                    logger.warning(f"⚠️  [REMINDER] No curator assigned to group {group.id}")
                 
                 # Send reminders to all students in this group
                 logger.info(f"      📤 Sending reminders to students...")
@@ -217,26 +214,33 @@ class LessonReminderScheduler:
                     except Exception as e:
                         logger.error(f"❌ [REMINDER] Failed to send reminder to student {student.email}: {e}")
                         failed_count += 1
-                
-                # Send reminder to teacher
-                if teacher:
-                    logger.info(f"      📤 Sending reminder to teacher...")
+            
+            # Send reminders to teachers (EventParticipant with teacher/curator role)
+            if teachers:
+                logger.info(f"   📤 Sending reminders to {len(teachers)} teacher(s)...")
+                for teacher in teachers:
                     try:
+                        # Get first group name for display (or use event title)
+                        group_name = event_groups[0].group.name if event_groups and len(event_groups) > 0 else "Multiple Groups"
+                        
                         result = send_lesson_reminder_notification(
                             to_email=teacher.email,
                             recipient_name=teacher.name or teacher.email.split('@')[0],
                             lesson_title=event.title,
                             lesson_datetime=event_datetime_str,
-                            group_name=group.name,
+                            group_name=group_name,
                             role="teacher"
                         )
                         if result:
                             sent_count += 1
+                            logger.info(f"      ✅ Sent to teacher: {teacher.email}")
                         else:
                             failed_count += 1
                     except Exception as e:
                         logger.error(f"❌ [REMINDER] Failed to send reminder to teacher {teacher.email}: {e}")
                         failed_count += 1
+            else:
+                logger.warning(f"⚠️  [REMINDER] No teachers found in EventParticipant for event {event.id}")
             
             logger.info(
                 f"✅ [REMINDER] Completed for event '{event.title}' "
@@ -252,7 +256,7 @@ class LessonReminderScheduler:
 
 
 # Global scheduler instance
-_scheduler: LessonReminderScheduler = None
+_scheduler: Optional[LessonReminderScheduler] = None
 
 
 def get_scheduler() -> LessonReminderScheduler:
