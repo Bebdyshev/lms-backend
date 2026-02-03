@@ -61,9 +61,10 @@ services:
       - RESEND_API_KEY=${RESEND_API_KEY}
       - EMAIL_SENDER=${EMAIL_SENDER}
       - EMAIL_SENDER_NAME=${EMAIL_SENDER_NAME}
+      - LMS_URL=${LMS_URL}
       - RABBITMQ_URL=${RABBITMQ_URL}
       - RABBITMQ_EXCHANGE=${RABBITMQ_EXCHANGE}
-    command: python -c "from src.services.lesson_reminder_scheduler import LessonReminderScheduler; import time; scheduler = LessonReminderScheduler(); scheduler.start(); print('Scheduler started, running forever...'); time.sleep(float('inf'))"
+    command: python run_scheduler.py
     depends_on:
       - postgres
       - backend
