@@ -143,8 +143,10 @@ class LessonReminderScheduler:
             logger.info(f"🎯 [REMINDER] Processing event ID {event.id}")
             logger.info(f"   📚 Event: '{event.title}' (Type: {event.event_type})")
             
-            # Format event datetime for display
-            event_datetime_str = event.start_datetime.strftime("%d.%m.%Y в %H:%M")
+            # Convert UTC to Kazakhstan time (GMT+5) for display in email
+            KZ_OFFSET = timedelta(hours=5)
+            event_datetime_kz = event.start_datetime + KZ_OFFSET
+            event_datetime_str = event_datetime_kz.strftime("%d.%m.%Y в %H:%M")
             
             # Get groups associated with this event
             event_groups = db.query(EventGroup).filter(
