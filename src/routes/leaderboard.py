@@ -146,7 +146,7 @@ async def get_group_leaderboard(
 ):
     """
     Get leaderboard data for a specific group and week.
-    Supports dynamic LessonSchedule or falls back to legacy 5-lesson logic.
+    Uses Events for schedule data (not LessonSchedule).
     """
     if current_user.role == "curator":
         group = db.query(Group).filter(Group.id == group_id, Group.curator_id == current_user.id).first()
@@ -167,170 +167,69 @@ async def get_group_leaderboard(
     students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
     students_map = {s.id: s for s in students}
 
-    # 1.5 Determine Week Start Date & Date Range
-    from src.schemas.models import Event, EventGroup, LessonSchedule
+    # 2. Get Events for this group (class type, active)
+    from src.schemas.models import Event, EventGroup
     
-    first_ev = db.query(Event).join(EventGroup).filter(
+    all_events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id == group_id,
         Event.event_type == 'class',
         Event.is_active == True
-    ).order_by(Event.start_datetime.asc()).first()
+    ).order_by(Event.start_datetime.asc()).all()
     
-    start_week1 = None
-    if first_ev:
-        start_week1 = first_ev.start_datetime.date()
-    else:
-        first_sc = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id == group_id,
-            LessonSchedule.is_active == True
-        ).order_by(LessonSchedule.scheduled_at.asc()).first()
-        if first_sc:
-            start_week1 = first_sc.scheduled_at.date()
-            
-    week_start_dt = None
-    week_end_dt = None
-    if start_week1:
-        start_of_week1 = start_week1 - timedelta(days=start_week1.weekday())
-        w_start_date = start_of_week1 + timedelta(weeks=week_number - 1)
-        w_end_date = w_start_date + timedelta(days=7)
-        week_start_dt = datetime.combine(w_start_date, datetime.min.time())
-        week_end_dt = datetime.combine(w_end_date, datetime.min.time())
+    if not all_events:
+        # No events - return empty leaderboard with students
+        result = []
+        for student_id in student_ids:
+            student = students_map.get(student_id)
+            if not student:
+                continue
+            row = {
+                "student_id": student.id,
+                "student_name": student.name,
+                "avatar_url": student.avatar_url,
+                "hw_lesson_1": None, "hw_lesson_2": None, "hw_lesson_3": None,
+                "hw_lesson_4": None, "hw_lesson_5": None,
+                "lesson_1": 0, "lesson_2": 0, "lesson_3": 0, "lesson_4": 0, "lesson_5": 0,
+                "curator_hour": 0, "mock_exam": 0, "study_buddy": 0,
+                "self_reflection_journal": 0, "weekly_evaluation": 0, "extra_points": 0,
+            }
+            result.append(row)
+        result.sort(key=lambda x: x["student_name"])
+        return result
 
-    # 2. Key logic: Map Week Number to Lesson IDs using LessonSchedule
-    # Filter by date range if available to ensure correct calendar display
-    if week_start_dt and week_end_dt:
-        raw_schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id == group_id,
-            LessonSchedule.is_active == True,
-            LessonSchedule.scheduled_at >= week_start_dt,
-            LessonSchedule.scheduled_at < week_end_dt
-        ).order_by(LessonSchedule.scheduled_at).all()
-    else:
-        raw_schedules = db.query(LessonSchedule).filter(
-            LessonSchedule.group_id == group_id,
-            LessonSchedule.week_number == week_number,
-            LessonSchedule.is_active == True
-        ).order_by(LessonSchedule.scheduled_at).all()
+    # 3. Calculate week boundaries based on first event
+    first_event_date = all_events[0].start_datetime.date()
+    start_of_week1 = first_event_date - timedelta(days=first_event_date.weekday())
     
-    # Deduplicate by time signature
-    schedules = []
-    seen_times = set()
-    for s in raw_schedules:
-        time_sig = s.scheduled_at.replace(second=0, microsecond=0)
-        if time_sig not in seen_times:
-            schedules.append(s)
-            seen_times.add(time_sig)
+    week_start_date = start_of_week1 + timedelta(weeks=week_number - 1)
+    week_end_date = week_start_date + timedelta(days=7)
+    week_start_dt = datetime.combine(week_start_date, datetime.min.time())
+    week_end_dt = datetime.combine(week_end_date, datetime.min.time())
     
-    homework_data = {} # {student_id: {schedule_id: score}}
-    attendance_data = {} # {student_id: {schedule_id: score}}
+    # 4. Get events for this specific week
+    week_events = [e for e in all_events 
+                   if week_start_dt <= e.start_datetime < week_end_dt]
+    week_events.sort(key=lambda e: e.start_datetime)
     
-    scheduled_lesson_ids = []
+    # Map event_id -> lesson index (1-5) within the week
+    event_to_index = {}
+    for idx, event in enumerate(week_events[:5]):  # Max 5 lessons per week
+        event_to_index[event.id] = idx + 1
     
-    if schedules:
-        # Use Dynamic Schedule Logic
-        scheduled_lesson_ids = [s.lesson_id for s in schedules]
-        schedule_map = {s.id: s for s in schedules}
-        schedule_ids = [s.id for s in schedules]
-        
-        # Get Assignments for these lessons (by lesson_id OR event_id)
-        from sqlalchemy import or_
+    # 5. Get Homework data - Assignments linked to these events via event_id
+    homework_data = {}  # {student_id: {lesson_index: score}}
+    
+    event_ids = [e.id for e in week_events[:5]]
+    if event_ids:
         assignments = db.query(Assignment).filter(
-            or_(
-                Assignment.lesson_id.in_(scheduled_lesson_ids),
-                Assignment.event_id.in_(schedule_ids)
-            ),
+            Assignment.event_id.in_(event_ids),
             Assignment.is_active == True
         ).all()
         
         assignment_ids = [a.id for a in assignments]
+        assignment_event_map = {a.id: a.event_id for a in assignments}
         
-        # Create map: assignment_id -> list of schedule indices (1-based)
-        assignment_to_schedule_indices = {}
-        
-        for a in assignments:
-            assignment_to_schedule_indices[a.id] = []
-            
-            # 1. Check event_id match (Specific Schedule)
-            if a.event_id in schedule_ids:
-                # Find which schedule index confirms to this event_id
-                for idx, s in enumerate(schedules):
-                    if s.id == a.event_id:
-                        assignment_to_schedule_indices[a.id].append(idx + 1)
-            
-            # 2. Check lesson_id match (Generic Lesson) - ONLY if not matched by event_id? 
-            # Or add both? User said "based on event_id", implying specificity.
-            # Let's include lesson_id matches too, but event_id matches are more precise.
-            # The previous logic relied on lesson_id.
-            if a.lesson_id:
-                for idx, s in enumerate(schedules):
-                    if s.lesson_id == a.lesson_id:
-                         # Avoid adding duplicates if event_id already covered it (unlikely but safe)
-                         if (idx + 1) not in assignment_to_schedule_indices[a.id]:
-                             assignment_to_schedule_indices[a.id].append(idx + 1)
-
-        # Get Submissions
-        submissions = db.query(AssignmentSubmission).filter(
-            AssignmentSubmission.assignment_id.in_(assignment_ids),
-            AssignmentSubmission.user_id.in_(student_ids),
-            AssignmentSubmission.is_graded == True
-        ).all()
-        
-        for sub in submissions:
-            indices = assignment_to_schedule_indices.get(sub.assignment_id, [])
-            for idx in indices:
-                if sub.user_id not in homework_data:
-                    homework_data[sub.user_id] = {}
-                # Store score. If multiple assignments map to same slot, last one wins (or logic could avg)
-                homework_data[sub.user_id][idx] = sub.score
-                
-        # Get Attendance
-        attendances = db.query(Attendance).filter(
-            Attendance.lesson_schedule_id.in_(schedule_ids),
-            Attendance.user_id.in_(student_ids)
-        ).all()
-        
-        for att in attendances:
-            if att.user_id not in attendance_data:
-                attendance_data[att.user_id] = {}
-            # Find schedule index
-            sched = schedule_map.get(att.lesson_schedule_id)
-            if sched:
-                try:
-                    idx = schedules.index(sched) + 1
-                    attendance_data[att.user_id][idx] = att.score
-                except ValueError:
-                    pass
-
-    else:
-        # FALLBACK: Legacy Logic (No schedules found)
-        start_lesson_index = (week_number - 1) * 5
-        from src.schemas.models import CourseGroupAccess
-        course_access = db.query(CourseGroupAccess).filter(
-            CourseGroupAccess.group_id == group_id,
-            CourseGroupAccess.is_active == True
-        ).first()
-
-        if course_access:
-            lessons_query = db.query(Lesson).join(Module).filter(
-                Module.course_id == course_access.course_id
-            ).order_by(Module.order_index, Lesson.order_index).offset(start_lesson_index).limit(5).all()
-            
-            target_lesson_ids = [l.id for l in lessons_query]
-            
-            assignments = db.query(Assignment).filter(
-                Assignment.lesson_id.in_(target_lesson_ids),
-                Assignment.is_active == True
-            ).all()
-            
-            assignment_lesson_map = {a.id: a.lesson_id for a in assignments}
-            assignment_ids = [a.id for a in assignments]
-            
-            def get_week_lesson_index(lesson_id):
-                try:
-                    return target_lesson_ids.index(lesson_id) + 1
-                except ValueError:
-                    return 0
-
+        if assignment_ids:
             submissions = db.query(AssignmentSubmission).filter(
                 AssignmentSubmission.assignment_id.in_(assignment_ids),
                 AssignmentSubmission.user_id.in_(student_ids),
@@ -338,39 +237,56 @@ async def get_group_leaderboard(
             ).all()
             
             for sub in submissions:
-                lid = assignment_lesson_map.get(sub.assignment_id)
-                week_idx = get_week_lesson_index(lid)
-                if week_idx > 0:
+                event_id = assignment_event_map.get(sub.assignment_id)
+                lesson_idx = event_to_index.get(event_id, 0)
+                if lesson_idx > 0:
                     if sub.user_id not in homework_data:
                         homework_data[sub.user_id] = {}
-                    homework_data[sub.user_id][week_idx] = sub.score
+                    homework_data[sub.user_id][lesson_idx] = sub.score
+    
+    # 6. Get Attendance data - from EventParticipant
+    attendance_data = {}  # {student_id: {lesson_index: score}}
+    
+    if event_ids:
+        participants = db.query(EventParticipant).filter(
+            EventParticipant.event_id.in_(event_ids),
+            EventParticipant.user_id.in_(student_ids)
+        ).all()
+        
+        for p in participants:
+            lesson_idx = event_to_index.get(p.event_id, 0)
+            if lesson_idx > 0:
+                if p.user_id not in attendance_data:
+                    attendance_data[p.user_id] = {}
+                # attended = 1, not attended = 0
+                score = 1 if p.attended else 0
+                attendance_data[p.user_id][lesson_idx] = score
 
-    # 3. Get Manual Leaderboard Entries (Still needed for other columns)
+    # 7. Get Manual Leaderboard Entries
     entries = db.query(LeaderboardEntry).filter(
         LeaderboardEntry.group_id == group_id,
         LeaderboardEntry.week_number == week_number
     ).all()
     entries_map = {e.user_id: e for e in entries}
 
-    # 3.5 FETCH SAT DATA
+    # 8. FETCH SAT DATA
     from src.services.sat_service import SATService
-    sat_results_map = {} # user_id -> combinedScore
+    sat_results_map = {}
     
-    if week_start_dt and week_end_dt:
-        emails = [s.email.lower() for s in students if s.email]
-        if emails:
-            batch_data = await SATService.fetch_batch_test_results(emails)
-            results = batch_data.get("results", [])
-            email_to_id = {s.email.lower(): s.id for s in students if s.email}
-            for res in results:
-                email = res.get("email", "").lower()
-                sid = email_to_id.get(email)
-                if sid and res.get("data"):
-                    pct = SATService.get_percentage_for_week(res["data"], week_start_dt, week_end_dt)
-                    if pct is not None:
-                        sat_results_map[sid] = pct
+    emails = [s.email.lower() for s in students if s.email]
+    if emails:
+        batch_data = await SATService.fetch_batch_test_results(emails)
+        results = batch_data.get("results", [])
+        email_to_id = {s.email.lower(): s.id for s in students if s.email}
+        for res in results:
+            email = res.get("email", "").lower()
+            sid = email_to_id.get(email)
+            if sid and res.get("data"):
+                pct = SATService.get_percentage_for_week(res["data"], week_start_dt, week_end_dt)
+                if pct is not None:
+                    sat_results_map[sid] = pct
 
-    # 4. Construct Response
+    # 9. Construct Response
     result = []
     
     for student_id in student_ids:
@@ -382,7 +298,7 @@ async def get_group_leaderboard(
         hw_scores = homework_data.get(student_id, {})
         att_scores = attendance_data.get(student_id, {})
         
-        # Priority for mock_exam: SAT Platform data for this week > Manual Entry
+        # Priority for mock_exam: SAT Platform data > Manual Entry
         sat_score = sat_results_map.get(student_id)
         mock_exam_score = sat_score if sat_score is not None else (entry.mock_exam if entry else 0)
 
@@ -396,16 +312,10 @@ async def get_group_leaderboard(
             "extra_points": entry.extra_points if entry else 0,
         }
         
-        # Merge Attendance and Legacy Manual Lesson Scores
+        # Lesson scores from attendance
         lesson_scores = {}
         for i in range(1, 6):
-            if schedules:
-                 # Use attendance data
-                 lesson_scores[f"lesson_{i}"] = att_scores.get(i, 0)
-            else:
-                 # Use legacy manual data
-                 key = f"lesson_{i}"
-                 lesson_scores[key] = getattr(entry, key) if entry else 0
+            lesson_scores[f"lesson_{i}"] = att_scores.get(i, 0)
         
         row = {
             "student_id": student.id,
@@ -425,138 +335,6 @@ async def get_group_leaderboard(
     result.sort(key=lambda x: x["student_name"])
     
     return result
-    """
-    Get leaderboard data for a specific group and week.
-    Calculates homework scores automatically based on week number (5 lessons per week).
-    """
-    if current_user.role == "curator":
-        group = db.query(Group).filter(Group.id == group_id, Group.curator_id == current_user.id).first()
-        if not group:
-            raise HTTPException(status_code=403, detail="Access denied to this group")
-    elif current_user.role in ["admin", "head_curator"]:
-        pass
-    else:
-        raise HTTPException(status_code=403, detail="Only curators and admins can access leaderboard")
-
-    # 1. Get all students in the group
-    group_students = db.query(GroupStudent).filter(GroupStudent.group_id == group_id).all()
-    student_ids = [gs.student_id for gs in group_students]
-    
-    if not student_ids:
-        return []
-        
-    students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
-    students_map = {s.id: s for s in students}
-
-    # 2. Key logic: Map Week Number to Lesson IDs
-    # Assumption: Week 1 = Assignments from Lessons 1-5, Week 2 = Lessons 6-10, etc.
-    start_lesson_index = (week_number - 1) * 5
-    # We need to find assignments that belong to the course of this group
-    # Logic: Group -> CourseGroupAccess -> Course -> Modules -> Lessons
-    from src.schemas.models import CourseGroupAccess
-    
-    course_access = db.query(CourseGroupAccess).filter(
-        CourseGroupAccess.group_id == group_id,
-        CourseGroupAccess.is_active == True
-    ).first()
-    
-    homework_data = {} # {student_id: {lesson_index (1-5): score}}
-    
-    if course_access:
-        # Get lessons for this course ordered by index
-        lessons_query = db.query(Lesson).join(Module).filter(
-            Module.course_id == course_access.course_id
-        ).order_by(Module.order_index, Lesson.order_index).offset(start_lesson_index).limit(5).all()
-        
-        target_lesson_ids = [l.id for l in lessons_query]
-        
-        # Get assignments for these lessons
-        assignments = db.query(Assignment).filter(
-            Assignment.lesson_id.in_(target_lesson_ids),
-            Assignment.is_active == True
-        ).all()
-        
-        assignment_lesson_map = {a.id: a.lesson_id for a in assignments}
-        assignment_ids = [a.id for a in assignments]
-        
-        # Helper to map actual lesson ID to 1-5 relative index for the week
-        # target_lesson_ids is already ordered. index 0 -> "Lesson 1" of the week
-        def get_week_lesson_index(lesson_id):
-            try:
-                return target_lesson_ids.index(lesson_id) + 1
-            except ValueError:
-                return 0
-
-        # Get submissions
-        submissions = db.query(AssignmentSubmission).filter(
-            AssignmentSubmission.assignment_id.in_(assignment_ids),
-            AssignmentSubmission.user_id.in_(student_ids),
-            AssignmentSubmission.is_graded == True
-        ).all()
-        
-        for sub in submissions:
-            lid = assignment_lesson_map.get(sub.assignment_id)
-            week_idx = get_week_lesson_index(lid)
-            if week_idx > 0:
-                if sub.user_id not in homework_data:
-                    homework_data[sub.user_id] = {}
-                # Take highest score if multiple? Or just list? Assuming one active submission for now
-                # Or average if multiple assignments per lesson?
-                # Let's simple: store score
-                homework_data[sub.user_id][week_idx] = sub.score
-
-    # 3. Get Manual Leaderboard Entries
-    entries = db.query(LeaderboardEntry).filter(
-        LeaderboardEntry.group_id == group_id,
-        LeaderboardEntry.week_number == week_number
-    ).all()
-    entries_map = {e.user_id: e for e in entries}
-
-    # 4. Construct Response
-    result = []
-    for student_id in student_ids:
-        student = students_map.get(student_id)
-        if not student: 
-            continue
-            
-        entry = entries_map.get(student_id)
-        hw_scores = homework_data.get(student_id, {})
-        
-        # Manual scores defaults
-        manual = {
-            "lesson_1": entry.lesson_1 if entry else 0,
-            "lesson_2": entry.lesson_2 if entry else 0,
-            "lesson_3": entry.lesson_3 if entry else 0,
-            "lesson_4": entry.lesson_4 if entry else 0,
-            "lesson_5": entry.lesson_5 if entry else 0,
-            "curator_hour": entry.curator_hour if entry else 0,
-            "mock_exam": entry.mock_exam if entry else 0,
-            "study_buddy": entry.study_buddy if entry else 0,
-            "self_reflection_journal": entry.self_reflection_journal if entry else 0,
-            "weekly_evaluation": entry.weekly_evaluation if entry else 0,
-            "extra_points": entry.extra_points if entry else 0,
-        }
-        
-        # Calculate derived totals (Total HW + Total Manual)
-        # Note: Frontend handles display, but calculating here helps backend integrity
-        
-        row = {
-            "student_id": student.id,
-            "student_name": student.name,
-            "avatar_url": student.avatar_url,
-            "hw_lesson_1": hw_scores.get(1, None),
-            "hw_lesson_2": hw_scores.get(2, None),
-            "hw_lesson_3": hw_scores.get(3, None),
-            "hw_lesson_4": hw_scores.get(4, None),
-            "hw_lesson_5": hw_scores.get(5, None),
-            **manual
-        }
-        result.append(row)
-
-    # Sort by name
-    result.sort(key=lambda x: x["student_name"])
-    
-    return result
 
 @router.post("/config", response_model=LeaderboardConfigSchema)
 async def update_leaderboard_config(
@@ -568,7 +346,6 @@ async def update_leaderboard_config(
     import logging
     logger = logging.getLogger(__name__)
     
-    # 1. Authorization
     # 1. Authorization
     if current_user.role == "curator":
         group = db.query(Group).filter(Group.id == payload.group_id, Group.curator_id == current_user.id).first()
