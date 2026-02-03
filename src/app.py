@@ -158,6 +158,20 @@ except Exception as e:
     logging.error(f"❌ Failed to initialize RabbitMQ consumer: {e}")
     logging.warning("⚠️  Continuing without RabbitMQ consumer")
 
+# Запуск планировщика напоминаний о уроках
+try:
+    from src.services.lesson_reminder_scheduler import start_lesson_reminder_scheduler
+    resend_api_key = os.getenv('RESEND_API_KEY')
+    
+    if resend_api_key:
+        start_lesson_reminder_scheduler()
+        logging.info("✅ Lesson reminder scheduler initialized")
+    else:
+        logging.warning("⚠️  RESEND_API_KEY not configured, skipping lesson reminder scheduler")
+except Exception as e:
+    logging.error(f"❌ Failed to initialize lesson reminder scheduler: {e}")
+    logging.warning("⚠️  Continuing without lesson reminder scheduler")
+
 # Error handlers
 @app.exception_handler(404)
 def not_found_handler(request, exc):
