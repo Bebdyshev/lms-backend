@@ -16,6 +16,8 @@ services:
   backend:
     build: .
     container_name: lms-backend
+    env_file:
+      - .env
     environment:
       - POSTGRES_URL=${POSTGRES_URL}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
