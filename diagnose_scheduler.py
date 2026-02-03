@@ -25,13 +25,11 @@ def diagnose_scheduler():
     
     db = SessionLocal()
     try:
-        # Show current time
         now_utc = datetime.utcnow()
         logger.info(f"\n⏰ CURRENT TIME:")
         logger.info(f"   UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"   Local (estimate): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Show reminder window
         reminder_start = now_utc + timedelta(minutes=28)
         reminder_end = now_utc + timedelta(minutes=32)
         logger.info(f"\n🎯 REMINDER WINDOW (28-32 minutes from now):")
