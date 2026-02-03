@@ -30,7 +30,9 @@ services:
       - MASTEREDU_API_KEY=${MASTEREDU_API_KEY}
       - RESEND_API_KEY=${RESEND_API_KEY}
       - RESEND_MAIL_DOMAIN=${RESEND_MAIL_DOMAIN}
+      - EMAIL_SENDER=${EMAIL_SENDER}
       - EMAIL_SENDER_NAME=${EMAIL_SENDER_NAME}
+      - LMS_URL=${LMS_URL}
       - SENDER_NAME=${SENDER_NAME}
       - VIRTUAL_HOST=lmsapi.mastereducation.kz
       - LETSENCRYPT_HOST=lmsapi.mastereducation.kz
