@@ -162,18 +162,23 @@ class LessonReminderScheduler:
             sent_count = 0
             failed_count = 0
             
-            # Get teachers from EventParticipant (only teacher/curator roles)
-            teacher_participants = db.query(EventParticipant).join(
-                UserInDB, EventParticipant.user_id == UserInDB.id
-            ).filter(
-                EventParticipant.event_id == event.id,
-                UserInDB.is_active == True,
-                UserInDB.email.isnot(None),
-                UserInDB.role.in_(['teacher', 'curator'])
-            ).all()
+            # Collect unique teachers from groups (teacher_id)
+            teacher_ids = set()
+            for event_group in event_groups:
+                group = db.query(Group).filter(Group.id == event_group.group_id).first()
+                if group and group.teacher_id:
+                    teacher_ids.add(group.teacher_id)
             
-            teachers = [p.user for p in teacher_participants]
-            logger.info(f"   👨‍🏫 Found {len(teachers)} teacher(s) from EventParticipant")
+            # Get teacher objects
+            teachers = []
+            if teacher_ids:
+                teachers = db.query(UserInDB).filter(
+                    UserInDB.id.in_(teacher_ids),
+                    UserInDB.is_active == True,
+                    UserInDB.email.isnot(None)
+                ).all()
+            
+            logger.info(f"   👨‍🏫 Found {len(teachers)} unique teacher(s) from groups")
             
             # Process each group to get students
             for event_group in event_groups:
@@ -215,13 +220,24 @@ class LessonReminderScheduler:
                         logger.error(f"❌ [REMINDER] Failed to send reminder to student {student.email}: {e}")
                         failed_count += 1
             
-            # Send reminders to teachers (EventParticipant with teacher/curator role)
+            # Send reminders to teachers (from Group.teacher_id)
             if teachers:
                 logger.info(f"   📤 Sending reminders to {len(teachers)} teacher(s)...")
                 for teacher in teachers:
                     try:
-                        # Get first group name for display (or use event title)
-                        group_name = event_groups[0].group.name if event_groups and len(event_groups) > 0 else "Multiple Groups"
+                        # Find all groups where this teacher teaches that are part of this event
+                        teacher_groups = [
+                            db.query(Group).filter(Group.id == eg.group_id).first()
+                            for eg in event_groups
+                            if db.query(Group).filter(
+                                Group.id == eg.group_id,
+                                Group.teacher_id == teacher.id
+                            ).first()
+                        ]
+                        
+                        # Use first group name or "Multiple Groups"
+                        group_names = [g.name for g in teacher_groups if g]
+                        group_name = group_names[0] if group_names else "Multiple Groups"
                         
                         result = send_lesson_reminder_notification(
                             to_email=teacher.email,
@@ -233,14 +249,14 @@ class LessonReminderScheduler:
                         )
                         if result:
                             sent_count += 1
-                            logger.info(f"      ✅ Sent to teacher: {teacher.email}")
+                            logger.info(f"      ✅ Sent to teacher: {teacher.email} (Group: {group_name})")
                         else:
                             failed_count += 1
                     except Exception as e:
                         logger.error(f"❌ [REMINDER] Failed to send reminder to teacher {teacher.email}: {e}")
                         failed_count += 1
             else:
-                logger.warning(f"⚠️  [REMINDER] No teachers found in EventParticipant for event {event.id}")
+                logger.warning(f"⚠️  [REMINDER] No teachers found for event {event.id}")
             
             logger.info(
                 f"✅ [REMINDER] Completed for event '{event.title}' "
