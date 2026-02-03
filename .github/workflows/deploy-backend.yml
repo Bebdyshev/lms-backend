@@ -3,7 +3,9 @@ name: Deploy Backend to Azure VM
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+    # если репо чисто backend, можно убрать paths или поставить '**'
+    paths:
+      - '**'
 
 concurrency:
   group: deploy-backend
