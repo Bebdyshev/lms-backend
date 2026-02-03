@@ -164,9 +164,15 @@ except Exception as e:
 # Запуск планировщика напоминаний о уроках
 try:
     from src.services.lesson_reminder_scheduler import start_lesson_reminder_scheduler
+    
+    # Check if scheduler should be disabled (for multi-worker setups)
+    disable_scheduler = os.getenv('DISABLE_SCHEDULER', 'false').lower() == 'true'
     resend_api_key = os.getenv('RESEND_API_KEY')
     
-    if resend_api_key:
+    if disable_scheduler:
+        logging.info("⏭️  Lesson reminder scheduler disabled (DISABLE_SCHEDULER=true)")
+        logging.info("   Scheduler should run in separate container")
+    elif resend_api_key:
         start_lesson_reminder_scheduler()
         logging.info("✅ Lesson reminder scheduler initialized")
     else:
