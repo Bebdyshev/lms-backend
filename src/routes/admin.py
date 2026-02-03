@@ -104,6 +104,7 @@ class CreateGroupRequest(BaseModel):
     description: Optional[str] = None
     teacher_id: int
     curator_id: Optional[int] = None
+    course_id: Optional[int] = None  # Курс, к которому привязана группа
     is_active: bool = True
 
 class UpdateGroupRequest(BaseModel):
@@ -805,6 +806,13 @@ async def create_group(
         if not curator:
             raise HTTPException(status_code=400, detail="Curator not found")
     
+    # Check if course exists if provided
+    course = None
+    if group_data.course_id:
+        course = db.query(Course).filter(Course.id == group_data.course_id).first()
+        if not course:
+            raise HTTPException(status_code=400, detail="Course not found")
+    
     # Check if group name already exists
     existing_group = db.query(Group).filter(Group.name == group_data.name).first()
     if existing_group:
@@ -821,6 +829,17 @@ async def create_group(
     db.add(new_group)
     db.commit()
     db.refresh(new_group)
+    
+    # If course_id provided, automatically grant access to the course
+    if group_data.course_id:
+        course_access = CourseGroupAccess(
+            course_id=group_data.course_id,
+            group_id=new_group.id,
+            granted_by=current_user.id,
+            is_active=True
+        )
+        db.add(course_access)
+        db.commit()
     
     # Create response with teacher and curator names
     group_response = GroupSchema(
