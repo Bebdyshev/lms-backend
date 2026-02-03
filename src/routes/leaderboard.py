@@ -216,33 +216,78 @@ async def get_group_leaderboard(
     for idx, event in enumerate(week_events[:5]):  # Max 5 lessons per week
         event_to_index[event.id] = idx + 1
     
-    # 5. Get Homework data - Assignments linked to these events via event_id
+    # 5. Get Homework data
+    # Strategy: 
+    #   a) First try to find assignments linked to events via event_id
+    #   b) Fallback: find assignments for this group with due_date in this week
     homework_data = {}  # {student_id: {lesson_index: score}}
     
     event_ids = [e.id for e in week_events[:5]]
+    
+    # Method A: Assignments linked to events via event_id
+    event_linked_assignments = []
     if event_ids:
-        assignments = db.query(Assignment).filter(
+        event_linked_assignments = db.query(Assignment).filter(
             Assignment.event_id.in_(event_ids),
             Assignment.is_active == True
         ).all()
+    
+    # Method B: Assignments for this group with due_date in this week (fallback)
+    # This covers assignments created before event linking was implemented
+    group_assignments = db.query(Assignment).filter(
+        Assignment.group_id == group_id,
+        Assignment.is_active == True,
+        Assignment.due_date >= week_start_dt,
+        Assignment.due_date < week_end_dt
+    ).order_by(Assignment.due_date).all()
+    
+    # Combine and dedupe by assignment ID
+    all_week_assignments = {a.id: a for a in event_linked_assignments}
+    for a in group_assignments:
+        if a.id not in all_week_assignments:
+            all_week_assignments[a.id] = a
+    
+    assignments = list(all_week_assignments.values())
+    assignments.sort(key=lambda a: a.due_date if a.due_date else datetime.max)
+    
+    # Create assignment -> lesson index mapping
+    # Priority: event_id mapping, then by due_date order
+    assignment_to_index = {}
+    used_indices = set()
+    
+    # First, map assignments with event_id
+    for a in assignments:
+        if a.event_id and a.event_id in event_to_index:
+            idx = event_to_index[a.event_id]
+            assignment_to_index[a.id] = idx
+            used_indices.add(idx)
+    
+    # Then, map remaining assignments by due_date order to unused indices
+    next_idx = 1
+    for a in assignments:
+        if a.id not in assignment_to_index:
+            while next_idx in used_indices and next_idx <= 5:
+                next_idx += 1
+            if next_idx <= 5:
+                assignment_to_index[a.id] = next_idx
+                used_indices.add(next_idx)
+                next_idx += 1
+    
+    assignment_ids = list(assignment_to_index.keys())
+    
+    if assignment_ids:
+        submissions = db.query(AssignmentSubmission).filter(
+            AssignmentSubmission.assignment_id.in_(assignment_ids),
+            AssignmentSubmission.user_id.in_(student_ids),
+            AssignmentSubmission.is_graded == True
+        ).all()
         
-        assignment_ids = [a.id for a in assignments]
-        assignment_event_map = {a.id: a.event_id for a in assignments}
-        
-        if assignment_ids:
-            submissions = db.query(AssignmentSubmission).filter(
-                AssignmentSubmission.assignment_id.in_(assignment_ids),
-                AssignmentSubmission.user_id.in_(student_ids),
-                AssignmentSubmission.is_graded == True
-            ).all()
-            
-            for sub in submissions:
-                event_id = assignment_event_map.get(sub.assignment_id)
-                lesson_idx = event_to_index.get(event_id, 0)
-                if lesson_idx > 0:
-                    if sub.user_id not in homework_data:
-                        homework_data[sub.user_id] = {}
-                    homework_data[sub.user_id][lesson_idx] = sub.score
+        for sub in submissions:
+            lesson_idx = assignment_to_index.get(sub.assignment_id, 0)
+            if lesson_idx > 0:
+                if sub.user_id not in homework_data:
+                    homework_data[sub.user_id] = {}
+                homework_data[sub.user_id][lesson_idx] = sub.score
     
     # 6. Get Attendance data - from EventParticipant
     attendance_data = {}  # {student_id: {lesson_index: score}}
