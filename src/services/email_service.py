@@ -29,14 +29,23 @@ class EmailService:
     def __init__(self):
         self.api_key = RESEND_API_KEY
         
+        # Debug logging for environment variables
+        logger.info(f"🔧 [EMAIL] Initializing EmailService")
+        logger.info(f"   EMAIL_SENDER env var: '{EMAIL_SENDER}'")
+        logger.info(f"   EMAIL_SENDER_NAME env var: '{EMAIL_SENDER_NAME}'")
+        
         # If EMAIL_SENDER already contains name (e.g., "Name <email@domain.com>"), use as-is
         # Otherwise, combine EMAIL_SENDER_NAME and EMAIL_SENDER
         if "<" in EMAIL_SENDER and ">" in EMAIL_SENDER:
             # Already formatted as "Name <email@domain.com>"
             self.from_email = EMAIL_SENDER
+            logger.info(f"   ✓ Using EMAIL_SENDER as-is (already formatted)")
         else:
             # Combine name and email
             self.from_email = f"{EMAIL_SENDER_NAME} <{EMAIL_SENDER}>"
+            logger.info(f"   ✓ Combined EMAIL_SENDER_NAME + EMAIL_SENDER")
+        
+        logger.info(f"   📧 Final from_email: '{self.from_email}'")
         
         if not self.api_key:
             logger.warning("RESEND_API_KEY not configured. Email notifications will be disabled.")
@@ -102,7 +111,10 @@ class EmailService:
             payload["text"] = text_content
         
         logger.info(f"📤 [EMAIL] Sending to Resend API ({self.RESEND_API_URL})...")
-        logger.debug(f"   Payload: from={payload['from']}, to={payload['to']}, subject={payload['subject']}")
+        logger.info(f"   📧 From: '{payload['from']}'")
+        logger.info(f"   📬 To: {payload['to']}")
+        logger.info(f"   📝 Subject: '{payload['subject']}'")
+        logger.debug(f"   Full payload keys: {list(payload.keys())}")
         
         try:
             response = requests.post(
