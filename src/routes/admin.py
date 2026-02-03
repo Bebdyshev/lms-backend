@@ -893,6 +893,13 @@ async def update_group(
         else:
             curator = None
     
+    # Check if new course exists if provided
+    if group_data.course_id is not None:
+        if group_data.course_id:
+            course = db.query(Course).filter(Course.id == group_data.course_id).first()
+            if not course:
+                raise HTTPException(status_code=400, detail="Course not found")
+    
     # Check if new name already exists (if changing name)
     if group_data.name and group_data.name != group.name:
         existing_group = db.query(Group).filter(
@@ -913,6 +920,23 @@ async def update_group(
         group.curator_id = group_data.curator_id
     if group_data.is_active is not None:
         group.is_active = group_data.is_active
+    
+    # Update course access if provided
+    if group_data.course_id is not None:
+        # Remove existing course access for this group
+        db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id == group_id
+        ).delete()
+        
+        # Add new course access if course_id is provided
+        if group_data.course_id:
+            course_access = CourseGroupAccess(
+                course_id=group_data.course_id,
+                group_id=group_id,
+                granted_by=current_user.id,
+                is_active=True
+            )
+            db.add(course_access)
     
     # Update student list if provided
     if group_data.student_ids is not None:
