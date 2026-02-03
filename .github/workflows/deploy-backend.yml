@@ -9,7 +9,7 @@ on:
 
 concurrency:
   group: deploy-backend
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -25,7 +25,7 @@ jobs:
           set -e
           echo "🚀 Starting backend deployment..."
           cd ~/projects/lms
-          git fetch origin main
+          git fetch origin
           git reset --hard origin/main
           docker compose pull || true
           docker compose build
