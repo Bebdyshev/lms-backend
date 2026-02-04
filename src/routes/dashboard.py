@@ -353,9 +353,8 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     
     missing_attendance_reminders = []
     
-    # Only check events from February 2, 2026 onwards (2 days before production launch)
-    # This gives us a buffer to mark attendance for classes that happened just before launch
-    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026 at midnight UTC
+    # Only check events from February 4, 2026 onwards (production launch date)
+    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)  # February 4, 2026 at midnight UTC
     
     if teacher_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
@@ -642,8 +641,8 @@ def get_curator_dashboard_stats(
     from src.schemas.models import EventParticipant, EventGroup, Event
     missing_attendance_reminders = []
     
-    # Only check events from February 2, 2026 onwards (2 days before production launch)
-    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)
+    # Only check events from February 4, 2026 onwards (production launch date)
+    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)
     
     if curator_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
@@ -1086,8 +1085,8 @@ def get_head_curator_dashboard_stats(
     from src.schemas.models import EventParticipant, EventGroup, Event
     missing_attendance_reminders = []
     
-    # Only check events from February 2, 2026 onwards (2 days before production launch)
-    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)
+    # Only check events from February 4, 2026 onwards (production launch date)
+    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)
     
     if current_group_ids:
         # We only show reminders for the currently filtered groups (if any) or all if all
@@ -1196,9 +1195,9 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
     
     missing_attendance_reminders = []
     
-    # Only check events from February 2, 2026 onwards (2 days before production launch)
+    # Only check events from February 4, 2026 onwards (production launch date)
     # This ensures we don't show old attendance issues from before this date
-    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026 at midnight UTC
+    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)  # February 4, 2026 at midnight UTC
     
     past_events = db.query(Event).join(EventGroup).filter(
         Event.event_type == "class",

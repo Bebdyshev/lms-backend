@@ -143,7 +143,7 @@ def detect_and_log_missed_attendance(db: Session, teacher_id: int, group_ids: Li
     if not group_ids:
         return
     
-    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026
+    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)  # February 4, 2026 - production launch date
     now = datetime.utcnow()
     
     # Get past events for these groups
