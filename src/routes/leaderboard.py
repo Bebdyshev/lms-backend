@@ -883,7 +883,7 @@ async def get_group_full_attendance_matrix(
     for student in students_list:
         lesson_data = {}
         for idx, event in enumerate(all_events):
-            status = attendance_map.get((student.id, event.id), "missed") 
+            status = attendance_map.get((student.id, event.id), None) 
             lesson_data[str(idx + 1)] = {
                 "event_id": event.id,
                 "attendance_status": status
