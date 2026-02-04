@@ -595,10 +595,24 @@ async def get_weekly_lessons_with_hw_status(
     # Collect final assignment IDs for submission lookup
     assignment_ids = list(set([a.id for a in lesson_homework_map.values()])) if lesson_homework_map else []
     
+    # 4.5. Calculate GLOBAL lesson_number for each event in this week
+    # Get ALL events for this group to calculate correct lesson_number
+    all_group_events = db.query(Event).outerjoin(EventGroup).filter(
+        Event.event_type == 'class',
+        Event.is_active == True,
+        EventGroup.group_id == group_id
+    ).order_by(Event.start_datetime.asc()).all()
+    
+    # Build event_id -> global lesson_number map
+    event_to_lesson_number = {}
+    for idx, e in enumerate(all_group_events):
+        event_to_lesson_number[e.id] = idx + 1
+    
     # 5. Build Lesson Columns metadata
     lessons_meta = []
     for idx, event in enumerate(events):
-        lesson_num = idx + 1
+        # Use GLOBAL lesson_number, not local week index
+        lesson_num = event_to_lesson_number.get(event.id, idx + 1)
         hw = lesson_homework_map.get(lesson_num)
         lessons_meta.append({
             "lesson_number": lesson_num,
@@ -634,9 +648,10 @@ async def get_weekly_lessons_with_hw_status(
     attendance_map = {}
     
     # Get attendance from EventParticipant for real events
-    if real_event_ids:
+    event_ids = [e.id for e in events if hasattr(e, 'id') and e.id]
+    if event_ids:
         event_attendances = db.query(EventParticipant).filter(
-            EventParticipant.event_id.in_(real_event_ids),
+            EventParticipant.event_id.in_(event_ids),
             EventParticipant.user_id.in_(student_ids)
         ).all()
         # Map (user_id, event_id) -> status
@@ -714,8 +729,8 @@ async def get_weekly_lessons_with_hw_status(
             # If nothing, assumption: missed.
             status = attendance_map.get((student.id, event.id), "missed") 
             
-            # Homework - now by lesson_number
-            lesson_num = idx + 1
+            # Homework - now by GLOBAL lesson_number
+            lesson_num = event_to_lesson_number.get(event.id, idx + 1)
             hw = lesson_homework_map.get(lesson_num)
             hw_status = None
             if hw:
@@ -731,7 +746,8 @@ async def get_weekly_lessons_with_hw_status(
                 else:
                     hw_status = {"submitted": False, "score": None}
             
-            lesson_data[str(idx + 1)] = {
+            # Use GLOBAL lesson_number as key to match lessons_meta
+            lesson_data[str(lesson_num)] = {
                 "event_id": event.id,
                 "attendance_status": status,
                 "homework_status": hw_status
@@ -1778,17 +1794,19 @@ async def get_student_ranking(
 @router.get("/group-schedules/{group_id}")
 async def get_group_schedules(
     group_id: int,
-    weeks_back: int = Query(default=1, ge=0, le=12),
+    weeks_back: int = Query(default=4, ge=0, le=12),
     weeks_ahead: int = Query(default=8, ge=0, le=24),
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
     """
-    Get scheduled lessons for a group (from LessonSchedule).
-    Used for linking assignments to specific scheduled classes.
-    Returns virtual event IDs (2000000000 + schedule_id) matching calendar view.
-    Shows only upcoming/recent lessons by default.
+    Get class events for a group (from Events table).
+    Used for linking assignments to specific classes.
+    Returns events with calculated lesson_number based on chronological order.
     """
+    from src.schemas.models import Event, EventGroup, CourseGroupAccess, EventCourse
+    from src.services.event_service import EventService
+    
     # Check permissions
     if current_user.role not in ["admin", "teacher", "head_curator"]:
         group = db.query(Group).filter(
@@ -1802,43 +1820,78 @@ async def get_group_schedules(
     group = db.query(Group).filter(Group.id == group_id).first()
     group_name = group.name if group else "Group"
     
-    # Calculate date range - focus on upcoming lessons
+    # Calculate date range
     now = datetime.utcnow()
     start_date = now - timedelta(weeks=weeks_back)
     end_date = now + timedelta(weeks=weeks_ahead)
     
-    # Get LessonSchedules for this group (upcoming + recent past)
-    schedules = db.query(LessonSchedule).filter(
-        LessonSchedule.group_id == group_id,
-        LessonSchedule.is_active == True,
-        LessonSchedule.scheduled_at >= start_date,
-        LessonSchedule.scheduled_at <= end_date
-    ).order_by(LessonSchedule.scheduled_at.asc()).all()  # Ascending - upcoming first
+    # Get courses linked to this group
+    course_accesses = db.query(CourseGroupAccess).filter(
+        CourseGroupAccess.group_id == group_id,
+        CourseGroupAccess.is_active == True
+    ).all()
+    course_ids = [ca.course_id for ca in course_accesses]
     
-    # Calculate lesson numbers (same logic as calendar)
-    all_schedules = db.query(LessonSchedule).filter(
-        LessonSchedule.group_id == group_id,
-        LessonSchedule.is_active == True
-    ).order_by(LessonSchedule.scheduled_at).all()
+    # Get standard events (non-recurring) for this group
+    standard_events = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
+        Event.event_type == 'class',
+        Event.is_active == True,
+        Event.is_recurring == False,
+        or_(
+            EventGroup.group_id == group_id,
+            EventCourse.course_id.in_(course_ids) if course_ids else False
+        )
+    ).distinct().all()
     
+    # Expand recurring events
+    recurring_instances = EventService.expand_recurring_events(
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
+        group_ids=[group_id],
+        course_ids=course_ids
+    )
+    recurring_instances = [e for e in recurring_instances if e.event_type == 'class']
+    
+    # Combine and deduplicate
+    all_events = []
+    seen_times = set()
+    
+    for e in standard_events:
+        time_sig = e.start_datetime.replace(second=0, microsecond=0)
+        if time_sig not in seen_times:
+            all_events.append(e)
+            seen_times.add(time_sig)
+            
+    for instance in recurring_instances:
+        time_sig = instance.start_datetime.replace(second=0, microsecond=0)
+        if time_sig not in seen_times:
+            all_events.append(instance)
+            seen_times.add(time_sig)
+    
+    # Sort by date
+    all_events.sort(key=lambda x: x.start_datetime)
+    
+    # Calculate lesson numbers based on chronological order (all events, not just filtered)
     lesson_number_map = {}
-    for idx, sched in enumerate(all_schedules, start=1):
-        lesson_number_map[sched.id] = idx
+    for idx, event in enumerate(all_events, start=1):
+        lesson_number_map[event.id] = idx
+    
+    # Filter to date range for response
+    filtered_events = [e for e in all_events if start_date <= e.start_datetime <= end_date]
     
     result = []
-    for sched in schedules:
-        virtual_id = 2000000000 + sched.id  # Same virtual ID as calendar
-        lesson_number = lesson_number_map.get(sched.id, sched.week_number)
-        title = f"{group_name}: Lesson {lesson_number}"
+    for event in filtered_events:
+        lesson_number = lesson_number_map.get(event.id, 0)
         
         # Mark if lesson is in the past
-        is_past = sched.scheduled_at < now
+        is_past = event.start_datetime < now
         
         result.append({
-            "id": virtual_id,
-            "schedule_id": sched.id,  # Real schedule ID for backend use
-            "title": title,
-            "scheduled_at": sched.scheduled_at.isoformat(),
+            "id": event.id,
+            "event_id": event.id,
+            "title": event.title or f"{group_name}: Lesson {lesson_number}",
+            "scheduled_at": event.start_datetime.isoformat(),
             "group_id": group_id,
             "lesson_number": lesson_number,
             "is_past": is_past

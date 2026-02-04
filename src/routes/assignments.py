@@ -196,6 +196,10 @@ async def create_assignment(
     db: Session = Depends(get_db)
 ):
     """Create new assignment"""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Creating assignment with data: lesson_number_mapping={assignment_data.lesson_number_mapping}, event_mapping={assignment_data.event_mapping}")
+    
     target_lesson_id = lesson_id
     
     # If lesson_id provided, check permissions
