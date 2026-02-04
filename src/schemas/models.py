@@ -999,7 +999,8 @@ class Assignment(Base):
     id = Column(Integer, primary_key=True, index=True)
     lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)  # For course unit completion
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="SET NULL"), nullable=True)  # For group-specific assignments
-    event_id = Column(Integer, ForeignKey("events.id", ondelete="SET NULL"), nullable=True)  # Link to calendar event
+    event_id = Column(Integer, ForeignKey("events.id", ondelete="SET NULL"), nullable=True)  # Link to calendar event (deprecated)
+    lesson_number = Column(Integer, nullable=True)  # Lesson number within the group (1, 2, 3, etc.)
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     assignment_type = Column(String, nullable=False)  # single_choice, multiple_choice, etc.
@@ -1120,7 +1121,8 @@ class AssignmentSchema(BaseModel):
     id: int
     lesson_id: Optional[int] = None
     group_id: Optional[int] = None
-    event_id: Optional[int] = None  # Link to zoom lesson (Event)
+    event_id: Optional[int] = None  # Link to zoom lesson (Event) - deprecated
+    lesson_number: Optional[int] = None  # Lesson number within group (1, 2, 3, etc.)
     title: str
     description: Optional[str] = None
     assignment_type: str
@@ -1162,8 +1164,9 @@ class AssignmentCreateSchema(BaseModel):
     due_date: Optional[datetime] = None
     group_id: Optional[int] = None
     group_ids: Optional[List[int]] = None
-    event_id: Optional[int] = None  # Link to calendar event
-    event_mapping: Optional[Dict[int, int]] = None  # Map group_id -> event_id
+    event_id: Optional[int] = None  # Link to calendar event (deprecated)
+    event_mapping: Optional[Dict[int, int]] = None  # Map group_id -> event_id (deprecated)
+    lesson_number_mapping: Optional[Dict[int, int]] = None  # Map group_id -> lesson_number
     due_date_mapping: Optional[Dict[int, datetime]] = None # Map group_id -> specific due_date
     allowed_file_types: Optional[List[str]] = None
     max_file_size_mb: int = 10

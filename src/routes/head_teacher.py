@@ -173,12 +173,19 @@ def detect_and_log_missed_attendance(db: Session, teacher_id: int, group_ids: Li
                 EventParticipant.registration_status.in_(["attended", "late", "missed"])
             ).scalar() or 0
             
-            # Check if log exists for this group and event date (not event_id to avoid duplicates)
-            existing_log = db.query(MissedAttendanceLog).join(Event).filter(
-                MissedAttendanceLog.group_id == group_id,
-                Event.start_datetime == event.start_datetime,
-                MissedAttendanceLog.resolved_at.is_(None)
+            # Check if log exists for this event OR for same group+date (to avoid duplicates from duplicate events)
+            existing_log = db.query(MissedAttendanceLog).filter(
+                MissedAttendanceLog.event_id == event.id,
+                MissedAttendanceLog.group_id == group_id
             ).first()
+            
+            # Also check for logs with same group and event date (duplicate events in DB)
+            # Use func.date() to compare only date part, ignoring time
+            if not existing_log:
+                existing_log = db.query(MissedAttendanceLog).join(Event, MissedAttendanceLog.event_id == Event.id).filter(
+                    MissedAttendanceLog.group_id == group_id,
+                    func.date(Event.start_datetime) == event.start_datetime.date()
+                ).first()
             
             if recorded_count < expected_count:
                 # Attendance is incomplete
@@ -222,12 +229,19 @@ def get_teacher_missed_attendance_stats(db: Session, teacher_id: int, group_ids:
     # Get unresolved (current missing)
     unresolved_logs = [log for log in all_logs if log.resolved_at is None]
     
-    # Build details for unresolved
+    # Build details for unresolved - deduplicate by (group_id, event_date)
     missed_details = []
+    seen_keys = set()
     for log in unresolved_logs:
         event = db.query(Event).filter(Event.id == log.event_id).first()
         group = db.query(Group).filter(Group.id == log.group_id).first()
         if event and group:
+            # Deduplicate by group_id + event date (without time)
+            key = (log.group_id, event.start_datetime.date())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            
             missed_details.append({
                 'event_id': log.event_id,
                 'event_title': event.title,

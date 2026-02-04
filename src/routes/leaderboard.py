@@ -577,39 +577,31 @@ async def get_weekly_lessons_with_hw_status(
     if not week_start_date:
          week_start_date = datetime.utcnow() # Warning: Should not happen if events exist
     
-    # 4. Get Assignments linked to these events
-    event_homework_map = {}
+    # 4. Get Assignments linked to lessons by lesson_number
+    lesson_homework_map = {}  # lesson_number -> assignment
     
-    # Collect event IDs for querying
-    real_event_ids = [e.id for e in events]
+    # Query assignments by group_id and lesson_number
+    assignments = db.query(Assignment).filter(
+        Assignment.group_id == group_id,
+        Assignment.lesson_number.isnot(None),
+        Assignment.is_active == True
+    ).all()
     
-    # Query assignments by event_id only (simplified architecture)
-    if real_event_ids:
-        assignments = db.query(Assignment).filter(
-            Assignment.event_id.in_(real_event_ids),
-            Assignment.is_active == True
-        ).all()
-        
-        # Build event_id -> assignment map
-        event_assignment_map = {}
-        for a in assignments:
-            if a.event_id:
-                event_assignment_map[a.event_id] = a
-                
-        # Populate event_homework_map
-        for e in events:
-            if e.id in event_assignment_map:
-                event_homework_map[e.id] = event_assignment_map[e.id]
+    # Build lesson_number -> assignment map
+    for a in assignments:
+        if a.lesson_number:
+            lesson_homework_map[a.lesson_number] = a
 
     # Collect final assignment IDs for submission lookup
-    assignment_ids = list(set([a.id for a in event_homework_map.values()])) if event_homework_map else []
+    assignment_ids = list(set([a.id for a in lesson_homework_map.values()])) if lesson_homework_map else []
     
     # 5. Build Lesson Columns metadata
     lessons_meta = []
     for idx, event in enumerate(events):
-        hw = event_homework_map.get(event.id)
+        lesson_num = idx + 1
+        hw = lesson_homework_map.get(lesson_num)
         lessons_meta.append({
-            "lesson_number": idx + 1,
+            "lesson_number": lesson_num,
             "event_id": event.id,
             "title": event.title,
             "start_datetime": event.start_datetime,
@@ -722,8 +714,9 @@ async def get_weekly_lessons_with_hw_status(
             # If nothing, assumption: missed.
             status = attendance_map.get((student.id, event.id), "missed") 
             
-            # Homework
-            hw = event_homework_map.get(event.id)
+            # Homework - now by lesson_number
+            lesson_num = idx + 1
+            hw = lesson_homework_map.get(lesson_num)
             hw_status = None
             if hw:
                 sub = submission_map.get((student.id, hw.id))
