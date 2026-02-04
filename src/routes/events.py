@@ -122,8 +122,7 @@ async def get_my_events(
     query = query.options(
         joinedload(Event.creator),
         joinedload(Event.event_groups).joinedload(EventGroup.group),
-        joinedload(Event.event_courses).joinedload(EventCourse.course),
-        joinedload(Event.lesson)
+        joinedload(Event.event_courses).joinedload(EventCourse.course)
     )
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
