@@ -1802,6 +1802,43 @@ class EventParticipant(Base):
         UniqueConstraint('event_id', 'user_id', name='uq_event_participant'),
     )
 
+
+class MissedAttendanceLog(Base):
+    """
+    Logs when a teacher misses recording attendance for an event.
+    Once recorded, this log persists even after attendance is later filled.
+    """
+    __tablename__ = "missed_attendance_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
+    group_id = Column(Integer, ForeignKey("groups.id"), nullable=False)
+    teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    # When this was detected as missing
+    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    # Expected vs recorded at time of detection
+    expected_count = Column(Integer, nullable=False)
+    recorded_count_at_detection = Column(Integer, default=0)
+    
+    # When/if attendance was later filled
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_count = Column(Integer, nullable=True)  # How many were recorded when resolved
+    
+    # Relationships
+    event = relationship("Event")
+    group = relationship("Group")
+    teacher = relationship("UserInDB")
+    
+    # Unique constraint - one log per event+group combination
+    __table_args__ = (
+        UniqueConstraint('event_id', 'group_id', name='uq_missed_attendance_event_group'),
+        Index('ix_missed_attendance_teacher', 'teacher_id'),
+        Index('ix_missed_attendance_resolved', 'resolved_at'),
+    )
+
+
 # Pydantic schemas for Events
 class EventSchema(BaseModel):
     id: int

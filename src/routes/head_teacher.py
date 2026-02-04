@@ -9,7 +9,7 @@ from src.config import get_db
 from src.schemas.models import (
     UserInDB, Course, Group, GroupStudent, CourseGroupAccess,
     AssignmentSubmission, Assignment, QuizAttempt, CourseHeadTeacher,
-    Event, EventGroup, EventParticipant
+    Event, EventGroup, EventParticipant, MissedAttendanceLog
 )
 from src.routes.auth import get_current_user_dependency
 
@@ -129,6 +129,115 @@ class TeacherAssignmentsResponse(BaseModel):
     teacher_name: str
     assignments: List[AssignmentItem]
     total: int
+
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+
+def detect_and_log_missed_attendance(db: Session, teacher_id: int, group_ids: List[int]) -> None:
+    """
+    Detect events with incomplete attendance and log them to missed_attendance_logs table.
+    Also marks resolved any previously missing attendance that is now complete.
+    """
+    if not group_ids:
+        return
+    
+    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026
+    now = datetime.utcnow()
+    
+    # Get past events for these groups
+    past_events = db.query(Event).join(EventGroup).filter(
+        EventGroup.group_id.in_(group_ids),
+        Event.event_type == "class",
+        Event.end_datetime <= now,
+        Event.end_datetime >= cutoff_date,
+        Event.is_active == True
+    ).all()
+    
+    for event in past_events:
+        event_group_ids = [eg.group_id for eg in event.event_groups if eg.group_id in group_ids]
+        
+        for group_id in event_group_ids:
+            # Get expected students for this group
+            expected_count = db.query(func.count(GroupStudent.id)).filter(
+                GroupStudent.group_id == group_id
+            ).scalar() or 0
+            
+            if expected_count == 0:
+                continue
+            
+            # Get recorded attendance
+            recorded_count = db.query(func.count(EventParticipant.id)).filter(
+                EventParticipant.event_id == event.id,
+                EventParticipant.registration_status.in_(["attended", "late", "missed"])
+            ).scalar() or 0
+            
+            # Check if log exists
+            existing_log = db.query(MissedAttendanceLog).filter(
+                MissedAttendanceLog.event_id == event.id,
+                MissedAttendanceLog.group_id == group_id
+            ).first()
+            
+            if recorded_count < expected_count:
+                # Attendance is incomplete
+                if not existing_log:
+                    # Create new log entry
+                    new_log = MissedAttendanceLog(
+                        event_id=event.id,
+                        group_id=group_id,
+                        teacher_id=teacher_id,
+                        detected_at=now,
+                        expected_count=expected_count,
+                        recorded_count_at_detection=recorded_count
+                    )
+                    db.add(new_log)
+            else:
+                # Attendance is complete - mark as resolved if log exists
+                if existing_log and existing_log.resolved_at is None:
+                    existing_log.resolved_at = now
+                    existing_log.resolved_count = recorded_count
+    
+    db.commit()
+
+
+def get_teacher_missed_attendance_stats(db: Session, teacher_id: int, group_ids: List[int]) -> tuple:
+    """
+    Get missed attendance statistics for a teacher.
+    Returns: (total_missed_count, unresolved_count, missed_details)
+    """
+    if not group_ids:
+        return 0, 0, []
+    
+    # First detect and log any new missed attendance
+    detect_and_log_missed_attendance(db, teacher_id, group_ids)
+    
+    # Get all logs for this teacher
+    all_logs = db.query(MissedAttendanceLog).filter(
+        MissedAttendanceLog.teacher_id == teacher_id,
+        MissedAttendanceLog.group_id.in_(group_ids)
+    ).all()
+    
+    # Get unresolved (current missing)
+    unresolved_logs = [log for log in all_logs if log.resolved_at is None]
+    
+    # Build details for unresolved
+    missed_details = []
+    for log in unresolved_logs:
+        event = db.query(Event).filter(Event.id == log.event_id).first()
+        group = db.query(Group).filter(Group.id == log.group_id).first()
+        if event and group:
+            missed_details.append({
+                'event_id': log.event_id,
+                'event_title': event.title,
+                'group_id': log.group_id,
+                'group_name': group.name,
+                'event_date': event.start_datetime,
+                'expected_count': log.expected_count,
+                'recorded_count': log.recorded_count_at_detection
+            })
+    
+    return len(all_logs), len(unresolved_logs), missed_details
 
 
 # ==============================================================================
@@ -370,37 +479,11 @@ async def get_course_teacher_statistics(
             QuizAttempt.is_draft == False
         ).scalar() or 0
         
-        # Calculate missed attendance count for this teacher's groups
-        # Count events that ended (past) but have incomplete attendance records
-        cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026
-        missed_attendance_count = 0
-        
-        past_events = db.query(Event).join(EventGroup).filter(
-            EventGroup.group_id.in_(group_ids_for_teacher),
-            Event.event_type == "class",
-            Event.end_datetime <= now,
-            Event.end_datetime >= cutoff_date,
-            Event.is_active == True
-        ).all()
-        
-        for event in past_events:
-            # Get expected students for this event
-            event_group_ids = [eg.group_id for eg in event.event_groups if eg.group_id in group_ids_for_teacher]
-            if not event_group_ids:
-                continue
-            
-            expected_count = db.query(func.count(GroupStudent.id)).filter(
-                GroupStudent.group_id.in_(event_group_ids)
-            ).scalar() or 0
-            
-            # Get recorded attendance (attended, late, or missed)
-            recorded_count = db.query(func.count(EventParticipant.id)).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).scalar() or 0
-            
-            if recorded_count < expected_count:
-                missed_attendance_count += 1
+        # Get missed attendance stats using the helper function
+        # This also logs any newly detected missing attendance to the database
+        total_missed, current_missing, _ = get_teacher_missed_attendance_stats(
+            db, teacher_id, group_ids_for_teacher
+        )
         
         teacher_stats.append(TeacherStatisticsSchema(
             teacher_id=teacher_id,
@@ -416,7 +499,7 @@ async def get_course_teacher_statistics(
             quizzes_graded_count=quizzes_graded_count,
             homeworks_checked_last_7_days=homeworks_checked_last_7_days,
             homeworks_checked_last_30_days=homeworks_checked_last_30_days,
-            missed_attendance_count=missed_attendance_count
+            missed_attendance_count=total_missed  # Total historical missed (including resolved)
         ))
     
     # Sort by teacher name
@@ -542,7 +625,7 @@ async def get_teacher_details(
     ).all()
     
     activity_history = [
-        ActivityHistoryItem(date=item.graded_date, submissions_graded=item.count)
+        ActivityHistoryItem(date=str(item.graded_date), submissions_graded=item.count)
         for item in activity_data
     ]
     
@@ -555,52 +638,25 @@ async def get_teacher_details(
         AssignmentSubmission.feedback != ""
     ).scalar() or 0
     
-    # Calculate missed attendance for this teacher's groups
-    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026
-    missed_attendance_details = []
+    # Get missed attendance stats using the helper function
+    # This logs any newly detected missing attendance to the database
+    total_missed, current_missing, missed_details_raw = get_teacher_missed_attendance_stats(
+        db, teacher_id, teacher_group_ids
+    )
     
-    past_events = db.query(Event).join(EventGroup).filter(
-        EventGroup.group_id.in_(teacher_group_ids),
-        Event.event_type == "class",
-        Event.end_datetime <= now,
-        Event.end_datetime >= cutoff_date,
-        Event.is_active == True
-    ).order_by(Event.start_datetime.desc()).all()
-    
-    for event in past_events:
-        # Get groups for this event that belong to this teacher
-        event_group_ids = [eg.group_id for eg in event.event_groups if eg.group_id in teacher_group_ids]
-        if not event_group_ids:
-            continue
-        
-        for group_id in event_group_ids:
-            group = db.query(Group).filter(Group.id == group_id).first()
-            if not group:
-                continue
-                
-            expected_count = db.query(func.count(GroupStudent.id)).filter(
-                GroupStudent.group_id == group_id
-            ).scalar() or 0
-            
-            if expected_count == 0:
-                continue
-            
-            # Get recorded attendance (attended, late, or missed)
-            recorded_count = db.query(func.count(EventParticipant.id)).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).scalar() or 0
-            
-            if recorded_count < expected_count:
-                missed_attendance_details.append(MissedAttendanceItem(
-                    event_id=event.id,
-                    event_title=event.title,
-                    group_id=group_id,
-                    group_name=group.name,
-                    event_date=event.start_datetime,
-                    expected_count=expected_count,
-                    recorded_count=recorded_count
-                ))
+    # Convert to MissedAttendanceItem format
+    missed_attendance_details = [
+        MissedAttendanceItem(
+            event_id=item['event_id'],
+            event_title=item['event_title'],
+            group_id=item['group_id'],
+            group_name=item['group_name'],
+            event_date=item['event_date'],
+            expected_count=item['expected_count'],
+            recorded_count=item['recorded_count']
+        )
+        for item in missed_details_raw
+    ]
     
     return TeacherDetailsResponse(
         teacher_id=teacher_id,
@@ -613,8 +669,8 @@ async def get_teacher_details(
         activity_history=activity_history,
         total_feedbacks=total_feedbacks,
         avg_score_given=avg_score_given,
-        missed_attendance_count=len(missed_attendance_details),
-        missed_attendance_details=missed_attendance_details
+        missed_attendance_count=total_missed,  # Total historical missed (including resolved)
+        missed_attendance_details=missed_attendance_details  # Only current unresolved
     )
 
 
