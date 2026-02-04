@@ -920,18 +920,20 @@ async def get_group_class_events(
     # admin has access to all groups
     
     # Calculate time window
-    # For attendance, we only show events that have ENDED
-    # This prevents marking attendance for future classes
+    # For homework assignment linking, we need FUTURE events
+    # But for attendance tracking, we need PAST events
+    # This endpoint is used for homework linking, so include future events too
     now = datetime.now()
     start_date = now - timedelta(weeks=weeks_back)
+    end_date = now + timedelta(weeks=weeks_ahead)
     
-    # Get class events for this group that have already ended
+    # Get class events for this group (both past and future)
     events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id == group_id,
         Event.event_type == "class",
         Event.is_active == True,
-        Event.end_datetime >= start_date,  # Not too old
-        Event.end_datetime <= now  # Already ended
+        Event.start_datetime >= start_date,  # Not too old
+        Event.start_datetime <= end_date  # Within time window
     ).order_by(Event.start_datetime).all()
     
     return events

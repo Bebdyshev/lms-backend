@@ -8,7 +8,8 @@ from pydantic import BaseModel
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, Course, Group, GroupStudent, CourseGroupAccess,
-    AssignmentSubmission, Assignment, QuizAttempt, CourseHeadTeacher
+    AssignmentSubmission, Assignment, QuizAttempt, CourseHeadTeacher,
+    Event, EventGroup, EventParticipant
 )
 from src.routes.auth import get_current_user_dependency
 
@@ -49,6 +50,8 @@ class TeacherStatisticsSchema(BaseModel):
     # Recent Activity
     homeworks_checked_last_7_days: int
     homeworks_checked_last_30_days: int
+    # Attendance Stats
+    missed_attendance_count: int = 0  # Events where attendance was not recorded
 
 class ActivityHistoryItem(BaseModel):
     date: str
@@ -360,6 +363,38 @@ async def get_course_teacher_statistics(
             QuizAttempt.is_draft == False
         ).scalar() or 0
         
+        # Calculate missed attendance count for this teacher's groups
+        # Count events that ended (past) but have incomplete attendance records
+        cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026
+        missed_attendance_count = 0
+        
+        past_events = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id.in_(group_ids_for_teacher),
+            Event.event_type == "class",
+            Event.end_datetime <= now,
+            Event.end_datetime >= cutoff_date,
+            Event.is_active == True
+        ).all()
+        
+        for event in past_events:
+            # Get expected students for this event
+            event_group_ids = [eg.group_id for eg in event.event_groups if eg.group_id in group_ids_for_teacher]
+            if not event_group_ids:
+                continue
+            
+            expected_count = db.query(func.count(GroupStudent.id)).filter(
+                GroupStudent.group_id.in_(event_group_ids)
+            ).scalar() or 0
+            
+            # Get recorded attendance (attended, late, or missed)
+            recorded_count = db.query(func.count(EventParticipant.id)).filter(
+                EventParticipant.event_id == event.id,
+                EventParticipant.registration_status.in_(["attended", "late", "missed"])
+            ).scalar() or 0
+            
+            if recorded_count < expected_count:
+                missed_attendance_count += 1
+        
         teacher_stats.append(TeacherStatisticsSchema(
             teacher_id=teacher_id,
             teacher_name=teacher.name,
@@ -373,7 +408,8 @@ async def get_course_teacher_statistics(
             avg_grading_time_hours=avg_grading_time_hours,
             quizzes_graded_count=quizzes_graded_count,
             homeworks_checked_last_7_days=homeworks_checked_last_7_days,
-            homeworks_checked_last_30_days=homeworks_checked_last_30_days
+            homeworks_checked_last_30_days=homeworks_checked_last_30_days,
+            missed_attendance_count=missed_attendance_count
         ))
     
     # Sort by teacher name
