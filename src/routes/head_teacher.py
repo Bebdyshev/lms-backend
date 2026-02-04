@@ -173,10 +173,11 @@ def detect_and_log_missed_attendance(db: Session, teacher_id: int, group_ids: Li
                 EventParticipant.registration_status.in_(["attended", "late", "missed"])
             ).scalar() or 0
             
-            # Check if log exists
-            existing_log = db.query(MissedAttendanceLog).filter(
-                MissedAttendanceLog.event_id == event.id,
-                MissedAttendanceLog.group_id == group_id
+            # Check if log exists for this group and event date (not event_id to avoid duplicates)
+            existing_log = db.query(MissedAttendanceLog).join(Event).filter(
+                MissedAttendanceLog.group_id == group_id,
+                Event.start_datetime == event.start_datetime,
+                MissedAttendanceLog.resolved_at.is_(None)
             ).first()
             
             if recorded_count < expected_count:
