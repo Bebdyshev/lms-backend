@@ -353,15 +353,16 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     
     missing_attendance_reminders = []
     
-    # Get past class events from teacher's groups (last 14 days)
-    past_cutoff = datetime.utcnow() - timedelta(days=14)
+    # Only check events from February 2, 2026 onwards (2 days before production launch)
+    # This gives us a buffer to mark attendance for classes that happened just before launch
+    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026 at midnight UTC
     
     if teacher_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
             EventGroup.group_id.in_(teacher_group_ids),
             Event.event_type == "class",
             Event.end_datetime <= datetime.utcnow(),
-            Event.end_datetime >= past_cutoff,
+            Event.end_datetime >= cutoff_date,
             Event.is_active == True
         ).all()
         
@@ -640,14 +641,16 @@ def get_curator_dashboard_stats(
     # 5. Missing Attendance Reminders (similar to teacher)
     from src.schemas.models import EventParticipant, EventGroup, Event
     missing_attendance_reminders = []
-    past_cutoff = datetime.utcnow() - timedelta(days=14)
+    
+    # Only check events from February 2, 2026 onwards (2 days before production launch)
+    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)
     
     if curator_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
             EventGroup.group_id.in_(curator_group_ids),
             Event.event_type == "class",
             Event.end_datetime <= datetime.utcnow(),
-            Event.end_datetime >= past_cutoff,
+            Event.end_datetime >= cutoff_date,
             Event.is_active == True
         ).all()
         
@@ -1082,7 +1085,9 @@ def get_head_curator_dashboard_stats(
     # 5. Missing Attendance Reminders (similar to teacher/curator)
     from src.schemas.models import EventParticipant, EventGroup, Event
     missing_attendance_reminders = []
-    past_cutoff_rem = datetime.utcnow() - timedelta(days=14)
+    
+    # Only check events from February 2, 2026 onwards (2 days before production launch)
+    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)
     
     if current_group_ids:
         # We only show reminders for the currently filtered groups (if any) or all if all
@@ -1090,7 +1095,7 @@ def get_head_curator_dashboard_stats(
             EventGroup.group_id.in_(current_group_ids),
             Event.event_type == "class",
             Event.end_datetime <= datetime.utcnow(),
-            Event.end_datetime >= past_cutoff_rem,
+            Event.end_datetime >= cutoff_date,
             Event.is_active == True
         ).all()
         
@@ -1191,13 +1196,14 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
     
     missing_attendance_reminders = []
     
-    # Get all past class events (last 14 days)
-    past_cutoff = datetime.utcnow() - timedelta(days=14)
+    # Only check events from February 2, 2026 onwards (2 days before production launch)
+    # This ensures we don't show old attendance issues from before this date
+    cutoff_date = datetime(2026, 2, 2, 0, 0, 0)  # February 2, 2026 at midnight UTC
     
     past_events = db.query(Event).join(EventGroup).filter(
         Event.event_type == "class",
         Event.end_datetime <= datetime.utcnow(),
-        Event.end_datetime >= past_cutoff,
+        Event.end_datetime >= cutoff_date,
         Event.is_active == True
     ).all()
     

@@ -920,17 +920,18 @@ async def get_group_class_events(
     # admin has access to all groups
     
     # Calculate time window
+    # For attendance, we only show events that have ENDED
+    # This prevents marking attendance for future classes
     now = datetime.now()
     start_date = now - timedelta(weeks=weeks_back)
-    end_date = now + timedelta(weeks=weeks_ahead)
     
-    # Get class events for this group
+    # Get class events for this group that have already ended
     events = db.query(Event).join(EventGroup).filter(
         EventGroup.group_id == group_id,
         Event.event_type == "class",
         Event.is_active == True,
-        Event.start_datetime >= start_date,
-        Event.start_datetime <= end_date
+        Event.end_datetime >= start_date,  # Not too old
+        Event.end_datetime <= now  # Already ended
     ).order_by(Event.start_datetime).all()
     
     return events
