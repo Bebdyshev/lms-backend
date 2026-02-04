@@ -353,15 +353,15 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     
     missing_attendance_reminders = []
     
-    # Get past class events from teacher's groups (last 72 hours)
-    past_cutoff = datetime.utcnow() - timedelta(hours=72)
+    # Get past class events from teacher's groups (last 14 days)
+    past_cutoff = datetime.utcnow() - timedelta(days=14)
     
     if teacher_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
             EventGroup.group_id.in_(teacher_group_ids),
             Event.event_type == "class",
-            Event.start_datetime <= datetime.utcnow(),
-            Event.start_datetime >= past_cutoff,
+            Event.end_datetime <= datetime.utcnow(),
+            Event.end_datetime >= past_cutoff,
             Event.is_active == True
         ).all()
         
@@ -373,13 +373,14 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             ).all()
             expected_count = len(expected_students)
             
-            # Get actual attendance records
+            # Get actual attendance records that are NOT pending or registered
             attendance_count = db.query(EventParticipant).filter(
-                EventParticipant.event_id == event.id
+                EventParticipant.event_id == event.id,
+                EventParticipant.registration_status.in_(["attended", "late", "missed"])
             ).count()
             
-            # If no attendance records or less than expected, add reminder
-            if attendance_count == 0 or attendance_count < expected_count:
+            # If less than expected, add reminder
+            if attendance_count < expected_count:
                 group_name = ""
                 group_id = None
                 if event.event_groups:
@@ -636,6 +637,52 @@ def get_curator_dashboard_stats(
             "percentage": round(day_active_count / total_students * 100, 1) if total_students > 0 else 0
         })
 
+    # 5. Missing Attendance Reminders (similar to teacher)
+    from src.schemas.models import EventParticipant, EventGroup, Event
+    missing_attendance_reminders = []
+    past_cutoff = datetime.utcnow() - timedelta(days=14)
+    
+    if curator_group_ids:
+        past_events = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id.in_(curator_group_ids),
+            Event.event_type == "class",
+            Event.end_datetime <= datetime.utcnow(),
+            Event.end_datetime >= past_cutoff,
+            Event.is_active == True
+        ).all()
+        
+        for event in past_events:
+            eg_ids = [eg.group_id for eg in event.event_groups if eg.group_id in curator_group_ids]
+            if not eg_ids: continue
+            
+            e_expected_students = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(eg_ids)
+            ).all()
+            e_expected_count = len(e_expected_students)
+            
+            e_attendance_count = db.query(EventParticipant).filter(
+                EventParticipant.event_id == event.id,
+                EventParticipant.registration_status.in_(["attended", "late", "missed"])
+            ).count()
+            
+            if e_attendance_count < e_expected_count:
+                g_name = ""
+                g_id = None
+                if event.event_groups:
+                    target_eg = next((eg for eg in event.event_groups if eg.group_id in curator_group_ids), event.event_groups[0])
+                    g_name = target_eg.group.name if target_eg.group else ""
+                    g_id = target_eg.group.id if target_eg.group else None
+                
+                missing_attendance_reminders.append({
+                    "event_id": event.id,
+                    "title": event.title,
+                    "group_name": g_name,
+                    "group_id": g_id,
+                    "event_date": event.start_datetime.isoformat(),
+                    "expected_students": e_expected_count,
+                    "recorded_students": e_attendance_count
+                })
+
     return DashboardStatsSchema(
         user={
             "name": user.name.split()[0],
@@ -651,7 +698,8 @@ def get_curator_dashboard_stats(
             "total_overdue": total_overdue_global,
             "total_pending": total_pending_global,
             "curator_performance": group_performance, # Re-using key name for frontend
-            "activity_trends": activity_trends
+            "activity_trends": activity_trends,
+            "missing_attendance_reminders": missing_attendance_reminders
         },
         recent_courses=[
             {
@@ -1031,6 +1079,53 @@ def get_head_curator_dashboard_stats(
                     "status": "critical" if temp_group_overdue[gid] > 5 else "warning"
                 })
 
+    # 5. Missing Attendance Reminders (similar to teacher/curator)
+    from src.schemas.models import EventParticipant, EventGroup, Event
+    missing_attendance_reminders = []
+    past_cutoff_rem = datetime.utcnow() - timedelta(days=14)
+    
+    if current_group_ids:
+        # We only show reminders for the currently filtered groups (if any) or all if all
+        past_events_rem = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id.in_(current_group_ids),
+            Event.event_type == "class",
+            Event.end_datetime <= datetime.utcnow(),
+            Event.end_datetime >= past_cutoff_rem,
+            Event.is_active == True
+        ).all()
+        
+        for event in past_events_rem:
+            eg_ids = [eg.group_id for eg in event.event_groups if eg.group_id in current_group_ids]
+            if not eg_ids: continue
+            
+            e_expected_students = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(eg_ids)
+            ).all()
+            e_expected_count = len(e_expected_students)
+            
+            e_attendance_count = db.query(EventParticipant).filter(
+                EventParticipant.event_id == event.id,
+                EventParticipant.registration_status.in_(["attended", "late", "missed"])
+            ).count()
+            
+            if e_attendance_count < e_expected_count:
+                g_name = ""
+                g_id = None
+                if event.event_groups:
+                    target_eg = next((eg for eg in event.event_groups if eg.group_id in current_group_ids), event.event_groups[0])
+                    g_name = target_eg.group.name if target_eg.group else ""
+                    g_id = target_eg.group.id if target_eg.group else None
+                
+                missing_attendance_reminders.append({
+                    "event_id": event.id,
+                    "title": event.title,
+                    "group_name": g_name,
+                    "group_id": g_id,
+                    "event_date": event.start_datetime.isoformat(),
+                    "expected_students": e_expected_count,
+                    "recorded_students": e_attendance_count
+                })
+
     return DashboardStatsSchema(
         user={
             "name": user.name.split()[0],
@@ -1047,7 +1142,8 @@ def get_head_curator_dashboard_stats(
             "total_overdue": total_overdue_global,
             "total_pending": total_pending_global,
             "curator_performance": curator_performance,
-            "activity_trends": activity_trends
+            "activity_trends": activity_trends,
+            "missing_attendance_reminders": missing_attendance_reminders
         },
         recent_courses=at_risk_groups
     )
@@ -1090,6 +1186,53 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
             "last_accessed": course.updated_at
         })
     
+    # Find past events with missing attendance (for reminders)
+    from src.schemas.models import Event, EventGroup, EventParticipant, Group
+    
+    missing_attendance_reminders = []
+    
+    # Get all past class events (last 14 days)
+    past_cutoff = datetime.utcnow() - timedelta(days=14)
+    
+    past_events = db.query(Event).join(EventGroup).filter(
+        Event.event_type == "class",
+        Event.end_datetime <= datetime.utcnow(),
+        Event.end_datetime >= past_cutoff,
+        Event.is_active == True
+    ).all()
+    
+    for event in past_events:
+        # Get students that should have attended (from event's groups)
+        event_group_ids = [eg.group_id for eg in event.event_groups]
+        expected_students = db.query(GroupStudent.student_id).filter(
+            GroupStudent.group_id.in_(event_group_ids)
+        ).all()
+        expected_count = len(expected_students)
+        
+        # Get actual attendance records that are NOT pending or registered
+        attendance_count = db.query(EventParticipant).filter(
+            EventParticipant.event_id == event.id,
+            EventParticipant.registration_status.in_(["attended", "late", "missed"])
+        ).count()
+        
+        # If less than expected, add reminder
+        if attendance_count < expected_count:
+            group_name = ""
+            group_id = None
+            if event.event_groups:
+                group_name = event.event_groups[0].group.name if event.event_groups[0].group else ""
+                group_id = event.event_groups[0].group.id if event.event_groups[0].group else None
+            
+            missing_attendance_reminders.append({
+                "event_id": event.id,
+                "title": event.title,
+                "group_name": group_name,
+                "group_id": group_id,
+                "event_date": event.start_datetime.isoformat(),
+                "expected_students": expected_count,
+                "recorded_students": attendance_count
+            })
+    
     return DashboardStatsSchema(
         user={
             "name": user.name.split()[0],
@@ -1102,7 +1245,8 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
             "total_students": total_students,
             "total_teachers": total_teachers,
             "total_courses": total_courses,
-            "total_enrollments": total_enrollments
+            "total_enrollments": total_enrollments,
+            "missing_attendance_reminders": missing_attendance_reminders
         },
         recent_courses=course_list
     )

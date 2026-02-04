@@ -875,18 +875,21 @@ async def get_group_full_attendance_matrix(
         EventParticipant.event_id.in_(event_ids),
         EventParticipant.user_id.in_(student_ids)
     ).all()
-    # Map (user_id, event_id) -> status
-    attendance_map = {(a.user_id, a.event_id): a.registration_status for a in attendances}
+    # Map (user_id, event_id) -> {status, activity_score}
+    attendance_map = {(a.user_id, a.event_id): {"status": a.registration_status, "activity_score": a.activity_score} for a in attendances}
 
     # 10. Build Student Rows
     student_rows = []
     for student in students_list:
         lesson_data = {}
         for idx, event in enumerate(all_events):
-            status = attendance_map.get((student.id, event.id), None) 
+            att_data = attendance_map.get((student.id, event.id))
+            status = att_data["status"] if att_data else None
+            activity_score = att_data["activity_score"] if att_data else None
             lesson_data[str(idx + 1)] = {
                 "event_id": event.id,
-                "attendance_status": status
+                "attendance_status": status,
+                "activity_score": activity_score
             }
             
         student_rows.append({

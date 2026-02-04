@@ -231,6 +231,8 @@ class LessonReminderScheduler:
         except Exception as e:
             logger.error(f"❌ [POST-LESSON] Error sending notification: {e}")
             return False
+    
+    def _send_event_reminders(self, db: Session, event: Event) -> bool:
         """
         Send reminders for a specific class event
         
