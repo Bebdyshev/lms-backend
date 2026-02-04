@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from src.config import SessionLocal
 from src.schemas.models import Event, EventGroup, EventParticipant, UserInDB, Group, GroupStudent
 from src.services.email_service import send_lesson_reminder_notification
+from src.utils.push_notifications import send_push_notification
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +54,15 @@ class LessonReminderScheduler:
         """Main scheduler loop"""
         logger.info("� [SCHEDULER] Lesson reminder scheduler thread started")
         logger.info(f"   Check interval: {self.check_interval} seconds")
-        logger.info(f"   Reminder window: 28-32 minutes before lesson")
+        logger.info(f"   Pre-lesson reminder window: 28-32 minutes before lesson")
+        logger.info(f"   Post-lesson reminder window: 15-20 minutes after lesson")
         
         while self.running:
             try:
                 now = datetime.utcnow()
                 logger.info(f"⏰ [SCHEDULER] Checking at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 self._check_and_send_reminders()
+                self._check_and_send_post_lesson_reminders()
             except Exception as e:
                 logger.error(f"❌ [SCHEDULER] Error in lesson reminder scheduler: {e}", exc_info=True)
             
@@ -128,7 +131,106 @@ class LessonReminderScheduler:
         finally:
             db.close()
     
-    def _send_event_reminders(self, db: Session, event: Event) -> bool:
+    def _check_and_send_post_lesson_reminders(self):
+        """Check for recently finished lessons and send reminders to teachers if attendance missing"""
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            # Look for lessons that ended 15-20 minutes ago
+            # If check_interval is 60s, a 5-minute window is safe
+            reminder_time_start = now - timedelta(minutes=20)
+            reminder_time_end = now - timedelta(minutes=15)
+            
+            # Query for active class events that ended in this window
+            ended_events = db.query(Event).filter(
+                Event.is_active == True,
+                Event.event_type == 'class',
+                Event.end_datetime >= reminder_time_start,
+                Event.end_datetime <= reminder_time_end
+            ).all()
+            
+            if not ended_events:
+                return
+
+            logger.info(f"📅 [SCHEDULER] Found {len(ended_events)} recently ended class event(s)")
+            
+            for event in ended_events:
+                # Unique key for post-lesson reminder
+                reminder_key = f"post_lesson_{event.id}_{event.end_datetime.isoformat()}"
+                
+                if reminder_key in self.sent_reminders:
+                    continue
+                
+                # Check if attendance is recorded
+                # We check if there are any participants registered for this event
+                attendance_count = db.query(EventParticipant).filter(
+                    EventParticipant.event_id == event.id
+                ).count()
+                
+                # If attendance is empty or very low, send reminder
+                # We can't know exact expected count easily without querying groups, 
+                # but 0 means definitely no attendance
+                if attendance_count == 0:
+                    logger.info(f"⚠️  [POST-LESSON] Missing attendance for event {event.id}. sending notification.")
+                    success = self._send_post_lesson_notification(db, event)
+                    if success:
+                        self.sent_reminders.add(reminder_key)
+                        logger.info(f"✅ [POST-LESSON] Notification sent for event {event.id}")
+                else:
+                    logger.info(f"✓ [POST-LESSON] Attendance already recorded for event {event.id} ({attendance_count} records)")
+                    # Mark as 'sent' so we don't check again
+                    self.sent_reminders.add(reminder_key)
+                    
+        except Exception as e:
+            logger.error(f"❌ [SCHEDULER] Error checking post-lesson reminders: {e}", exc_info=True)
+        finally:
+            db.close()
+    
+    def _send_post_lesson_notification(self, db: Session, event: Event) -> bool:
+        """Send push notification to teacher about missing attendance/scores"""
+        try:
+            # Find teachers for this event
+            event_groups = db.query(EventGroup).filter(EventGroup.event_id == event.id).all()
+            if not event_groups:
+                return False
+                
+            teacher_ids = set()
+            for eg in event_groups:
+                group = db.query(Group).filter(Group.id == eg.group_id).first()
+                if group and group.teacher_id:
+                    teacher_ids.add(group.teacher_id)
+            
+            if not teacher_ids:
+                return False
+                
+            teachers = db.query(UserInDB).filter(
+                UserInDB.id.in_(teacher_ids),
+                UserInDB.is_active == True,
+                UserInDB.push_token.isnot(None) # Only if they have push token
+            ).all()
+            
+            sent_count = 0
+            for teacher in teachers:
+                if not teacher.push_token:
+                    continue
+                    
+                title = "⏳ Missing Attendance & Scores"
+                body = f"Lesson '{event.title}' has ended. Please record attendance and activity scores."
+                
+                success = send_push_notification(
+                    push_token=teacher.push_token,
+                    title=title,
+                    body=body,
+                    data={"type": "missing_attendance", "eventId": event.id}
+                )
+                if success:
+                    sent_count += 1
+            
+            return sent_count > 0
+            
+        except Exception as e:
+            logger.error(f"❌ [POST-LESSON] Error sending notification: {e}")
+            return False
         """
         Send reminders for a specific class event
         

@@ -1157,6 +1157,7 @@ class AttendanceInputSchema(BaseModel):
     score: int
     status: str = "present"
     event_id: Optional[int] = None
+    activity_score: Optional[float] = None  # Activity score out of 10
 
 class BulkAttendanceInputSchema(BaseModel):
     updates: List[AttendanceInputSchema]
@@ -1208,13 +1209,19 @@ async def update_attendance_bulk(
             
             if participant:
                 participant.registration_status = status
-                participant.attended_at = datetime.utcnow() if status != 'missed' else None
+                # Set attended_at only if attended/late
+                is_attended = status in ['attended', 'late']
+                participant.attended_at = datetime.utcnow() if is_attended else None
+                if item.activity_score is not None:
+                    participant.activity_score = item.activity_score
             else:
+                is_attended = status in ['attended', 'late']
                 participant = EventParticipant(
                     event_id=real_event_id,
                     user_id=item.student_id,
                     registration_status=status,
-                    attended_at=datetime.utcnow() if status != 'missed' else None
+                    attended_at=datetime.utcnow() if is_attended else None,
+                    activity_score=item.activity_score
                 )
                 db.add(participant)
             updated_count += 1
@@ -1237,12 +1244,15 @@ async def update_attendance_bulk(
             if attendance:
                 attendance.score = item.score
                 attendance.status = item.status
+                if item.activity_score is not None:
+                    attendance.activity_score = item.activity_score
             else:
                 attendance = Attendance(
                     lesson_schedule_id=target_schedule.id,
                     user_id=item.student_id,
                     score=item.score,
-                    status=item.status
+                    status=item.status,
+                    activity_score=item.activity_score
                 )
                 db.add(attendance)
             updated_count += 1
@@ -1296,12 +1306,15 @@ async def update_attendance(
         if participant:
             participant.registration_status = "attended" if data.score > 0 else "absent"
             participant.attended_at = datetime.utcnow() if data.score > 0 else None
+            if data.activity_score is not None:
+                participant.activity_score = data.activity_score
         else:
             participant = EventParticipant(
                 event_id=real_event_id,
                 user_id=data.student_id,
                 registration_status="attended" if data.score > 0 else "absent",
-                attended_at=datetime.utcnow() if data.score > 0 else None
+                attended_at=datetime.utcnow() if data.score > 0 else None,
+                activity_score=data.activity_score
             )
             db.add(participant)
         
@@ -1327,12 +1340,15 @@ async def update_attendance(
         if attendance:
             attendance.score = data.score
             attendance.status = data.status
+            if data.activity_score is not None:
+                attendance.activity_score = data.activity_score
         else:
             attendance = Attendance(
                 lesson_schedule_id=target_schedule.id,
                 user_id=data.student_id,
                 score=data.score,
-                status=data.status
+                status=data.status,
+                activity_score=data.activity_score
             )
             db.add(attendance)
         db.commit()

@@ -1791,6 +1791,7 @@ class EventParticipant(Base):
     registration_status = Column(String, default="registered")  # "registered", "attended", "missed"
     registered_at = Column(DateTime, default=datetime.utcnow)
     attended_at = Column(DateTime, nullable=True)
+    activity_score = Column(Float, nullable=True)  # Activity score out of 10
     
     # Relationships
     event = relationship("Event", back_populates="event_participants")
@@ -1937,6 +1938,7 @@ class Attendance(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     status = Column(String, default="present") # present, absent, late, excused
     score = Column(Integer, default=0) # 0, 5, 12, 15
+    activity_score = Column(Float, nullable=True)  # Activity score out of 10
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -348,6 +348,54 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     graded_submissions_count = len(graded_submissions_list) if graded_submissions_list else 0
     grading_progress = round((graded_submissions_count / total_submissions) * 100) if total_submissions > 0 else 0
     
+    # Find past events with missing attendance (for reminders)
+    from src.schemas.models import Event, EventGroup, EventParticipant
+    
+    missing_attendance_reminders = []
+    
+    # Get past class events from teacher's groups (last 72 hours)
+    past_cutoff = datetime.utcnow() - timedelta(hours=72)
+    
+    if teacher_group_ids:
+        past_events = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id.in_(teacher_group_ids),
+            Event.event_type == "class",
+            Event.start_datetime <= datetime.utcnow(),
+            Event.start_datetime >= past_cutoff,
+            Event.is_active == True
+        ).all()
+        
+        for event in past_events:
+            # Get students that should have attended (from event's groups)
+            event_group_ids = [eg.group_id for eg in event.event_groups]
+            expected_students = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(event_group_ids)
+            ).all()
+            expected_count = len(expected_students)
+            
+            # Get actual attendance records
+            attendance_count = db.query(EventParticipant).filter(
+                EventParticipant.event_id == event.id
+            ).count()
+            
+            # If no attendance records or less than expected, add reminder
+            if attendance_count == 0 or attendance_count < expected_count:
+                group_name = ""
+                group_id = None
+                if event.event_groups:
+                    group_name = event.event_groups[0].group.name if event.event_groups[0].group else ""
+                    group_id = event.event_groups[0].group.id if event.event_groups[0].group else None
+                
+                missing_attendance_reminders.append({
+                    "event_id": event.id,
+                    "title": event.title,
+                    "group_name": group_name,
+                    "group_id": group_id,
+                    "event_date": event.start_datetime.isoformat(),
+                    "expected_students": expected_count,
+                    "recorded_students": attendance_count
+                })
+    
     return DashboardStatsSchema(
         user={
             "name": user.name.split()[0],
@@ -366,7 +414,8 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             "avg_student_score": avg_student_score,
             "total_submissions": total_submissions,
             "graded_submissions": graded_submissions_count,
-            "grading_progress": grading_progress
+            "grading_progress": grading_progress,
+            "missing_attendance_reminders": missing_attendance_reminders
         },
         recent_courses=course_stats[:6]
     )
