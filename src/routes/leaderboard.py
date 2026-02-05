@@ -1467,7 +1467,7 @@ async def generate_schedule(
     
     start_date = data.start_date
     
-    # Kazakhstan timezone offset (GMT+5)
+    # Kazakhstan timezone offset (GMT+5 - Almaty/Astana)
     KZ_OFFSET = timedelta(hours=5)
     
     # STEP 1: Generate all possible lesson dates first
@@ -1487,14 +1487,16 @@ async def generate_schedule(
                 days_ahead += 7
             
             target_date = start_date + timedelta(days=days_ahead) + timedelta(weeks=week)
+            
+            # Create datetime in Kazakhstan timezone (user input is in local time)
             target_dt_kz = datetime.combine(target_date, time_obj)
             
-            # Convert from Kazakhstan time (GMT+5) to UTC
-            target_dt = target_dt_kz - KZ_OFFSET
+            # Store in database as UTC (subtract 6 hours)
+            target_dt_utc = target_dt_kz - KZ_OFFSET
             
             # Only include dates on or after start_date
             if target_date >= start_date:
-                all_lesson_dates.append(target_dt)
+                all_lesson_dates.append(target_dt_utc)
     
     # STEP 2: Sort all dates chronologically and take only lessons_count
     all_lesson_dates.sort()
@@ -1880,6 +1882,9 @@ async def get_group_schedules(
     # Filter to date range for response
     filtered_events = [e for e in all_events if start_date <= e.start_datetime <= end_date]
     
+    # Kazakhstan timezone offset (UTC+5)
+    KZ_OFFSET = timedelta(hours=5)
+    
     result = []
     for event in filtered_events:
         lesson_number = lesson_number_map.get(event.id, 0)
@@ -1887,11 +1892,14 @@ async def get_group_schedules(
         # Mark if lesson is in the past
         is_past = event.start_datetime < now
         
+        # Convert UTC to Kazakhstan time for display
+        kz_time = event.start_datetime + KZ_OFFSET
+        
         result.append({
             "id": event.id,
             "event_id": event.id,
             "title": event.title or f"{group_name}: Lesson {lesson_number}",
-            "scheduled_at": event.start_datetime.isoformat(),
+            "scheduled_at": kz_time.isoformat(),  # Already in KZ time
             "group_id": group_id,
             "lesson_number": lesson_number,
             "is_past": is_past
