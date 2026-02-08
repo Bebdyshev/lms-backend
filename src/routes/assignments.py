@@ -718,12 +718,41 @@ async def submit_assignment(
     if assignment.correct_answers and assignment.assignment_type != 'multi_task':
         try:
             correct_answers = json.loads(assignment.correct_answers)
-            score = check_assignment_answers(
-                assignment.assignment_type,
-                submission_data.answers,
-                correct_answers,
-                assignment.max_score
-            )
+            
+            # For file_upload with answer_fields: compute auto-check, but don't auto-grade
+            if assignment.assignment_type == 'file_upload' and correct_answers.get('answer_fields'):
+                # Perform auto-check and store result in submission answers
+                field_answers = submission_data.answers.get('field_answers', {})
+                correct_fields = correct_answers.get('answer_fields', {})
+                
+                correct_count = 0
+                total_count = len(correct_fields)
+                check_details = {}
+                
+                for field_id, correct_val in correct_fields.items():
+                    student_val = str(field_answers.get(str(field_id), '')).strip().lower()
+                    correct_val_normalized = str(correct_val).strip().lower()
+                    is_correct = student_val == correct_val_normalized
+                    check_details[field_id] = is_correct
+                    if is_correct:
+                        correct_count += 1
+                
+                # Inject auto_check_result into submission answers
+                submission_data.answers['auto_check_result'] = {
+                    'correct_count': correct_count,
+                    'total_count': total_count,
+                    'details': check_details
+                }
+                print(f"Auto-check result: {correct_count}/{total_count} correct")
+                # Don't auto-grade - teacher decides final score
+                score = None
+            else:
+                score = check_assignment_answers(
+                    assignment.assignment_type,
+                    submission_data.answers,
+                    correct_answers,
+                    assignment.max_score
+                )
             
             # Apply late penalty if enabled
             if score is not None and is_late and assignment.late_penalty_enabled:
@@ -736,6 +765,69 @@ async def submit_assignment(
             # If auto-grading fails, mark as ungraded
             score = None
             print(f"Auto-grading failed: {e}")
+    
+    # Handle auto-check for multi-task assignments
+    if assignment.assignment_type == 'multi_task' and assignment.content:
+        try:
+            content = json.loads(assignment.content)
+            tasks = content.get('tasks', [])
+            
+            # Frontend might send { "taskId": ... } (flat) or { "tasks": { "taskId": ... } } (nested)
+            # We need to handle both cases
+            task_answers = submission_data.answers.get('tasks')
+            is_nested = True
+            
+            if task_answers is None:
+                task_answers = submission_data.answers
+                is_nested = False
+            
+            # Process each task for auto-check
+            for task in tasks:
+                task_id = task.get('id')
+                task_type = task.get('task_type')
+                task_content = task.get('content', {})
+                answer_fields = task_content.get('answer_fields', [])
+                
+                # Only process tasks with answer_fields
+                if answer_fields and task_id in task_answers:
+                    task_answer = task_answers[task_id]
+                    field_answers = task_answer.get('field_answers', {})
+                    
+                    correct_count = 0
+                    total_count = len(answer_fields)
+                    check_details = {}
+                    
+                    # Check each answer field
+                    for field in answer_fields:
+                        field_id = field.get('id')
+                        correct_answer = field.get('correct_answer', '')
+                        # Handle both string and numeric IDs in keys
+                        student_answer = str(field_answers.get(field_id, field_answers.get(str(field_id), ''))).strip().lower()
+                        correct_answer_normalized = str(correct_answer).strip().lower()
+                        
+                        is_correct = student_answer == correct_answer_normalized
+                        check_details[field_id] = is_correct
+                        if is_correct:
+                            correct_count += 1
+                    
+                    # Store auto-check result for this task
+                    # Note: modifying task_answer modifies the dict inside task_answers
+                    if 'auto_check_result' not in task_answer:
+                         task_answer['auto_check_result'] = {}
+                         
+                    task_answer['auto_check_result'] = {
+                        'correct_count': correct_count,
+                        'total_count': total_count,
+                        'details': check_details
+                    }
+                    print(f"Multi-task auto-check for task {task_id}: {correct_count}/{total_count} correct")
+            
+            # If we had a nested 'tasks' key, ensure it's updated in the main dict
+            if is_nested:
+                submission_data.answers['tasks'] = task_answers
+            
+        except Exception as e:
+            print(f"Auto-check for multi-task failed: {e}")
     
     # Create submission
     submission = AssignmentSubmission(
