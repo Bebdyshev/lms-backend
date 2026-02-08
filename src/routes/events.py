@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, and_, or_, select
 from typing import List, Optional
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 from src.config import get_db
 from src.schemas.models import (
@@ -62,7 +62,7 @@ async def get_my_events(
         # Get groups where user is teacher or curator
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
-        user_group_ids = [g.id for g in teacher_groups + curator_groups]
+        user_group_ids = list(set([g.id for g in teacher_groups + curator_groups]))
         
         # Teachers/Curators see events for courses they teach? 
         # For now, let's assume they see events for groups they manage.
@@ -116,7 +116,7 @@ async def get_my_events(
     if end_date:
         query = query.filter(Event.start_datetime <= datetime.combine(end_date, datetime.max.time()))
     if upcoming_only:
-        query = query.filter(Event.start_datetime >= datetime.utcnow())
+        query = query.filter(Event.start_datetime >= datetime.now(timezone.utc))
     
     # Eager load relationships
     query = query.options(
@@ -135,7 +135,7 @@ async def get_my_events(
         from src.services.event_service import EventService
         
         # Determine range for expansion
-        exp_start = datetime.combine(start_date, datetime.min.time()) if start_date else datetime.utcnow()
+        exp_start = datetime.combine(start_date, datetime.min.time()) if start_date else datetime.now(timezone.utc)
         if end_date:
             exp_end = datetime.combine(end_date, datetime.max.time())
         else:
@@ -249,7 +249,7 @@ async def get_my_events(
         if end_date:
             ls_query = ls_query.filter(LessonSchedule.scheduled_at <= datetime.combine(end_date, datetime.max.time()))
         if upcoming_only:
-            ls_query = ls_query.filter(LessonSchedule.scheduled_at >= datetime.utcnow())
+            ls_query = ls_query.filter(LessonSchedule.scheduled_at >= datetime.now(timezone.utc))
             
         lessons_schedules = ls_query.options(
             joinedload(LessonSchedule.lesson),
@@ -333,8 +333,8 @@ async def get_my_events(
                 is_active=True,
                 is_recurring=False,
                 participant_count=0,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
                 groups=[sched.group.name] if sched.group else [],
                 group_ids=[sched.group_id],
                 courses=[]
@@ -389,7 +389,7 @@ async def get_calendar_events(
     elif current_user.role in ["teacher", "curator"]:
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
-        user_group_ids = [g.id for g in teacher_groups + curator_groups]
+        user_group_ids = list(set([g.id for g in teacher_groups + curator_groups]))
         
     elif current_user.role == "admin":
         user_group_ids = [g.id for g in db.query(Group).all()]
@@ -568,8 +568,8 @@ async def get_calendar_events(
                 is_active=True,
                 is_recurring=False,
                 participant_count=0,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
                 groups=[sched.group.name] if sched.group else [],
                 group_ids=[sched.group_id],
                 courses=[]
@@ -703,7 +703,7 @@ async def get_upcoming_events(
     """Get upcoming events for current user"""
     
     # Calculate date range
-    start_date = datetime.utcnow()
+    start_date = datetime.now(timezone.utc)
     end_date = start_date + timedelta(days=days_ahead)
     
     # Get user's groups and courses
@@ -735,7 +735,7 @@ async def get_upcoming_events(
     elif current_user.role in ["teacher", "curator"]:
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
-        user_group_ids = [g.id for g in teacher_groups + curator_groups]
+        user_group_ids = list(set([g.id for g in teacher_groups + curator_groups]))
         
     elif current_user.role == "admin":
         user_group_ids = [g.id for g in db.query(Group).all()]
@@ -1257,7 +1257,7 @@ async def update_event_attendance(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
         
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     # 2. Update records
     for record in data.attendance:

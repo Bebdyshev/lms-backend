@@ -5,7 +5,7 @@ Periodically checks for upcoming lessons (Events) and sends email reminders 30 m
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
 
@@ -59,7 +59,7 @@ class LessonReminderScheduler:
         
         while self.running:
             try:
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc)
                 logger.info(f"⏰ [SCHEDULER] Checking at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
                 self._check_and_send_reminders()
                 self._check_and_send_post_lesson_reminders()
@@ -73,7 +73,7 @@ class LessonReminderScheduler:
         """Check for upcoming lesson events and send reminders"""
         db = SessionLocal()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             # Look for lessons starting in 28-32 minutes (to account for check interval)
             reminder_time_start = now + timedelta(minutes=28)
             reminder_time_end = now + timedelta(minutes=32)
@@ -135,7 +135,7 @@ class LessonReminderScheduler:
         """Check for recently finished lessons and send reminders to teachers if attendance missing"""
         db = SessionLocal()
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             # Look for lessons that ended 15-20 minutes ago
             # If check_interval is 60s, a 5-minute window is safe
             reminder_time_start = now - timedelta(minutes=20)

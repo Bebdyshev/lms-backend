@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
 from typing import List, Optional
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pydantic import BaseModel
 
 from src.schemas.models import (
@@ -97,9 +97,9 @@ def award_points(db: Session, user_id: int, amount: int, reason: str, descriptio
 def get_monthly_points(db: Session, user_id: int, year: int = None, month: int = None) -> int:
     """Get total points for a user in a specific month."""
     if year is None:
-        year = datetime.utcnow().year
+        year = datetime.now(timezone.utc).year
     if month is None:
-        month = datetime.utcnow().month
+        month = datetime.now(timezone.utc).month
     
     result = db.query(func.coalesce(func.sum(PointHistory.amount), 0)).filter(
         PointHistory.user_id == user_id,
@@ -149,7 +149,7 @@ async def get_gamification_status(
     monthly_points = get_monthly_points(db, current_user.id)
     
     # Calculate rank this month
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     subquery = db.query(
         PointHistory.user_id,
         func.sum(PointHistory.amount).label('total')
@@ -269,7 +269,7 @@ async def get_leaderboard(
     db: Session = Depends(get_db)
 ):
     """Get leaderboard rankings."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     if period == "monthly":
         # Monthly leaderboard from PointHistory

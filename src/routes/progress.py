@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, and_, select
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 from src.config import get_db
 from src.schemas.models import (
@@ -109,21 +109,21 @@ def update_student_progress(user_id: int, course_id: int, db: Session):
             status="in_progress" if completion_percentage > 0 else "not_started",
             completion_percentage=completion_percentage,
             time_spent_minutes=int(total_time) if total_time else 0,
-            last_accessed=datetime.utcnow(),
-            completed_at=datetime.utcnow() if completion_percentage >= 100 else None
+            last_accessed=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc) if completion_percentage >= 100 else None
         )
         db.add(student_progress)
     else:
         # Обновляем существующую запись
         student_progress.completion_percentage = completion_percentage
         student_progress.time_spent_minutes = int(total_time) if total_time else 0
-        student_progress.last_accessed = datetime.utcnow()
+        student_progress.last_accessed = datetime.now(timezone.utc)
         
         # Обновляем статус
         if completion_percentage >= 100:
             student_progress.status = "completed"
             if not student_progress.completed_at:
-                student_progress.completed_at = datetime.utcnow()
+                student_progress.completed_at = datetime.now(timezone.utc)
         elif completion_percentage > 0:
             student_progress.status = "in_progress"
         else:
@@ -384,16 +384,16 @@ async def mark_lesson_complete(
             status="completed",
             completion_percentage=100,
             time_spent_minutes=time_spent,
-            last_accessed=datetime.utcnow(),
-            completed_at=datetime.utcnow()
+            last_accessed=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc)
         )
         db.add(progress)
     else:
         progress.status = "completed"
         progress.completion_percentage = 100
         progress.time_spent_minutes += time_spent
-        progress.last_accessed = datetime.utcnow()
-        progress.completed_at = datetime.utcnow()
+        progress.last_accessed = datetime.now(timezone.utc)
+        progress.completed_at = datetime.now(timezone.utc)
     
     # Обновляем общее время изучения пользователя
     current_user.total_study_time_minutes += time_spent
@@ -437,13 +437,13 @@ async def start_lesson(
             lesson_id=lesson_id,
             status="in_progress",
             completion_percentage=0,
-            last_accessed=datetime.utcnow()
+            last_accessed=datetime.now(timezone.utc)
         )
         db.add(progress)
     else:
         if progress.status == "not_started":
             progress.status = "in_progress"
-        progress.last_accessed = datetime.utcnow()
+        progress.last_accessed = datetime.now(timezone.utc)
     
     # Обновляем daily streak при начале урока
     update_daily_streak(current_user, db)
@@ -588,7 +588,7 @@ async def get_progress_analytics(
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Определяем временной диапазон
-    end_date = datetime.utcnow()
+    end_date = datetime.now(timezone.utc)
     start_date = end_date - timedelta(days=time_range)
     
     # Базовый запрос прогресса
@@ -1066,9 +1066,9 @@ async def mark_step_started(
     if existing_progress:
         # Если шаг уже начат, просто обновляем время посещения
         if existing_progress.started_at is None:
-            existing_progress.started_at = datetime.utcnow()
+            existing_progress.started_at = datetime.now(timezone.utc)
             existing_progress.status = "in_progress"
-        existing_progress.visited_at = datetime.utcnow()
+        existing_progress.visited_at = datetime.now(timezone.utc)
         
         # Обновляем daily streak при посещении шага
         update_daily_streak(current_user, db)
@@ -1084,8 +1084,8 @@ async def mark_step_started(
         lesson_id=lesson.id,
         step_id=step_id,
         status="in_progress",
-        started_at=datetime.utcnow(),
-        visited_at=datetime.utcnow(),
+        started_at=datetime.now(timezone.utc),
+        visited_at=datetime.now(timezone.utc),
         time_spent_minutes=0
     )
     
@@ -1141,21 +1141,21 @@ async def mark_step_visited(
             lesson_id=lesson.id,
             step_id=step_id,
             status="completed",
-            started_at=datetime.utcnow(),  # Устанавливаем время начала равным времени завершения
-            visited_at=datetime.utcnow(),
-            completed_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),  # Устанавливаем время начала равным времени завершения
+            visited_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
             time_spent_minutes=step_data.time_spent_minutes
         )
         db.add(step_progress)
     else:
         # Обновляем существующую запись
         step_progress.status = "completed"
-        step_progress.visited_at = datetime.utcnow()
-        step_progress.completed_at = datetime.utcnow()
+        step_progress.visited_at = datetime.now(timezone.utc)
+        step_progress.completed_at = datetime.now(timezone.utc)
         
         # Если не было времени начала, устанавливаем его
         if step_progress.started_at is None:
-            step_progress.started_at = datetime.utcnow()
+            step_progress.started_at = datetime.now(timezone.utc)
         
         if step_progress.time_spent_minutes is None:
             step_progress.time_spent_minutes = 0
@@ -1607,7 +1607,7 @@ async def create_quiz_attempt(
     """Сохранить попытку прохождения квиза или обновить черновик"""
     try:
         # Draft expiration cutoff (7 days)
-        stale_cutoff = datetime.utcnow() - timedelta(days=7)
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
         
         # Delete stale drafts for this step (cleanup)
         db.query(QuizAttempt).filter(
@@ -1639,7 +1639,7 @@ async def create_quiz_attempt(
             existing_draft.answers = attempt_data.answers
             existing_draft.current_question_index = attempt_data.current_question_index
             existing_draft.time_spent_seconds = attempt_data.time_spent_seconds
-            existing_draft.updated_at = datetime.utcnow()
+            existing_draft.updated_at = datetime.now(timezone.utc)
             
             if not attempt_data.is_draft:
                 # Finalizing the quiz
@@ -1647,7 +1647,7 @@ async def create_quiz_attempt(
                 existing_draft.correct_answers = attempt_data.correct_answers
                 existing_draft.score_percentage = attempt_data.score_percentage
                 existing_draft.is_graded = attempt_data.is_graded
-                existing_draft.completed_at = datetime.utcnow()
+                existing_draft.completed_at = datetime.now(timezone.utc)
                 
                 # Points are awarded only for assignments, not quizzes
             
@@ -1671,8 +1671,8 @@ async def create_quiz_attempt(
             is_draft=attempt_data.is_draft,
             current_question_index=attempt_data.current_question_index,
             quiz_content_hash=attempt_data.quiz_content_hash,
-            completed_at=None if attempt_data.is_draft else datetime.utcnow(),
-            created_at=datetime.utcnow()
+            completed_at=None if attempt_data.is_draft else datetime.now(timezone.utc),
+            created_at=datetime.now(timezone.utc)
         )
         
         db.add(quiz_attempt)
@@ -1716,7 +1716,7 @@ async def update_quiz_attempt(
         if update_data.is_draft is not None and not update_data.is_draft:
             attempt.is_draft = False
             attempt.is_draft = False
-            attempt.completed_at = datetime.utcnow()
+            attempt.completed_at = datetime.now(timezone.utc)
             
             # Points are awarded only for assignments, not quizzes
             if update_data.total_questions is not None:
@@ -1728,7 +1728,7 @@ async def update_quiz_attempt(
             if update_data.is_graded is not None:
                 attempt.is_graded = update_data.is_graded
         
-        attempt.updated_at = datetime.utcnow()
+        attempt.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(attempt)
         
@@ -1765,7 +1765,7 @@ async def grade_quiz_attempt(
         attempt.feedback = grade_data.feedback
         attempt.is_graded = True
         attempt.graded_by = current_user.id
-        attempt.graded_at = datetime.utcnow()
+        attempt.graded_at = datetime.now(timezone.utc)
         
         db.commit()
         db.refresh(attempt)

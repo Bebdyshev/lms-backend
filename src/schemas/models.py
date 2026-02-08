@@ -110,7 +110,7 @@ class FavoriteFlashcard(Base):
     lesson_id = Column(Integer, ForeignKey("lessons.id", ondelete="CASCADE"), nullable=True)
     course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=True)
     flashcard_data = Column(Text, nullable=False)  # JSON данные самой карточки
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("UserInDB", back_populates="favorite_flashcards")
@@ -251,8 +251,8 @@ class AssignmentZeroSubmission(Base):
     is_draft = Column(Boolean, default=True)  # True = in progress, False = submitted
     last_saved_step = Column(Integer, default=1)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationship
     user = relationship("UserInDB", backref="assignment_zero_submission")
@@ -544,8 +544,8 @@ class UserInDB(Base):
     role = Column(String, nullable=False, default="student")  # student, teacher, head_curator, curator, admin
     avatar_url = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     refresh_token = Column(String, nullable=True)
     
     # Push notifications
@@ -598,7 +598,7 @@ class PointHistory(Base):
     amount = Column(Integer, nullable=False)  # Can be positive or negative
     reason = Column(String, nullable=False)  # 'homework', 'quiz', 'teacher_bonus', 'streak_bonus', 'flashcard_review'
     description = Column(String, nullable=True)  # Optional details
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     
     # Relationship
     user = relationship("UserInDB", back_populates="point_history")
@@ -660,7 +660,7 @@ class Group(Base):
     description = Column(Text, nullable=True)
     teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     curator_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_active = Column(Boolean, default=True)
     schedule_config = Column(JSONB, nullable=True)
 
@@ -708,7 +708,7 @@ class GroupStudent(Base):
     id = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey("groups.id"), nullable=False)
     student_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     group = relationship("Group", back_populates="students")
@@ -734,7 +734,7 @@ class Step(Base):
     original_image_url = Column(String, nullable=True)  # For SAT question images
     attachments = Column(Text, nullable=True)  # JSON array of file attachments
     order_index = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # Quiz versioning: SHA-256 hash of quiz JSON content to detect changes
     content_hash = Column(String(64), nullable=True)
     
@@ -782,8 +782,8 @@ class Course(Base):
     teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     estimated_duration_minutes = Column(Integer, default=0)
     is_active = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     teacher = relationship("UserInDB", back_populates="created_courses")
@@ -802,7 +802,7 @@ class CourseHeadTeacher(Base):
     __tablename__ = "course_head_teachers"
     course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), primary_key=True)
     head_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class CourseGroupAccess(Base):
     __tablename__ = "course_group_access"
@@ -810,7 +810,7 @@ class CourseGroupAccess(Base):
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     group_id = Column(Integer, ForeignKey("groups.id"), nullable=False)
     granted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    granted_at = Column(DateTime, default=datetime.utcnow)
+    granted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_active = Column(Boolean, default=True)
     
     # Relationships
@@ -825,7 +825,7 @@ class Module(Base):
     title = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     order_index = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     course = relationship("Course", back_populates="modules")
@@ -839,7 +839,7 @@ class Lesson(Base):
     description = Column(Text, nullable=True)
     duration_minutes = Column(Integer, default=0)
     order_index = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # Explicit next-lesson pointer within the same course
     next_lesson_id = Column(Integer, ForeignKey("lessons.id"), nullable=True)
     # Flag to mark lesson as initially unlocked (bypasses sequential access)
@@ -859,7 +859,7 @@ class LessonMaterial(Base):
     file_type = Column(String, nullable=False)  # pdf, docx, image, etc.
     file_url = Column(String, nullable=False)
     file_size_bytes = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     lesson = relationship("Lesson", back_populates="materials")
@@ -1014,7 +1014,7 @@ class Assignment(Base):
     max_file_size_mb = Column(Integer, default=10)  # Max file size in MB
     is_active = Column(Boolean, default=True)
     is_hidden = Column(Boolean, default=False)  # Hide old assignments from all users
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Late submission settings
     late_penalty_enabled = Column(Boolean, default=False)
@@ -1041,7 +1041,7 @@ class AssignmentSubmission(Base):
     seen_by_student = Column(Boolean, default=False)  # Has student seen the graded result
     feedback = Column(Text, nullable=True)  # Teacher feedback
     graded_by = Column(Integer, ForeignKey("users.id"), nullable=True)  # Teacher who graded
-    submitted_at = Column(DateTime, default=datetime.utcnow)
+    submitted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_late = Column(Boolean, default=False)
     graded_at = Column(DateTime, nullable=True)
     
@@ -1075,7 +1075,7 @@ class AssignmentExtension(Base):
     extended_deadline = Column(DateTime, nullable=False)  # New deadline for this student
     reason = Column(Text, nullable=True)  # Optional reason for extension
     granted_by = Column(Integer, ForeignKey("users.id"), nullable=False)  # Teacher who granted extension
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Unique constraint - one extension per student per assignment
     __table_args__ = (
@@ -1094,11 +1094,11 @@ class GroupAssignment(Base):
     assignment_id = Column(Integer, ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False)
     lesson_schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="SET NULL"), nullable=True)
     
-    assigned_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    assigned_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     due_date = Column(DateTime, nullable=True)
     
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     group = relationship("Group")
@@ -1116,6 +1116,13 @@ class GroupAssignmentSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator('assigned_at', 'due_date', mode='after')
+    @classmethod
+    def ensure_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        if v and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 class AssignmentSchema(BaseModel):
     id: int
@@ -1148,6 +1155,13 @@ class AssignmentSchema(BaseModel):
                 return json.loads(v)
             except json.JSONDecodeError:
                 return {}
+        return v
+
+    @field_validator('due_date', 'event_start_datetime', 'created_at', mode='after')
+    @classmethod
+    def ensure_utc(cls, v: Optional[datetime]) -> Optional[datetime]:
+        if v and v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
         return v
     
     class Config:
@@ -1254,7 +1268,7 @@ class Enrollment(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
-    enrolled_at = Column(DateTime, default=datetime.utcnow)
+    enrolled_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
     
@@ -1274,7 +1288,7 @@ class StudentProgress(Base):
     status = Column(String, nullable=False, default="not_started")  # not_started, in_progress, completed
     completion_percentage = Column(Integer, default=0)  # 0-100
     time_spent_minutes = Column(Integer, default=0)
-    last_accessed = Column(DateTime, default=datetime.utcnow)
+    last_accessed = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)
     
     # Relationships
@@ -1326,7 +1340,7 @@ class ProgressSnapshot(Base):
     total_assignments = Column(Integer, default=0, nullable=False)
     assignment_score_percentage = Column(Float, default=0.0, nullable=False)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("UserInDB")
@@ -1377,8 +1391,8 @@ class StudentCourseSummary(Base):
     last_lesson_title = Column(String, nullable=True)
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("UserInDB")
@@ -1420,8 +1434,8 @@ class CourseAnalyticsCache(Base):
     total_assignments = Column(Integer, default=0)
     
     # Timestamps
-    last_calculated_at = Column(DateTime, default=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    last_calculated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     course = relationship("Course")
@@ -1480,8 +1494,8 @@ class QuizAttempt(Base):
     answers = Column(Text, nullable=True)  # JSON string of user answers
     time_spent_seconds = Column(Integer, nullable=True)
     completed_at = Column(DateTime, nullable=True)  # NULL for drafts
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)  # Track last update
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, nullable=True, onupdate=lambda: datetime.now(timezone.utc))  # Track last update
     
     # Draft/In-progress support
     is_draft = Column(Boolean, default=False, nullable=False)  # True = in-progress, not submitted
@@ -1700,7 +1714,7 @@ class Notification(Base):
     notification_type = Column(String, nullable=False)  # assignment, message, course, system
     related_id = Column(Integer, nullable=True)  # ID of related object (assignment, course, etc.)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("UserInDB", back_populates="notifications")
@@ -1741,8 +1755,8 @@ class Event(Base):
     recurrence_end_date = Column(Date, nullable=True)  # Когда заканчивается повторение
     max_participants = Column(Integer, nullable=True)  # Для вебинаров
     teacher_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Assigned teacher
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     creator = relationship("UserInDB", foreign_keys=[created_by])
@@ -1757,7 +1771,7 @@ class EventGroup(Base):
     id = Column(Integer, primary_key=True, index=True)
     event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
     group_id = Column(Integer, ForeignKey("groups.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     event = relationship("Event", back_populates="event_groups")
@@ -1774,7 +1788,7 @@ class EventCourse(Base):
     id = Column(Integer, primary_key=True, index=True)
     event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     event = relationship("Event", back_populates="event_courses")
@@ -1792,7 +1806,7 @@ class EventParticipant(Base):
     event_id = Column(Integer, ForeignKey("events.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     registration_status = Column(String, default="registered")  # "registered", "attended", "missed"
-    registered_at = Column(DateTime, default=datetime.utcnow)
+    registered_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     attended_at = Column(DateTime, nullable=True)
     activity_score = Column(Float, nullable=True)  # Activity score out of 10
     
@@ -1819,7 +1833,7 @@ class MissedAttendanceLog(Base):
     teacher_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     
     # When this was detected as missing
-    detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    detected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     
     # Expected vs recorded at time of detection
     expected_count = Column(Integer, nullable=False)
@@ -1980,8 +1994,8 @@ class Attendance(Base):
     score = Column(Integer, default=0) # 0, 5, 12, 15
     activity_score = Column(Float, nullable=True)  # Activity score out of 10
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     lesson_schedule = relationship("LessonSchedule", back_populates="attendances")
@@ -2034,8 +2048,8 @@ class LeaderboardEntry(Base):
     weekly_evaluation = Column(Float, default=0.0)
     extra_points = Column(Float, default=0.0)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("UserInDB", foreign_keys=[user_id])
@@ -2060,8 +2074,8 @@ class LeaderboardConfig(Base):
     weekly_evaluation_enabled = Column(Boolean, default=True)
     extra_points_enabled = Column(Boolean, default=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     group = relationship("Group", foreign_keys=[group_id])
@@ -2152,8 +2166,8 @@ class CuratorRating(Base):
     extra_points = Column(Float, default=0.0)
     comment = Column(Text, nullable=True)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     curator = relationship("UserInDB", foreign_keys=[curator_id])
@@ -2207,7 +2221,7 @@ class QuestionErrorReport(Base):
     message = Column(Text, nullable=False)
     suggested_answer = Column(Text, nullable=True)  # User's suggested correct answer
     status = Column(String, default="pending", nullable=False)  # pending, reviewed, resolved, dismissed
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     resolved_at = Column(DateTime, nullable=True)
     resolved_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     
@@ -2230,7 +2244,7 @@ class ManualLessonUnlock(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
     granted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     lesson = relationship("Lesson")

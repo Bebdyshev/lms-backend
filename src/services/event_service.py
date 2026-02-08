@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 import calendar as cal_module
 from typing import List, Optional
 from sqlalchemy.orm import Session, joinedload
@@ -140,7 +140,7 @@ class EventService:
         ).all()
         
         # 2. Search for the instance in a reasonable window (e.g. 3 months back, 6 months forward)
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         start_date = now - timedelta(days=90)
         end_date = now + timedelta(days=180)
         

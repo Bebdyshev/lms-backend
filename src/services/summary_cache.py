@@ -4,7 +4,7 @@ Service for maintaining cached progress summaries.
 This service updates StudentCourseSummary and CourseAnalyticsCache
 tables when progress changes occur, keeping cached data in sync.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -92,13 +92,13 @@ def update_student_course_summary(
         summary.total_time_spent_minutes += time_spent_delta
     
     # Update last activity
-    summary.last_activity_at = datetime.utcnow()
+    summary.last_activity_at = datetime.now(timezone.utc)
     if lesson_id:
         summary.last_lesson_id = lesson_id
     if lesson_title:
         summary.last_lesson_title = lesson_title
     
-    summary.updated_at = datetime.utcnow()
+    summary.updated_at = datetime.now(timezone.utc)
     
     return summary
 
@@ -144,7 +144,7 @@ def update_summary_for_assignment(
             summary.total_assignment_score / summary.max_possible_score * 100
         )
     
-    summary.updated_at = datetime.utcnow()
+    summary.updated_at = datetime.now(timezone.utc)
 
 
 def recalculate_student_summary(
@@ -225,6 +225,6 @@ def recalculate_student_summary(
         (summary.total_assignment_score / summary.max_possible_score * 100)
         if summary.max_possible_score > 0 else 0
     )
-    summary.updated_at = datetime.utcnow()
+    summary.updated_at = datetime.now(timezone.utc)
     
     return summary
