@@ -231,8 +231,11 @@ async def create_assignment(
     validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
     
     # Validate due date
-    if assignment_data.due_date and to_naive_utc(assignment_data.due_date) < datetime.now(timezone.utc).replace(tzinfo=None).replace(tzinfo=None):
-        raise HTTPException(status_code=400, detail="Due date cannot be in the past")
+    # if assignment_data.due_date and to_naive_utc(assignment_data.due_date) < datetime.now(timezone.utc).replace(tzinfo=None).replace(tzinfo=None):
+    #     raise HTTPException(status_code=400, detail="Due date cannot be in the past")
+    
+    if assignment_data.due_date:
+        print(f"DEBUG: Assignment creation - Due Date: {assignment_data.due_date}, Now (UTC): {datetime.now(timezone.utc)}")
         
     # Determine target groups
     target_group_ids = []
@@ -519,8 +522,8 @@ async def update_assignment(
     validate_assignment_content(assignment_data.assignment_type, assignment_data.content)
     
     # Validate due date
-    if assignment_data.due_date and to_naive_utc(assignment_data.due_date) < datetime.now(timezone.utc).replace(tzinfo=None):
-        raise HTTPException(status_code=400, detail="Due date cannot be in the past")
+    # if assignment_data.due_date and to_naive_utc(assignment_data.due_date) < datetime.now(timezone.utc).replace(tzinfo=None):
+    #     raise HTTPException(status_code=400, detail="Due date cannot be in the past")
     
     # Update fields
     assignment.title = assignment_data.title
