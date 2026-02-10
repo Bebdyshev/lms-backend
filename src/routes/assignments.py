@@ -188,6 +188,80 @@ async def toggle_assignment_visibility(
     
     return _to_enriched_schema(assignment)
 
+@router.get("/assigned-lessons/{course_id}")
+async def get_assigned_lessons_for_course(
+    course_id: int,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all lessons of a course that have already been assigned in homework.
+    Returns a list of { lesson_id, assignment_id, assignment_title, group_id, group_name, created_at }.
+    Helps teachers avoid assigning the same lesson twice.
+    """
+    from src.schemas.models import Group
+
+    # Get all lesson IDs for this course
+    course_lesson_ids = (
+        db.query(Lesson.id)
+        .join(Module)
+        .filter(Module.course_id == course_id)
+        .subquery()
+    )
+
+    # Only show assignments from groups the current user owns
+    if current_user.role == "admin":
+        my_group_ids = None  # admins see everything
+    else:
+        my_groups = db.query(Group).filter(
+            (Group.teacher_id == current_user.id) | (Group.curator_id == current_user.id)
+        ).all()
+        my_group_ids = [g.id for g in my_groups]
+
+    # Query AssignmentLinkedLesson joined with Assignment to get details
+    query = (
+        db.query(
+            AssignmentLinkedLesson.lesson_id,
+            Assignment.id.label("assignment_id"),
+            Assignment.title.label("assignment_title"),
+            Assignment.group_id,
+            Assignment.created_at,
+        )
+        .join(Assignment, AssignmentLinkedLesson.assignment_id == Assignment.id)
+        .filter(
+            AssignmentLinkedLesson.lesson_id.in_(course_lesson_ids),
+            Assignment.is_active == True,
+            (Assignment.is_hidden == False) | (Assignment.is_hidden == None),
+        )
+    )
+
+    # Filter to only the current user's groups
+    if my_group_ids is not None:
+        query = query.filter(Assignment.group_id.in_(my_group_ids))
+
+    linked = query.all()
+
+    # Collect group names
+    group_ids = list(set(r.group_id for r in linked if r.group_id))
+    groups_map = {}
+    if group_ids:
+        groups_list = db.query(Group).filter(Group.id.in_(group_ids)).all()
+        groups_map = {g.id: g.name for g in groups_list}
+
+    result = []
+    for row in linked:
+        result.append({
+            "lesson_id": row.lesson_id,
+            "assignment_id": row.assignment_id,
+            "assignment_title": row.assignment_title,
+            "group_id": row.group_id,
+            "group_name": groups_map.get(row.group_id, ""),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        })
+
+    return result
+
+
 @router.post("/", response_model=AssignmentSchema)
 async def create_assignment(
     assignment_data: AssignmentCreateSchema,

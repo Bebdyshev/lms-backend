@@ -882,30 +882,40 @@ async def get_module_lessons(
 @router.get("/{course_id}/lessons", response_model=List[LessonSchema])
 async def get_course_lessons(
     course_id: int,
+    lightweight: bool = False,
     current_user: UserInDB = Depends(get_current_user_dependency),
     db: Session = Depends(get_db)
 ):
-    """Get all lessons for a course with module information"""
+    """Get all lessons for a course with module information.
+    
+    Set lightweight=true to skip loading steps (faster for dropdowns/selectors).
+    """
     # Check course access
     if not check_course_access(course_id, current_user, db):
         raise HTTPException(status_code=403, detail="Access denied to this course")
     
-    # Get all lessons for the course with module information and steps
-    
-    lessons = db.query(Lesson).join(Module).options(
-        joinedload(Lesson.steps)
-    ).filter(
+    # Get all lessons for the course with module information
+    query = db.query(Lesson).join(Module).filter(
         Module.course_id == course_id
-    ).order_by(Module.order_index, Lesson.order_index).all()
+    )
+    
+    if not lightweight:
+        query = query.options(joinedload(Lesson.steps))
+    
+    lessons = query.order_by(Module.order_index, Lesson.order_index).all()
     
     lessons_data = []
     for lesson in lessons:
-        # Get steps for this lesson
-        steps = sorted(lesson.steps, key=lambda x: x.order_index) if lesson.steps else []
-        
         lesson_schema = LessonSchema.from_orm(lesson)
-        lesson_schema.steps = [StepSchema.from_orm(step) for step in steps]
-        lesson_schema.total_steps = len(steps)
+        
+        if not lightweight:
+            # Get steps for this lesson
+            steps = sorted(lesson.steps, key=lambda x: x.order_index) if lesson.steps else []
+            lesson_schema.steps = [StepSchema.from_orm(step) for step in steps]
+            lesson_schema.total_steps = len(steps)
+        else:
+            lesson_schema.steps = []
+            lesson_schema.total_steps = 0
         
         lessons_data.append(lesson_schema)
     
