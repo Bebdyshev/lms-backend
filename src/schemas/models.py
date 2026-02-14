@@ -737,6 +737,7 @@ class Step(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # Quiz versioning: SHA-256 hash of quiz JSON content to detect changes
     content_hash = Column(String(64), nullable=True)
+    is_optional = Column(Boolean, default=False)
     
     # Relationships
     lesson = relationship("Lesson", back_populates="steps")
@@ -755,6 +756,7 @@ class StepSchema(BaseModel):
     created_at: datetime
     content_hash: Optional[str] = None
     is_completed: Optional[bool] = False
+    is_optional: Optional[bool] = False
     
     class Config:
         from_attributes = True
@@ -768,6 +770,7 @@ class StepCreateSchema(BaseModel):
     attachments: Optional[str] = None
     order_index: int = 0
     content_hash: Optional[str] = None
+    is_optional: Optional[bool] = False
 
 # =============================================================================
 # COURSE MODELS - Структура: курс → модули → уроки → шаги

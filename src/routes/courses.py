@@ -1433,7 +1433,8 @@ async def create_step(
         content_text=content_text,
         original_image_url=step_data.original_image_url,
         attachments=step_data.attachments,
-        order_index=calculated_order_index
+        order_index=calculated_order_index,
+        is_optional=step_data.is_optional or False
     )
     
     db.add(new_step)
@@ -1514,6 +1515,9 @@ async def update_step(
     # Update attachments if provided
     if step_data.attachments is not None:
         step.attachments = step_data.attachments
+        
+    if step_data.is_optional is not None:
+        step.is_optional = step_data.is_optional
     
     # Only update order_index if it's not 0 (preserve existing order)
     if step_data.order_index != 0:
