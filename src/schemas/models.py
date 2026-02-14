@@ -2273,3 +2273,24 @@ class ManualLessonUnlockCreateSchema(BaseModel):
     user_id: Optional[int] = None
     group_id: Optional[int] = None
     unlock_all_teacher_groups: Optional[bool] = False
+
+
+# =============================================================================
+# DAILY QUESTION COMPLETIONS
+# =============================================================================
+
+class DailyQuestionCompletion(Base):
+    """Tracks when a student completes their daily recommended questions."""
+    __tablename__ = "daily_question_completions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    completed_date = Column(Date, nullable=False, index=True)
+    questions_data = Column(JSON, nullable=True)  # Store which questions were answered
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    user = relationship("UserInDB", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'completed_date', name='uq_daily_question_user_date'),
+    )

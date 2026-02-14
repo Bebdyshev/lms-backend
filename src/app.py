@@ -23,6 +23,7 @@ from src.routes.questions import router as questions_router
 from src.routes.gamification import router as gamification_router
 from src.routes.ai_tools import router as ai_tools_router
 from src.routes.head_teacher import router as head_teacher_router
+from src.routes.daily_questions import router as daily_questions_router
 from dotenv import load_dotenv
 import logging
 import os
@@ -108,6 +109,7 @@ app.include_router(questions_router, tags=["Questions"])
 app.include_router(gamification_router, prefix="/gamification", tags=["Gamification"])
 app.include_router(ai_tools_router, prefix="/ai-tools", tags=["AI Tools"])
 app.include_router(head_teacher_router, prefix="/head-teacher", tags=["Head Teacher"])
+app.include_router(daily_questions_router, prefix="/daily-questions", tags=["Daily Questions"])
 
 # Root endpoint with ASCII art
 @app.get("/")
