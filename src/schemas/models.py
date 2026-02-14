@@ -2287,6 +2287,8 @@ class DailyQuestionCompletion(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     completed_date = Column(Date, nullable=False, index=True)
     questions_data = Column(JSON, nullable=True)  # Store which questions were answered
+    score = Column(Integer, nullable=True)  # Number of correct answers
+    total_questions = Column(Integer, nullable=True)  # Total number of questions
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     user = relationship("UserInDB", foreign_keys=[user_id])

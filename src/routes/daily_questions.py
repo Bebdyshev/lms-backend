@@ -16,15 +16,8 @@ logger = logging.getLogger(__name__)
 
 # External API config
 MASTER_ED_API_URL = "https://api.mastereducation.kz/api/lms/students/question-recommendations"
-MASTER_ED_API_KEY = os.getenv("MASTER_ED_API_KEY", "LMS_MasterEd_2025_SecureKey_XyZ789")
+MASTER_ED_API_KEY = os.getenv("MASTEREDU_API_KEY")
 MASTER_ED_BASE_URL = "https://api.mastereducation.kz/api"
-
-# Log configuration on module load
-logger.info(f"Daily questions API configured:")
-logger.info(f"  URL: {MASTER_ED_API_URL}")
-logger.info(f"  API Key: {'***' + MASTER_ED_API_KEY[-10:] if MASTER_ED_API_KEY else 'NOT SET'}")
-logger.info(f"  Base URL: {MASTER_ED_BASE_URL}")
-
 
 # =============================================================================
 # SCHEMAS
@@ -60,6 +53,8 @@ class DailyQuestionsStatusResponse(BaseModel):
 
 class CompleteDailyQuestionsRequest(BaseModel):
     questions_data: Optional[dict] = None  # Optional: store which questions were answered
+    score: Optional[int] = None  # Number of correct answers
+    total_questions: Optional[int] = None  # Total number of questions
 
 
 # =============================================================================
@@ -83,7 +78,9 @@ async def get_daily_questions_status(
 
     return {
         "completed_today": completion is not None,
-        "completed_at": completion.created_at.isoformat() if completion else None
+        "completed_at": completion.created_at.isoformat() if completion else None,
+        "score": completion.score if completion else None,
+        "total_questions": completion.total_questions if completion else None
     }
 
 
@@ -134,11 +131,29 @@ async def get_daily_question_recommendations(
 
             data = response.json()
 
-            # Debug logging for specific user
-            if current_user.email == "nurassylzhunussov@gmail.com":
-                logger.info(f"DEBUG - Raw API response for {current_user.email}:")
-                logger.info(f"Math questions: {data.get('mathRecommendations', {}).get('questions', [])}")
-                logger.info(f"Verbal questions: {data.get('verbalRecommendations', {}).get('questions', [])}")
+            # Debug logging - show raw response structure
+            logger.info(f"DEBUG - Raw API response for {current_user.email}:")
+            logger.info(f"Response keys: {list(data.keys())}")
+            logger.info(f"Email: {data.get('email')}")
+            logger.info(f"Student name: {data.get('studentName')}")
+            logger.info(f"Math test ID: {data.get('mathTestId')}")
+            logger.info(f"Verbal test ID: {data.get('verbalTestId')}")
+            
+            # Log math recommendations
+            if data.get('mathRecommendations'):
+                math_questions = data['mathRecommendations'].get('questions', [])
+                logger.info(f"Math recommendations: {len(math_questions)} questions")
+                logger.info(f"Math reasoning: {data['mathRecommendations'].get('reasoning')}")
+                for idx, q in enumerate(math_questions[:2]):  # Show first 2 questions
+                    logger.info(f"  Math Q{idx+1}: ID={q.get('questionId')}, text='{q.get('text')[:50]}...', imageUrl={q.get('imageUrl')}")
+            
+            # Log verbal recommendations
+            if data.get('verbalRecommendations'):
+                verbal_questions = data['verbalRecommendations'].get('questions', [])
+                logger.info(f"Verbal recommendations: {len(verbal_questions)} questions")
+                logger.info(f"Verbal reasoning: {data['verbalRecommendations'].get('reasoning')}")
+                for idx, q in enumerate(verbal_questions[:2]):  # Show first 2 questions
+                    logger.info(f"  Verbal Q{idx+1}: ID={q.get('questionId')}, text='{q.get('text')[:50]}...', imageUrl={q.get('imageUrl')}")
 
             # Prepend base URL to image URLs and clean up None values
             if data.get("mathRecommendations") and data["mathRecommendations"].get("questions"):
@@ -155,18 +170,21 @@ async def get_daily_question_recommendations(
                     else:
                         q["imageUrl"] = None  # Convert string "None" to actual None
 
-            # More debug logging after URL prepending
-            if current_user.email == "nurassylzhunussov@gmail.com":
-                logger.info(f"DEBUG - After URL processing for {current_user.email}:")
-                if data.get("mathRecommendations"):
-                    for idx, q in enumerate(data["mathRecommendations"]["questions"]):
-                        logger.info(f"Math Q{idx+1}: text='{q.get('text')}', imageUrl='{q.get('imageUrl')}'")
-                if data.get("verbalRecommendations"):
-                    for idx, q in enumerate(data["verbalRecommendations"]["questions"]):
-                        logger.info(f"Verbal Q{idx+1}: text='{q.get('text')}', imageUrl='{q.get('imageUrl')}'")
+            # Log final processed data
+            logger.info(f"DEBUG - After URL processing for {current_user.email}:")
+            if data.get("mathRecommendations") and data["mathRecommendations"].get("questions"):
+                logger.info(f"Math questions count: {len(data['mathRecommendations']['questions'])}")
+                for idx, q in enumerate(data["mathRecommendations"]["questions"][:2]):
+                    logger.info(f"  Processed Math Q{idx+1}: imageUrl='{q.get('imageUrl')}'")
+            
+            if data.get("verbalRecommendations") and data["verbalRecommendations"].get("questions"):
+                logger.info(f"Verbal questions count: {len(data['verbalRecommendations']['questions'])}")
+                for idx, q in enumerate(data["verbalRecommendations"]["questions"][:2]):
+                    logger.info(f"  Processed Verbal Q{idx+1}: imageUrl='{q.get('imageUrl')}'")
 
             # Success - return data
             logger.info(f"Successfully fetched recommendations for {current_user.email}")
+            logger.info(f"Returning data with keys: {list(data.keys())}")
             return data
 
         except httpx.ReadTimeout:
@@ -215,15 +233,27 @@ async def complete_daily_questions(
     ).first()
 
     if existing:
-        return {"message": "Daily questions already completed today", "completed_today": True}
+        return {
+            "message": "Daily questions already completed today",
+            "completed_today": True,
+            "score": existing.score,
+            "total_questions": existing.total_questions
+        }
 
     completion = DailyQuestionCompletion(
         user_id=current_user.id,
         completed_date=today,
         questions_data=request.questions_data,
+        score=request.score,
+        total_questions=request.total_questions,
         created_at=datetime.now(timezone.utc)
     )
     db.add(completion)
     db.commit()
 
-    return {"message": "Daily questions completed!", "completed_today": True}
+    return {
+        "message": "Daily questions completed!",
+        "completed_today": True,
+        "score": request.score,
+        "total_questions": request.total_questions
+    }
