@@ -1578,6 +1578,103 @@ async def reorder_steps(
     
     return {"message": "Steps reordered successfully", "step_ids": step_ids}
 
+@router.post("/courses/{course_id}/lessons/{lesson_id}/split")
+async def split_lesson(
+    course_id: int,
+    lesson_id: int,
+    split_data: dict,  # Expected format: {"after_step_index": <int>}
+    current_user: UserInDB = Depends(get_current_user_dependency),
+    db: Session = Depends(get_db)
+):
+    """Split a lesson into two at a given step index. Steps after the split point move to a new lesson."""
+    # Validate lesson
+    lesson = db.query(Lesson).filter(Lesson.id == lesson_id).first()
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    module = db.query(Module).filter(Module.id == lesson.module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+    
+    course = db.query(Course).filter(Course.id == module.course_id).first()
+    if not course or course.id != course_id:
+        raise HTTPException(status_code=404, detail="Course not found or mismatch")
+    
+    if current_user.role != "admin" and course.teacher_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    after_step_index = split_data.get("after_step_index")
+    if after_step_index is None:
+        raise HTTPException(status_code=400, detail="after_step_index is required")
+    
+    # Get all steps ordered
+    steps = db.query(Step).filter(Step.lesson_id == lesson_id).order_by(Step.order_index).all()
+    
+    if after_step_index < 0 or after_step_index >= len(steps) - 1:
+        raise HTTPException(status_code=400, detail="after_step_index must be >= 0 and < total_steps - 1")
+    
+    # Steps to keep in the original lesson (indices 0..after_step_index)
+    steps_to_keep = steps[:after_step_index + 1]
+    # Steps to move to the new lesson
+    steps_to_move = steps[after_step_index + 1:]
+    
+    if not steps_to_move:
+        raise HTTPException(status_code=400, detail="No steps to move after split point")
+    
+    # Shift subsequent lessons in the module to make room
+    subsequent_lessons = db.query(Lesson).filter(
+        Lesson.module_id == lesson.module_id,
+        Lesson.order_index > lesson.order_index
+    ).all()
+    for subsequent in subsequent_lessons:
+        subsequent.order_index += 1
+    
+    # Create new lesson
+    new_lesson = Lesson(
+        module_id=lesson.module_id,
+        title=f"{lesson.title} (Part 2)",
+        description=lesson.description,
+        duration_minutes=0,
+        order_index=lesson.order_index + 1,
+        is_initially_unlocked=lesson.is_initially_unlocked,
+    )
+    db.add(new_lesson)
+    db.flush()  # Get the new lesson ID
+    
+    # Update next_lesson_id pointers
+    old_next = lesson.next_lesson_id
+    lesson.next_lesson_id = new_lesson.id
+    new_lesson.next_lesson_id = old_next
+    
+    # Move steps to the new lesson and renumber
+    moved_step_ids = []
+    for new_order, step in enumerate(steps_to_move, start=1):
+        moved_step_ids.append(step.id)
+        step.lesson_id = new_lesson.id
+        step.order_index = new_order
+    
+    # Update StepProgress.lesson_id for moved steps
+    if moved_step_ids:
+        from src.schemas.models import StepProgress
+        db.query(StepProgress).filter(
+            StepProgress.step_id.in_(moved_step_ids)
+        ).update(
+            {StepProgress.lesson_id: new_lesson.id},
+            synchronize_session='fetch'
+        )
+    
+    db.commit()
+    db.refresh(lesson)
+    db.refresh(new_lesson)
+    
+    return {
+        "message": "Lesson split successfully",
+        "original_lesson_id": lesson.id,
+        "new_lesson_id": new_lesson.id,
+        "new_lesson_title": new_lesson.title,
+        "steps_moved": len(steps_to_move),
+    }
+
 @router.delete("/steps/{step_id}")
 async def delete_step(
     step_id: int,
