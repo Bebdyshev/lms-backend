@@ -567,6 +567,9 @@ class UserInDB(Base):
     last_activity_date = Column(Date, nullable=True)  # Last date when student was active
     activity_points = Column(BigInteger, default=0, nullable=False)  # Gamification: total XP points
     
+    # Teacher preferences
+    no_substitutions = Column(Boolean, default=False, nullable=False)  # Opt-out of substitution requests
+    
     # Relationships
     groups = relationship("GroupStudent", back_populates="student", cascade="all, delete-orphan")
     enrollments = relationship("Enrollment", back_populates="user", cascade="all, delete-orphan")
@@ -643,6 +646,7 @@ class UserSchema(BaseModel):
     assignment_zero_completed: Optional[bool] = False
     assignment_zero_completed_at: Optional[datetime] = None
     activity_points: Optional[int] = 0
+    no_substitutions: Optional[bool] = False
     course_ids: Optional[List[int]] = []  # List of course IDs for head teachers
     created_at: datetime
 
@@ -1768,6 +1772,26 @@ class Event(Base):
     event_participants = relationship("EventParticipant", back_populates="event", cascade="all, delete-orphan")
     teacher = relationship("UserInDB", foreign_keys=[teacher_id])
 
+    @property
+    def is_substitution(self):
+        """Check if the assigned teacher is different from the group's teacher."""
+        if self.teacher_id and self.event_groups:
+            # We assume the event belongs to at least one group.
+            # Use the first group's teacher for comparison.
+            # Requires eager loading of event_groups.group
+            try:
+                first_group_assoc = self.event_groups[0]
+                if first_group_assoc.group and first_group_assoc.group.teacher_id:
+                    return self.teacher_id != first_group_assoc.group.teacher_id
+            except (IndexError, AttributeError):
+                pass
+        return False
+
+    @property
+    def teacher_name(self):
+        """Return the name of the assigned teacher."""
+        return self.teacher.name if self.teacher else None
+
 class EventGroup(Base):
     __tablename__ = "event_groups"
     
@@ -1886,7 +1910,9 @@ class EventSchema(BaseModel):
     group_ids: Optional[List[int]] = None # List of group IDs
     course_ids: Optional[List[int]] = None # List of course IDs
     created_at: datetime
+    created_at: datetime
     updated_at: datetime
+    is_substitution: bool = False
     
     class Config:
         from_attributes = True
@@ -2299,3 +2325,96 @@ class DailyQuestionCompletion(Base):
     __table_args__ = (
         UniqueConstraint('user_id', 'completed_date', name='uq_daily_question_user_date'),
     )
+
+
+# =============================================================================
+# LESSON SUBSTITUTION / RESCHEDULE REQUESTS
+# =============================================================================
+
+class LessonRequest(Base):
+    """Model for lesson substitution and reschedule requests."""
+    __tablename__ = "lesson_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_type = Column(String, nullable=False)  # 'substitution' or 'reschedule'
+    status = Column(String, default="pending", nullable=False)  # pending_teacher, pending, approved, rejected
+
+    # The teacher who created the request
+    requester_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # Original lesson info
+    lesson_schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="SET NULL"), nullable=True)
+    event_id = Column(Integer, ForeignKey("events.id", ondelete="SET NULL"), nullable=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    original_datetime = Column(DateTime, nullable=False)
+
+    # Substitution: who will replace (primary chosen by admin)
+    substitute_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # JSON array of candidate teacher IDs suggested by requester
+    substitute_teacher_ids = Column(Text, nullable=True)  # JSON string e.g. "[1,2,3]"
+
+    # Confirmed substitute teacher (the one who accepted)
+    confirmed_teacher_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # Reschedule: new datetime
+    new_datetime = Column(DateTime, nullable=True)
+
+    reason = Column(Text, nullable=True)
+    admin_comment = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # Relationships
+    requester = relationship("UserInDB", foreign_keys=[requester_id])
+    substitute_teacher = relationship("UserInDB", foreign_keys=[substitute_teacher_id])
+    confirmed_teacher = relationship("UserInDB", foreign_keys=[confirmed_teacher_id])
+    resolver = relationship("UserInDB", foreign_keys=[resolved_by])
+    lesson_schedule = relationship("LessonSchedule", foreign_keys=[lesson_schedule_id])
+    event = relationship("Event", foreign_keys=[event_id])
+    group = relationship("Group", foreign_keys=[group_id])
+
+
+class LessonRequestSchema(BaseModel):
+    id: int
+    request_type: str
+    status: str
+    requester_id: int
+    requester_name: Optional[str] = None
+    lesson_schedule_id: Optional[int] = None
+    event_id: Optional[int] = None
+    group_id: int
+    group_name: Optional[str] = None
+    original_datetime: datetime
+    substitute_teacher_id: Optional[int] = None
+    substitute_teacher_name: Optional[str] = None
+    substitute_teacher_ids: Optional[list] = None
+    substitute_teacher_names: Optional[list] = None
+    confirmed_teacher_id: Optional[int] = None
+    confirmed_teacher_name: Optional[str] = None
+    new_datetime: Optional[datetime] = None
+    reason: Optional[str] = None
+    admin_comment: Optional[str] = None
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CreateLessonRequestSchema(BaseModel):
+    request_type: str  # 'substitution' or 'reschedule'
+    lesson_schedule_id: Optional[int] = None
+    event_id: Optional[int] = None
+    group_id: int
+    original_datetime: datetime
+    substitute_teacher_ids: Optional[list] = None  # list of candidate teacher IDs
+    substitute_teacher_id: Optional[int] = None  # for backward compat
+    new_datetime: Optional[datetime] = None  # for reschedule
+    reason: Optional[str] = None
+
+
+class ResolveLessonRequestSchema(BaseModel):
+    admin_comment: Optional[str] = None

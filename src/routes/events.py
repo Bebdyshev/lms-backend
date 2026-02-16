@@ -59,6 +59,7 @@ async def get_my_events(
             user_course_ids = list(set(user_course_ids))
         
     elif current_user.role in ["teacher", "curator"]:
+        print(f"DEBUG_EVENTS: Teacher/Curator view. user_id={current_user.id}")
         # Get groups where user is teacher or curator
         teacher_groups = db.query(Group).filter(Group.teacher_id == current_user.id).all()
         curator_groups = db.query(Group).filter(Group.curator_id == current_user.id).all()
@@ -77,6 +78,7 @@ async def get_my_events(
     
     if not user_group_ids and not user_course_ids:
         return []
+    print(f"DEBUG: user_group_ids={user_group_ids} user_course_ids={user_course_ids}")
     
     # Build query
     # Events that are in user's groups OR in user's courses
@@ -99,12 +101,23 @@ async def get_my_events(
     if group_id:
         query = query.filter(EventGroup.group_id == group_id)
     else:
-        query = query.filter(
-            or_(
-                EventGroup.group_id.in_(user_group_ids),
-                EventCourse.course_id.in_(user_course_ids)
-            )
+        # Base condition: Events in user's groups or courses
+        access_condition = or_(
+            EventGroup.group_id.in_(user_group_ids),
+            EventCourse.course_id.in_(user_course_ids)
         )
+        
+        # If user is a teacher/curator, ALSO include events where they are the assigned teacher
+        # (e.g. substitutions where they are not the group's main teacher)
+        if current_user.role in ["teacher", "curator"]:
+            query = query.filter(
+                or_(
+                    access_condition,
+                    Event.teacher_id == current_user.id
+                )
+            )
+        else:
+            query = query.filter(access_condition)
     
     query = query.distinct()
     
@@ -122,10 +135,12 @@ async def get_my_events(
     query = query.options(
         joinedload(Event.creator),
         joinedload(Event.event_groups).joinedload(EventGroup.group),
-        joinedload(Event.event_courses).joinedload(EventCourse.course)
+        joinedload(Event.event_courses).joinedload(EventCourse.course),
+        joinedload(Event.teacher)
     )
     
     events = query.order_by(Event.start_datetime).offset(skip).limit(limit).all()
+    print(f"DEBUG_EVENTS: Found {len(events)} events for user={current_user.id}")
     
     # 2. Expand Recurring Events if needed
     # If specific date range or upcoming_only, we must expand
@@ -410,11 +425,19 @@ async def get_calendar_events(
     # Get events for the month with eager loading
     # 1. Get standard events in range
     
+    # Logic to include events where I am the teacher (e.g. substitutions)
+    base_access = or_(
+        EventGroup.group_id.in_(user_group_ids),
+        EventCourse.course_id.in_(user_course_ids)
+    )
+    
+    final_filter = base_access
+    if current_user.role in ["teacher", "curator"]:
+        print(f"DEBUG: Including events where teacher_id={current_user.id}")
+        final_filter = or_(base_access, Event.teacher_id == current_user.id)
+
     standard_events = db.query(Event).outerjoin(EventGroup).outerjoin(EventCourse).filter(
-        or_(
-            EventGroup.group_id.in_(user_group_ids),
-            EventCourse.course_id.in_(user_course_ids)
-        ),
+        final_filter,
         Event.is_active == True,
         Event.start_datetime >= start_date,
         Event.start_datetime <= end_date,
@@ -623,8 +646,7 @@ async def get_calendar_events(
             Assignment.group_id.in_(user_group_ids)
         ).all()
         found_assignments.extend(group_assignments)
-        print(f"DEBUG: Found {len(group_assignments)} assignments via Group ID")
-        
+                
     # 3b. Fetch by Course -> Lesson
     # First get lesson IDs for user's courses to avoid subquery issues
     course_lesson_ids = []
