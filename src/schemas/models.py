@@ -2418,3 +2418,146 @@ class CreateLessonRequestSchema(BaseModel):
 
 class ResolveLessonRequestSchema(BaseModel):
     admin_comment: Optional[str] = None
+
+
+# =============================================================================
+# CURATOR TASK MODELS — Task management for curators
+# =============================================================================
+
+class CuratorTaskTemplate(Base):
+    """
+    Template defining a type of curator task.
+    Admin creates templates; the scheduler generates instances from them.
+    """
+    __tablename__ = "curator_task_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    task_type = Column(String, nullable=False)  # 'onboarding', 'weekly', 'renewal'
+    scope = Column(String, nullable=False, default="student")  # 'student' or 'group'
+
+    # Recurrence: JSON with schedule rules for weekly tasks
+    # e.g. {"day_of_week": "monday", "time": "09:00", "timezone": "Asia/Almaty"}
+    recurrence_rule = Column(JSON, nullable=True)
+
+    # Deadline: relative rule
+    # e.g. {"offset_days": 1} or {"day_of_week": "tuesday", "time": "21:00"}
+    deadline_rule = Column(JSON, nullable=True)
+
+    # Ordering within a category
+    order_index = Column(Integer, default=0)
+
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    instances = relationship("CuratorTaskInstance", back_populates="template",
+                             cascade="all, delete-orphan")
+
+
+class CuratorTaskInstance(Base):
+    """
+    A concrete task instance assigned to a curator.
+    Created by scheduler (for recurring) or triggered by events (onboarding, renewal).
+    """
+    __tablename__ = "curator_task_instances"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, ForeignKey("curator_task_templates.id", ondelete="CASCADE"),
+                         nullable=False, index=True)
+    curator_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+
+    # Scope: linked to either a student or a group (or both)
+    student_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=True, index=True)
+
+    status = Column(String, nullable=False, default="pending")  # pending, in_progress, completed, overdue
+    due_date = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Result
+    result_text = Column(Text, nullable=True)
+    screenshot_url = Column(String, nullable=True)
+
+    # Week reference (for weekly tasks, e.g. "2026-W08")
+    week_reference = Column(String, nullable=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    template = relationship("CuratorTaskTemplate", back_populates="instances")
+    curator = relationship("UserInDB", foreign_keys=[curator_id])
+    student = relationship("UserInDB", foreign_keys=[student_id])
+    group = relationship("Group", foreign_keys=[group_id])
+
+    __table_args__ = (
+        Index('ix_curator_task_instances_curator_status', 'curator_id', 'status'),
+        Index('ix_curator_task_instances_week', 'week_reference'),
+    )
+
+
+# --- Pydantic schemas for Curator Tasks ---
+
+class CuratorTaskTemplateSchema(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    task_type: str
+    scope: str
+    recurrence_rule: Optional[dict] = None
+    deadline_rule: Optional[dict] = None
+    order_index: int = 0
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CuratorTaskTemplateCreateSchema(BaseModel):
+    title: str
+    description: Optional[str] = None
+    task_type: str  # 'onboarding', 'weekly', 'renewal'
+    scope: str = "student"  # 'student' or 'group'
+    recurrence_rule: Optional[dict] = None
+    deadline_rule: Optional[dict] = None
+    order_index: int = 0
+
+
+class CuratorTaskInstanceSchema(BaseModel):
+    id: int
+    template_id: int
+    template_title: Optional[str] = None
+    template_description: Optional[str] = None
+    task_type: Optional[str] = None
+    scope: Optional[str] = None
+    curator_id: int
+    curator_name: Optional[str] = None
+    student_id: Optional[int] = None
+    student_name: Optional[str] = None
+    group_id: Optional[int] = None
+    group_name: Optional[str] = None
+    status: str
+    due_date: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    result_text: Optional[str] = None
+    screenshot_url: Optional[str] = None
+    week_reference: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CuratorTaskInstanceUpdateSchema(BaseModel):
+    status: Optional[str] = None  # 'in_progress', 'completed'
+    result_text: Optional[str] = None
+    screenshot_url: Optional[str] = None
