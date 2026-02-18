@@ -25,6 +25,7 @@ from src.routes.ai_tools import router as ai_tools_router
 from src.routes.head_teacher import router as head_teacher_router
 from src.routes.daily_questions import router as daily_questions_router
 from src.routes.lesson_requests import router as lesson_requests_router
+from src.routes.curator_tasks import router as curator_tasks_router
 from dotenv import load_dotenv
 import logging
 import os
@@ -112,6 +113,7 @@ app.include_router(ai_tools_router, prefix="/ai-tools", tags=["AI Tools"])
 app.include_router(head_teacher_router, prefix="/head-teacher", tags=["Head Teacher"])
 app.include_router(daily_questions_router, prefix="/daily-questions", tags=["Daily Questions"])
 app.include_router(lesson_requests_router, prefix="/lesson-requests", tags=["Lesson Requests"])
+app.include_router(curator_tasks_router, prefix="/curator-tasks", tags=["Curator Tasks"])
 
 # Root endpoint with ASCII art
 @app.get("/")
@@ -184,6 +186,22 @@ try:
 except Exception as e:
     logging.error(f"❌ Failed to initialize lesson reminder scheduler: {e}")
     logging.warning("⚠️  Continuing without lesson reminder scheduler")
+
+# Запуск планировщика задач кураторов
+try:
+    from src.services.curator_task_scheduler import start_curator_task_scheduler
+    
+    # Run if not disabled
+    disable_scheduler = os.getenv('DISABLE_SCHEDULER', 'false').lower() == 'true'
+    
+    if disable_scheduler:
+         logging.info("⏭️  Curator task scheduler disabled (DISABLE_SCHEDULER=true)")
+    else:
+        start_curator_task_scheduler()
+        logging.info("✅ Curator task scheduler initialized")
+except Exception as e:
+    logging.error(f"❌ Failed to initialize curator task scheduler: {e}")
+    logging.warning("⚠️  Continuing without curator task scheduler")
 
 # Error handlers
 @app.exception_handler(404)
