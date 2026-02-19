@@ -639,3 +639,157 @@ async def seed_templates(
 
     db.commit()
     return {"detail": f"Seeded {created_count} new templates ({len(default_templates) - created_count} already existed)"}
+
+
+# ============================================================================
+# GENERATE WEEKLY TASKS ON DEMAND
+# ============================================================================
+
+@router.post("/generate-weekly", summary="Generate weekly tasks for current curator's groups for a given week")
+async def generate_weekly_tasks(
+    week: Optional[str] = Query(None, description="Week reference e.g. 2026-W08. Defaults to current week."),
+    current_user: UserInDB = Depends(require_role(["curator", "head_curator", "admin"])),
+    db: Session = Depends(get_db),
+):
+    """
+    Seed templates if needed, then generate all weekly task instances
+    for the curator's groups for the specified (or current) week.
+    """
+    import pytz
+    from datetime import timedelta
+
+    tz = pytz.timezone("Asia/Almaty")
+    now_almaty = datetime.now(tz)
+
+    if not week:
+        year, wk, _ = now_almaty.isocalendar()
+        week = f"{year}-W{wk:02d}"
+
+    # Auto-seed templates if none exist
+    tmpl_count = db.query(CuratorTaskTemplate).count()
+    if tmpl_count == 0:
+        from src.routes.curator_tasks import seed_default_templates
+        seed_default_templates(db)
+
+    templates = (
+        db.query(CuratorTaskTemplate)
+        .filter(CuratorTaskTemplate.is_active == True, CuratorTaskTemplate.task_type == "weekly")
+        .order_by(CuratorTaskTemplate.order_index)
+        .all()
+    )
+
+    if not templates:
+        raise HTTPException(status_code=404, detail="No weekly templates found. Seed them first.")
+
+    # Determine groups for the curator
+    if current_user.role == "admin":
+        groups = db.query(Group).filter(Group.curator_id.isnot(None), Group.is_active == True).all()
+    elif current_user.role == "head_curator":
+        groups = db.query(Group).filter(Group.curator_id.isnot(None), Group.is_active == True).all()
+    else:
+        groups = db.query(Group).filter(Group.curator_id == current_user.id, Group.is_active == True).all()
+
+    if not groups:
+        return {"detail": "No active groups found for this curator", "created": 0}
+
+    day_map = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6
+    }
+
+    # Parse week start date
+    year_str, week_part = week.split('-W')
+    year_val = int(year_str)
+    week_val = int(week_part)
+    jan4 = datetime(year_val, 1, 4, tzinfo=tz)
+    day_of_week = jan4.isoweekday()
+    monday = jan4 - timedelta(days=day_of_week - 1) + timedelta(weeks=week_val - 1)
+
+    created_count = 0
+
+    for tmpl in templates:
+        # Calculate due date
+        due_date = None
+        if tmpl.deadline_rule:
+            rule = tmpl.deadline_rule
+            if "day_of_week" in rule:
+                target_idx = day_map.get(rule["day_of_week"].lower(), 0)
+                due_date = monday + timedelta(days=target_idx)
+                if "time" in rule:
+                    try:
+                        h, m = map(int, rule["time"].split(":"))
+                        due_date = due_date.replace(hour=h, minute=m, second=0, microsecond=0)
+                    except:
+                        pass
+                due_date = due_date.astimezone(timezone.utc)
+
+        for group in groups:
+            curator_id = group.curator_id if current_user.role in ("admin", "head_curator") else current_user.id
+
+            if tmpl.scope == "student":
+                students = db.query(UserInDB).join(GroupStudent).filter(
+                    GroupStudent.group_id == group.id,
+                    UserInDB.is_active == True
+                ).all()
+
+                for student in students:
+                    exists = db.query(CuratorTaskInstance).filter(
+                        CuratorTaskInstance.template_id == tmpl.id,
+                        CuratorTaskInstance.student_id == student.id,
+                        CuratorTaskInstance.week_reference == week
+                    ).first()
+                    if not exists:
+                        inst = CuratorTaskInstance(
+                            template_id=tmpl.id,
+                            curator_id=curator_id,
+                            student_id=student.id,
+                            group_id=group.id,
+                            status="pending",
+                            due_date=due_date,
+                            week_reference=week,
+                        )
+                        db.add(inst)
+                        created_count += 1
+
+            elif tmpl.scope == "group":
+                exists = db.query(CuratorTaskInstance).filter(
+                    CuratorTaskInstance.template_id == tmpl.id,
+                    CuratorTaskInstance.group_id == group.id,
+                    CuratorTaskInstance.week_reference == week
+                ).first()
+                if not exists:
+                    inst = CuratorTaskInstance(
+                        template_id=tmpl.id,
+                        curator_id=curator_id,
+                        group_id=group.id,
+                        status="pending",
+                        due_date=due_date,
+                        week_reference=week,
+                    )
+                    db.add(inst)
+                    created_count += 1
+
+    db.commit()
+    return {"detail": f"Сгенерировано {created_count} задач на неделю {week}", "created": created_count}
+
+
+def seed_default_templates(db: Session):
+    """Utility to seed templates without auth (called internally)."""
+    default_templates = [
+        {"title": "Обратная связь родителям (ОС)", "task_type": "weekly", "scope": "student", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "tuesday", "time": "21:00"}, "order_index": 1},
+        {"title": "Напоминание о weekly practice", "task_type": "weekly", "scope": "student", "recurrence_rule": {"day_of_week": "sunday", "time": "09:00"}, "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 2},
+        {"title": "Напоминание о вебинаре / уроке", "task_type": "weekly", "scope": "student", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "friday", "time": "18:00"}, "order_index": 3},
+        {"title": "Заполнение лидерборда", "task_type": "weekly", "scope": "group", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 4},
+        {"title": "Проведение кураторского часа", "task_type": "weekly", "scope": "group", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 5},
+        {"title": "Пост в беседу 1", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "monday", "time": "21:00"}, "order_index": 6},
+        {"title": "Пост в беседу 2", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "wednesday", "time": "21:00"}, "order_index": 7},
+        {"title": "Пост в беседу 3", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "friday", "time": "21:00"}, "order_index": 8},
+        {"title": "Пост в беседу 4", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 9},
+        {"title": "Обратная связь ученику в ЛС 1", "task_type": "weekly", "scope": "student", "deadline_rule": {"day_of_week": "thursday", "time": "14:00"}, "order_index": 10},
+        {"title": "Обратная связь ученику в ЛС 2", "task_type": "weekly", "scope": "student", "deadline_rule": {"day_of_week": "sunday", "time": "20:00"}, "order_index": 11},
+    ]
+    for tmpl_data in default_templates:
+        existing = db.query(CuratorTaskTemplate).filter(CuratorTaskTemplate.title == tmpl_data["title"]).first()
+        if not existing:
+            db.add(CuratorTaskTemplate(**tmpl_data))
+    db.commit()
