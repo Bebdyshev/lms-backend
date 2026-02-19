@@ -10,7 +10,7 @@ from src.schemas.models import (
     LeaderboardEntry, LeaderboardEntrySchema, LeaderboardEntryCreateSchema,
     GroupSchema, LessonSchedule, Attendance, AttendanceSchema, GroupAssignment,
     LeaderboardConfig, LeaderboardConfigSchema, LeaderboardConfigUpdateSchema,
-    CourseGroupAccess, Event, EventGroup, EventParticipant
+    CourseGroupAccess, CourseHeadTeacher, Event, EventGroup, EventParticipant
 )
 from pydantic import BaseModel
 from src.routes.auth import get_current_user_dependency
@@ -779,6 +779,8 @@ async def get_group_full_attendance_matrix(
     Get full attendance matrix for a group (all lessons).
     Handles standard events and expanded recurring schedules.
     """
+    from src.schemas.models import Event, EventGroup, EventParticipant, LessonSchedule, EventCourse
+
     # 1. Authorization & Group Info
     group_obj = db.query(Group).filter(Group.id == group_id).first()
     if not group_obj:
@@ -790,14 +792,26 @@ async def get_group_full_attendance_matrix(
     elif current_user.role == "teacher":
         if group_obj.teacher_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied to this group (Teacher mismatch)")
+    elif current_user.role == "head_teacher":
+        course_accesses = db.query(CourseGroupAccess).filter(
+            CourseGroupAccess.group_id == group_id,
+            CourseGroupAccess.is_active == True
+        ).all()
+        course_ids = [ca.course_id for ca in course_accesses]
+        if not course_ids:
+            raise HTTPException(status_code=403, detail="Group not linked to any course")
+        head_teacher_access = db.query(CourseHeadTeacher).filter(
+            CourseHeadTeacher.course_id.in_(course_ids),
+            CourseHeadTeacher.head_teacher_id == current_user.id
+        ).first()
+        if not head_teacher_access:
+            raise HTTPException(status_code=403, detail="Access denied to this group")
     elif current_user.role == "admin":
         pass
     else:
         raise HTTPException(status_code=403, detail="Access denied")
 
     # 2. Get Group Creation Date and Linked Courses
-    from src.schemas.models import Event, EventGroup, EventParticipant, LessonSchedule, CourseGroupAccess, EventCourse
-    
     creation_date = group_obj.created_at if group_obj else datetime.utcnow() - timedelta(days=90)
     
     # Find courses linked to this group

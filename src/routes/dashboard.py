@@ -38,6 +38,8 @@ async def get_dashboard_stats(
         return get_head_curator_dashboard_stats(current_user, db, group_id, start_date, end_date)
     elif current_user.role == "admin":
         return get_admin_dashboard_stats(current_user, db)
+    elif current_user.role == "head_teacher":
+        return get_head_teacher_dashboard_stats(current_user, db)
     else:
         raise HTTPException(status_code=403, detail="Invalid user role")
 
@@ -1151,6 +1153,108 @@ def get_head_curator_dashboard_stats(
         },
         recent_courses=at_risk_groups
     )
+
+def get_head_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
+    """Get dashboard stats for head teacher - missing attendance for managed course groups"""
+    from src.schemas.models import (
+        Event, EventGroup, EventParticipant, Group,
+        CourseHeadTeacher, CourseGroupAccess
+    )
+
+    # Get groups in courses managed by this head teacher
+    managed_course_ids = db.query(CourseHeadTeacher.course_id).filter(
+        CourseHeadTeacher.head_teacher_id == user.id
+    ).all()
+    managed_course_ids = [c[0] for c in managed_course_ids]
+
+    if not managed_course_ids:
+        return DashboardStatsSchema(
+            user={
+                "name": user.name.split()[0] if user.name else "User",
+                "full_name": user.name,
+                "role": user.role,
+                "avatar_url": user.avatar_url
+            },
+            stats={"missing_attendance_reminders": []},
+            recent_courses=[]
+        )
+
+    group_accesses = db.query(CourseGroupAccess).filter(
+        CourseGroupAccess.course_id.in_(managed_course_ids),
+        CourseGroupAccess.is_active == True
+    ).all()
+    managed_group_ids = [ga.group_id for ga in group_accesses]
+
+    missing_attendance_reminders = []
+    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)
+
+    if managed_group_ids:
+        past_events = db.query(Event).join(EventGroup).filter(
+            EventGroup.group_id.in_(managed_group_ids),
+            Event.event_type == "class",
+            Event.end_datetime <= datetime.utcnow(),
+            Event.end_datetime >= cutoff_date,
+            Event.is_active == True
+        ).all()
+
+        for event in past_events:
+            event_group_ids = [eg.group_id for eg in event.event_groups]
+            expected_count = db.query(GroupStudent.student_id).filter(
+                GroupStudent.group_id.in_(event_group_ids)
+            ).count()
+
+            attendance_count = db.query(EventParticipant).filter(
+                EventParticipant.event_id == event.id,
+                EventParticipant.registration_status.in_(["attended", "late", "missed"])
+            ).count()
+
+            if attendance_count < expected_count:
+                group_name = ""
+                group_id = None
+                if event.event_groups:
+                    group_name = event.event_groups[0].group.name if event.event_groups[0].group else ""
+                    group_id = event.event_groups[0].group.id if event.event_groups[0].group else None
+
+                missing_attendance_reminders.append({
+                    "event_id": event.id,
+                    "title": event.title,
+                    "group_name": group_name,
+                    "group_id": group_id,
+                    "event_date": event.start_datetime.isoformat(),
+                    "expected_students": expected_count,
+                    "recorded_students": attendance_count
+                })
+
+    # Get recent managed courses for recent_courses
+    recent_courses = db.query(Course).filter(
+        Course.id.in_(managed_course_ids),
+        Course.is_active == True
+    ).order_by(desc(Course.updated_at)).limit(6).all()
+
+    course_list = []
+    for course in recent_courses:
+        teacher = db.query(UserInDB).filter(UserInDB.id == course.teacher_id).first()
+        course_list.append({
+            "id": course.id,
+            "title": course.title,
+            "cover_image": course.cover_image_url,
+            "teacher": teacher.name if teacher else "Unknown",
+            "enrolled_students": 0,
+            "status": "active",
+            "last_accessed": course.updated_at
+        })
+
+    return DashboardStatsSchema(
+        user={
+            "name": user.name.split()[0] if user.name else "User",
+            "full_name": user.name,
+            "role": user.role,
+            "avatar_url": user.avatar_url
+        },
+        stats={"missing_attendance_reminders": missing_attendance_reminders},
+        recent_courses=course_list
+    )
+
 
 def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for admin"""

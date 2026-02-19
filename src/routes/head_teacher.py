@@ -82,6 +82,11 @@ class MissedAttendanceItem(BaseModel):
     recorded_count: int
 
 
+class GroupItem(BaseModel):
+    id: int
+    name: str
+
+
 class TeacherDetailsResponse(BaseModel):
     teacher_id: int
     teacher_name: str
@@ -95,6 +100,7 @@ class TeacherDetailsResponse(BaseModel):
     avg_score_given: Optional[float] = None
     missed_attendance_count: int = 0
     missed_attendance_details: List[MissedAttendanceItem] = []
+    groups: List[GroupItem] = []
 
 
 class FeedbackItem(BaseModel):
@@ -673,6 +679,8 @@ async def get_teacher_details(
         for item in missed_details_raw
     ]
     
+    groups = [GroupItem(id=g.id, name=g.name) for g in teacher_groups]
+
     return TeacherDetailsResponse(
         teacher_id=teacher_id,
         teacher_name=teacher.name,
@@ -685,7 +693,8 @@ async def get_teacher_details(
         total_feedbacks=total_feedbacks,
         avg_score_given=avg_score_given,
         missed_attendance_count=total_missed,  # Total historical missed (including resolved)
-        missed_attendance_details=missed_attendance_details  # Only current unresolved
+        missed_attendance_details=missed_attendance_details,  # Only current unresolved
+        groups=groups
     )
 
 
