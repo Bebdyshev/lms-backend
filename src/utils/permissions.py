@@ -2,7 +2,7 @@ from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from src.config import get_db
-from src.schemas.models import UserInDB, Course, Group, Enrollment, CourseHeadTeacher
+from src.schemas.models import UserInDB, Course, Group, Enrollment, CourseHeadTeacher, CourseTeacherAccess
 from src.routes.auth import get_current_user_dependency
 
 def require_role(allowed_roles: List[str]):
@@ -66,6 +66,15 @@ def check_course_access(course_id: int, user: UserInDB, db: Session) -> bool:
         # Teachers can access their own courses AND courses their groups have access to
         # Check if teacher created this course
         if course.teacher_id == user.id:
+            return True
+        
+        # Check if teacher has direct access granted by admin
+        direct_access = db.query(CourseTeacherAccess).filter(
+            CourseTeacherAccess.course_id == course_id,
+            CourseTeacherAccess.teacher_id == user.id,
+            CourseTeacherAccess.is_active == True
+        ).first()
+        if direct_access:
             return True
         
         # Check if any of teacher's groups have access to this course

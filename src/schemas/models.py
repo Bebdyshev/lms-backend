@@ -797,6 +797,7 @@ class Course(Base):
     modules = relationship("Module", back_populates="course", cascade="all, delete-orphan", order_by="Module.order_index")
     enrollments = relationship("Enrollment", back_populates="course")
     group_access = relationship("CourseGroupAccess", back_populates="course", cascade="all, delete-orphan")
+    teacher_access = relationship("CourseTeacherAccess", back_populates="course", cascade="all, delete-orphan")
     # Head Teachers managing this course
     head_teachers = relationship("UserInDB", secondary="course_head_teachers", back_populates="managed_courses")
 
@@ -824,6 +825,39 @@ class CourseGroupAccess(Base):
     course = relationship("Course", back_populates="group_access")
     group = relationship("Group")
     granted_by_user = relationship("UserInDB", foreign_keys=[granted_by])
+
+class CourseTeacherAccess(Base):
+    """Direct teacher access to a course (without requiring a group)."""
+    __tablename__ = "course_teacher_access"
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), nullable=False)
+    teacher_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    granted_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    granted_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    is_active = Column(Boolean, default=True)
+
+    # Relationships
+    course = relationship("Course", back_populates="teacher_access")
+    teacher = relationship("UserInDB", foreign_keys=[teacher_id])
+    granted_by_user = relationship("UserInDB", foreign_keys=[granted_by])
+
+    __table_args__ = (
+        UniqueConstraint('course_id', 'teacher_id', name='uq_course_teacher_access'),
+    )
+
+class CourseTeacherAccessSchema(BaseModel):
+    id: int
+    course_id: int
+    teacher_id: int
+    teacher_name: Optional[str] = None
+    teacher_email: Optional[str] = None
+    granted_by: int
+    granted_by_name: Optional[str] = None
+    granted_at: datetime
+    is_active: bool
+
+    class Config:
+        from_attributes = True
 
 class Module(Base):
     __tablename__ = "modules"

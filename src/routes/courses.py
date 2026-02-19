@@ -16,7 +16,8 @@ from src.schemas.models import (
     LessonMaterialSchema, UserInDB, QuizData,
     CourseGroupAccess, CourseGroupAccessSchema, Group, GroupStudent,
     Assignment, AssignmentLinkedLesson,
-    LegacyLessonSchema, ManualLessonUnlock  # Keep for migration period
+    LegacyLessonSchema, ManualLessonUnlock,  # Keep for migration period
+    CourseTeacherAccess, CourseTeacherAccessSchema
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_teacher_or_admin, require_admin, check_course_access
@@ -72,8 +73,8 @@ async def get_courses(
         query = query.filter(Course.id.in_(combined_course_ids), Course.is_active == True)
         
     elif current_user.role == "teacher":
-        # Teachers see their own courses AND courses their groups have access to
-        from src.schemas.models import Group, CourseGroupAccess
+        # Teachers see their own courses AND courses their groups have access to AND courses with direct access
+        from src.schemas.models import Group, CourseGroupAccess, CourseTeacherAccess
         
         # Get teacher's own courses
         own_courses = db.query(Course.id).filter(Course.teacher_id == current_user.id).subquery()
@@ -85,11 +86,18 @@ async def get_courses(
             CourseGroupAccess.is_active == True
         ).subquery()
         
-        # Combine both
+        # Get courses with direct access
+        direct_access_courses = db.query(CourseTeacherAccess.course_id).filter(
+            CourseTeacherAccess.teacher_id == current_user.id,
+            CourseTeacherAccess.is_active == True
+        ).subquery()
+        
+        # Combine all
         from sqlalchemy import union
         combined_course_ids = db.query(union(
             own_courses.select(),
-            group_courses.select()
+            group_courses.select(),
+            direct_access_courses.select()
         ).alias('course_id')).subquery()
         
         query = query.filter(Course.id.in_(combined_course_ids))
@@ -2081,6 +2089,134 @@ async def get_course_group_access_status(
         "groups_with_access": group_ids_with_access,
         "total_groups_with_access": len(group_ids_with_access)
     }
+
+# =============================================================================
+# COURSE TEACHER ACCESS MANAGEMENT
+# =============================================================================
+
+@router.get("/{course_id}/teacher-access", response_model=List[CourseTeacherAccessSchema])
+async def get_course_teacher_access(
+    course_id: int,
+    current_user: UserInDB = Depends(require_teacher_or_admin()),
+    db: Session = Depends(get_db)
+):
+    """Get teachers who have direct access to a course"""
+    # Check if course exists and user has access
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    if not check_course_access(course_id, current_user, db):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get direct access records
+    access_records = db.query(CourseTeacherAccess).filter(
+        CourseTeacherAccess.course_id == course_id,
+        CourseTeacherAccess.is_active == True
+    ).all()
+    
+    # Enrich with teacher and grant info
+    result = []
+    for access in access_records:
+        teacher = db.query(UserInDB).filter(UserInDB.id == access.teacher_id).first()
+        granted_by_user = db.query(UserInDB).filter(UserInDB.id == access.granted_by).first()
+        
+        access_data = CourseTeacherAccessSchema.from_orm(access)
+        access_data.teacher_name = teacher.name if teacher else "Unknown Teacher"
+        access_data.teacher_email = teacher.email if teacher else ""
+        access_data.granted_by_name = granted_by_user.name if granted_by_user else "Unknown"
+        
+        result.append(access_data)
+    
+    return result
+
+@router.post("/{course_id}/grant-teacher-access/{teacher_id}")
+async def grant_course_access_to_teacher(
+    course_id: int,
+    teacher_id: int,
+    current_user: UserInDB = Depends(require_admin()),
+    db: Session = Depends(get_db)
+):
+    """Grant direct access to a course for a specific teacher (Admin only)"""
+    # Check if course exists
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Check if teacher exists (and is actually a teacher or admin)
+    teacher = db.query(UserInDB).filter(UserInDB.id == teacher_id).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+    
+    if teacher.role not in ["teacher", "admin", "head_teacher"]:
+        raise HTTPException(status_code=400, detail="User is not a teacher")
+    
+    # Check if teacher is the course creator (already has access)
+    if course.teacher_id == teacher_id:
+        return {
+            "detail": f"Teacher '{teacher.name}' is the creator of this course",
+            "status": "creator"
+        }
+
+    # Check if access already exists
+    existing_access = db.query(CourseTeacherAccess).filter(
+        CourseTeacherAccess.course_id == course_id,
+        CourseTeacherAccess.teacher_id == teacher_id,
+        CourseTeacherAccess.is_active == True
+    ).first()
+    
+    if existing_access:
+        return {
+            "detail": f"Teacher '{teacher.name}' already has direct access to this course",
+            "status": "already_granted",
+            "access_id": existing_access.id
+        }
+    
+    # Create new access record
+    access = CourseTeacherAccess(
+        course_id=course_id,
+        teacher_id=teacher_id,
+        granted_by=current_user.id,
+        is_active=True
+    )
+    
+    db.add(access)
+    db.commit()
+    
+    return {
+        "detail": f"Access granted to teacher '{teacher.name}'",
+        "status": "granted",
+        "access_id": access.id
+    }
+
+@router.delete("/{course_id}/revoke-teacher-access/{teacher_id}")
+async def revoke_course_access_from_teacher(
+    course_id: int,
+    teacher_id: int,
+    current_user: UserInDB = Depends(require_admin()),
+    db: Session = Depends(get_db)
+):
+    """Revoke direct access to a course for a specific teacher (Admin only)"""
+    # Check if course exists
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Find and deactivate access record
+    access = db.query(CourseTeacherAccess).filter(
+        CourseTeacherAccess.course_id == course_id,
+        CourseTeacherAccess.teacher_id == teacher_id,
+        CourseTeacherAccess.is_active == True
+    ).first()
+    
+    if not access:
+        raise HTTPException(status_code=404, detail="Teacher access not found")
+    
+    # Soft delete access
+    access.is_active = False
+    db.commit()
+    
+    return {"detail": "Access revoked successfully"}
 
 @router.post("/analyze-sat-image")
 async def analyze_sat_image(
