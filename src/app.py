@@ -26,6 +26,7 @@ from src.routes.head_teacher import router as head_teacher_router
 from src.routes.daily_questions import router as daily_questions_router
 from src.routes.lesson_requests import router as lesson_requests_router
 from src.routes.curator_tasks import router as curator_tasks_router
+from src.routes.student_journal import router as student_journal_router
 from dotenv import load_dotenv
 import logging
 import os
@@ -114,6 +115,7 @@ app.include_router(head_teacher_router, prefix="/head-teacher", tags=["Head Teac
 app.include_router(daily_questions_router, prefix="/daily-questions", tags=["Daily Questions"])
 app.include_router(lesson_requests_router, prefix="/lesson-requests", tags=["Lesson Requests"])
 app.include_router(curator_tasks_router, prefix="/curator-tasks", tags=["Curator Tasks"])
+app.include_router(student_journal_router, prefix="/student-journal", tags=["Student Journal"])
 
 # Root endpoint with ASCII art
 @app.get("/")
@@ -147,7 +149,7 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.57.0",
+            "version": "1.58.0",
         }
     )
 #-----------------------------------------------------------------------------
