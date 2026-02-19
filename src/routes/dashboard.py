@@ -355,8 +355,7 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     
     missing_attendance_reminders = []
     
-    # Only check events from February 4, 2026 onwards (production launch date)
-    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)  # February 4, 2026 at midnight UTC
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
     
     if teacher_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
@@ -643,8 +642,7 @@ def get_curator_dashboard_stats(
     from src.schemas.models import EventParticipant, EventGroup, Event
     missing_attendance_reminders = []
     
-    # Only check events from February 4, 2026 onwards (production launch date)
-    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
     
     if curator_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
@@ -1087,9 +1085,8 @@ def get_head_curator_dashboard_stats(
     from src.schemas.models import EventParticipant, EventGroup, Event
     missing_attendance_reminders = []
     
-    # Only check events from February 4, 2026 onwards (production launch date)
-    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)
-    
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
+
     if current_group_ids:
         # We only show reminders for the currently filtered groups (if any) or all if all
         past_events_rem = db.query(Event).join(EventGroup).filter(
@@ -1186,7 +1183,7 @@ def get_head_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardSt
     managed_group_ids = [ga.group_id for ga in group_accesses]
 
     missing_attendance_reminders = []
-    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
 
     if managed_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
@@ -1301,8 +1298,8 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
     
     # Only check events from February 4, 2026 onwards (production launch date)
     # This ensures we don't show old attendance issues from before this date
-    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)  # February 4, 2026 at midnight UTC
-    
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
+
     past_events = db.query(Event).join(EventGroup).filter(
         Event.event_type == "class",
         Event.end_datetime <= datetime.utcnow(),

@@ -149,7 +149,7 @@ def detect_and_log_missed_attendance(db: Session, teacher_id: int, group_ids: Li
     if not group_ids:
         return
     
-    cutoff_date = datetime(2026, 2, 4, 0, 0, 0)  # February 4, 2026 - production launch date
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
     now = datetime.utcnow()
     
     # Get past events for these groups
@@ -226,10 +226,15 @@ def get_teacher_missed_attendance_stats(db: Session, teacher_id: int, group_ids:
     # First detect and log any new missed attendance
     detect_and_log_missed_attendance(db, teacher_id, group_ids)
     
-    # Get all logs for this teacher
-    all_logs = db.query(MissedAttendanceLog).filter(
+    cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
+
+    # Get all logs for this teacher (only events after cutoff)
+    all_logs = db.query(MissedAttendanceLog).join(
+        Event, MissedAttendanceLog.event_id == Event.id
+    ).filter(
         MissedAttendanceLog.teacher_id == teacher_id,
-        MissedAttendanceLog.group_id.in_(group_ids)
+        MissedAttendanceLog.group_id.in_(group_ids),
+        Event.start_datetime >= cutoff_date
     ).all()
     
     # Get unresolved (current missing)
