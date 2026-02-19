@@ -159,9 +159,9 @@ async def update_my_task(
     if data.status:
         allowed_transitions = {
             "pending": ["in_progress", "completed"],
-            "in_progress": ["completed"],
+            "in_progress": ["completed", "pending"],
             "overdue": ["in_progress", "completed"],
-            "completed": [],  # cannot revert
+            "completed": ["pending", "in_progress"],
         }
         if data.status not in allowed_transitions.get(inst.status, []):
             raise HTTPException(
@@ -171,6 +171,8 @@ async def update_my_task(
         inst.status = data.status
         if data.status == "completed":
             inst.completed_at = datetime.now(timezone.utc)
+        else:
+            inst.completed_at = None
 
     if data.result_text is not None:
         inst.result_text = data.result_text
