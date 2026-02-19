@@ -51,9 +51,43 @@ def _instance_to_schema(inst: CuratorTaskInstance) -> dict:
         "result_text": inst.result_text,
         "screenshot_url": inst.screenshot_url,
         "week_reference": inst.week_reference,
+        "program_week": inst.program_week,
         "created_at": inst.created_at,
         "updated_at": inst.updated_at,
     }
+
+
+def _calc_program_week(group: Group) -> Optional[int]:
+    """Calculate current program week (1-based) from group.schedule_config start_date."""
+    from datetime import date, timedelta
+    try:
+        cfg = group.schedule_config or {}
+        start_str = cfg.get("start_date")
+        if not start_str:
+            return None
+        start = date.fromisoformat(start_str)
+        today = date.today()
+        delta = (today - start).days
+        if delta < 0:
+            return None  # Group hasn't started yet
+        return delta // 7 + 1
+    except Exception:
+        return None
+
+
+def _calc_total_weeks(group: Group) -> Optional[int]:
+    """Calculate total weeks from group.schedule_config."""
+    try:
+        cfg = group.schedule_config or {}
+        lessons_count = cfg.get("lessons_count")
+        items = cfg.get("schedule_items", [])
+        lessons_per_week = max(len(items), 1)
+        if lessons_count:
+            import math
+            return math.ceil(lessons_count / lessons_per_week)
+        return cfg.get("weeks_count")
+    except Exception:
+        return None
 
 
 # ============================================================================
@@ -66,7 +100,8 @@ async def get_my_tasks(
     task_type: Optional[str] = Query(None, description="Filter by type: onboarding, weekly, renewal"),
     student_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
-    week: Optional[str] = Query(None, description="Week reference, e.g. 2026-W08"),
+    week: Optional[str] = Query(None, description="ISO week reference, e.g. 2026-W08"),
+    program_week: Optional[int] = Query(None, description="Program week number (relative to group start_date)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: UserInDB = Depends(require_role(["curator", "head_curator", "admin"])),
@@ -95,7 +130,9 @@ async def get_my_tasks(
         q = q.filter(CuratorTaskInstance.student_id == student_id)
     if group_id:
         q = q.filter(CuratorTaskInstance.group_id == group_id)
-    if week:
+    if program_week is not None:
+        q = q.filter(CuratorTaskInstance.program_week == program_week)
+    elif week:
         q = q.filter(CuratorTaskInstance.week_reference == week)
 
     total = q.count()
@@ -127,6 +164,32 @@ async def get_my_tasks_summary(
         "overdue": counts.get("overdue", 0),
         "total": sum(counts.values()),
     }
+
+
+@router.get("/my-groups", summary="Get groups for current curator with program week info")
+async def get_my_groups(
+    current_user: UserInDB = Depends(require_role(["curator", "head_curator", "admin"])),
+    db: Session = Depends(get_db),
+):
+    """Return curator's active groups with program week, total weeks, and start_date from schedule_config."""
+    if current_user.role in ("admin", "head_curator"):
+        groups = db.query(Group).filter(Group.curator_id.isnot(None), Group.is_active == True).all()
+    else:
+        groups = db.query(Group).filter(Group.curator_id == current_user.id, Group.is_active == True).all()
+
+    result = []
+    for g in groups:
+        cfg = g.schedule_config or {}
+        result.append({
+            "id": g.id,
+            "name": g.name,
+            "start_date": cfg.get("start_date"),
+            "lessons_count": cfg.get("lessons_count"),
+            "program_week": _calc_program_week(g),
+            "total_weeks": _calc_total_weeks(g),
+            "has_schedule": bool(cfg.get("start_date")),
+        })
+    return result
 
 
 @router.patch("/my-tasks/{task_id}", summary="Update task status / result")
@@ -649,16 +712,20 @@ async def seed_templates(
 
 @router.post("/generate-weekly", summary="Generate weekly tasks for current curator's groups for a given week")
 async def generate_weekly_tasks(
-    week: Optional[str] = Query(None, description="Week reference e.g. 2026-W08. Defaults to current week."),
+    week: Optional[str] = Query(None, description="ISO week reference e.g. 2026-W08. Defaults to current week."),
+    group_id: Optional[int] = Query(None, description="Generate for a specific group only"),
     current_user: UserInDB = Depends(require_role(["curator", "head_curator", "admin"])),
     db: Session = Depends(get_db),
 ):
     """
-    Seed templates if needed, then generate all weekly task instances
-    for the curator's groups for the specified (or current) week.
+    Schedule-aware task generation:
+    - Calculates program_week for each group from schedule_config.start_date
+    - Filters templates by applicable_from_week / applicable_to_week
+    - Generates tasks for all active task_types (weekly, onboarding, renewal) as appropriate
+    - Auto-seeds templates if none exist
     """
     import pytz
-    from datetime import timedelta
+    from datetime import timedelta, date as date_type
 
     tz = pytz.timezone("Asia/Almaty")
     now_almaty = datetime.now(tz)
@@ -670,26 +737,26 @@ async def generate_weekly_tasks(
     # Auto-seed templates if none exist
     tmpl_count = db.query(CuratorTaskTemplate).count()
     if tmpl_count == 0:
-        from src.routes.curator_tasks import seed_default_templates
         seed_default_templates(db)
 
     templates = (
         db.query(CuratorTaskTemplate)
-        .filter(CuratorTaskTemplate.is_active == True, CuratorTaskTemplate.task_type == "weekly")
+        .filter(CuratorTaskTemplate.is_active == True)
         .order_by(CuratorTaskTemplate.order_index)
         .all()
     )
 
     if not templates:
-        raise HTTPException(status_code=404, detail="No weekly templates found. Seed them first.")
+        raise HTTPException(status_code=404, detail="No templates found. Seed them first.")
 
     # Determine groups for the curator
-    if current_user.role == "admin":
-        groups = db.query(Group).filter(Group.curator_id.isnot(None), Group.is_active == True).all()
-    elif current_user.role == "head_curator":
-        groups = db.query(Group).filter(Group.curator_id.isnot(None), Group.is_active == True).all()
+    if current_user.role in ("admin", "head_curator"):
+        q = db.query(Group).filter(Group.curator_id.isnot(None), Group.is_active == True)
     else:
-        groups = db.query(Group).filter(Group.curator_id == current_user.id, Group.is_active == True).all()
+        q = db.query(Group).filter(Group.curator_id == current_user.id, Group.is_active == True)
+    if group_id:
+        q = q.filter(Group.id == group_id)
+    groups = q.all()
 
     if not groups:
         return {"detail": "No active groups found for this curator", "created": 0}
@@ -699,7 +766,7 @@ async def generate_weekly_tasks(
         "friday": 4, "saturday": 5, "sunday": 6
     }
 
-    # Parse week start date
+    # Parse ISO week → Monday datetime in Almaty timezone
     year_str, week_part = week.split('-W')
     year_val = int(year_str)
     week_val = int(week_part)
@@ -707,26 +774,43 @@ async def generate_weekly_tasks(
     day_of_week = jan4.isoweekday()
     monday = jan4 - timedelta(days=day_of_week - 1) + timedelta(weeks=week_val - 1)
 
+    def _due_from_rule(rule: dict, monday_dt: datetime) -> Optional[datetime]:
+        if not rule:
+            return None
+        if "day_of_week" in rule:
+            target_idx = day_map.get(rule["day_of_week"].lower(), 0)
+            due = monday_dt + timedelta(days=target_idx)
+            if "time" in rule:
+                try:
+                    h, m = map(int, rule["time"].split(":"))
+                    due = due.replace(hour=h, minute=m, second=0, microsecond=0)
+                except Exception:
+                    pass
+            return due.astimezone(timezone.utc)
+        if "offset_days" in rule:
+            due = monday_dt + timedelta(days=rule["offset_days"])
+            return due.astimezone(timezone.utc)
+        return None
+
     created_count = 0
 
-    for tmpl in templates:
-        # Calculate due date
-        due_date = None
-        if tmpl.deadline_rule:
-            rule = tmpl.deadline_rule
-            if "day_of_week" in rule:
-                target_idx = day_map.get(rule["day_of_week"].lower(), 0)
-                due_date = monday + timedelta(days=target_idx)
-                if "time" in rule:
-                    try:
-                        h, m = map(int, rule["time"].split(":"))
-                        due_date = due_date.replace(hour=h, minute=m, second=0, microsecond=0)
-                    except:
-                        pass
-                due_date = due_date.astimezone(timezone.utc)
+    for group in groups:
+        curator_id = group.curator_id
+        prog_week = _calc_program_week(group)
 
-        for group in groups:
-            curator_id = group.curator_id if current_user.role in ("admin", "head_curator") else current_user.id
+        for tmpl in templates:
+            # Skip if template not applicable for this program week
+            if prog_week is not None:
+                if tmpl.applicable_from_week and prog_week < tmpl.applicable_from_week:
+                    continue
+                if tmpl.applicable_to_week and prog_week > tmpl.applicable_to_week:
+                    continue
+            else:
+                # No schedule_config: only generate templates with no week restrictions
+                if tmpl.applicable_from_week or tmpl.applicable_to_week:
+                    continue
+
+            due_date = _due_from_rule(tmpl.deadline_rule or {}, monday)
 
             if tmpl.scope == "student":
                 students = db.query(UserInDB).join(GroupStudent).filter(
@@ -741,7 +825,7 @@ async def generate_weekly_tasks(
                         CuratorTaskInstance.week_reference == week
                     ).first()
                     if not exists:
-                        inst = CuratorTaskInstance(
+                        db.add(CuratorTaskInstance(
                             template_id=tmpl.id,
                             curator_id=curator_id,
                             student_id=student.id,
@@ -749,8 +833,8 @@ async def generate_weekly_tasks(
                             status="pending",
                             due_date=due_date,
                             week_reference=week,
-                        )
-                        db.add(inst)
+                            program_week=prog_week,
+                        ))
                         created_count += 1
 
             elif tmpl.scope == "group":
@@ -760,38 +844,100 @@ async def generate_weekly_tasks(
                     CuratorTaskInstance.week_reference == week
                 ).first()
                 if not exists:
-                    inst = CuratorTaskInstance(
+                    db.add(CuratorTaskInstance(
                         template_id=tmpl.id,
                         curator_id=curator_id,
                         group_id=group.id,
                         status="pending",
                         due_date=due_date,
                         week_reference=week,
-                    )
-                    db.add(inst)
+                        program_week=prog_week,
+                    ))
                     created_count += 1
 
     db.commit()
-    return {"detail": f"Сгенерировано {created_count} задач на неделю {week}", "created": created_count}
+
+    phase_label = ""
+    if groups:
+        pw = _calc_program_week(groups[0])
+        tw = _calc_total_weeks(groups[0])
+        if pw and tw:
+            phase_label = f" (Неделя {pw} из {tw})"
+        elif pw:
+            phase_label = f" (Неделя {pw})"
+
+    return {
+        "detail": f"Сгенерировано {created_count} задач на неделю {week}{phase_label}",
+        "created": created_count,
+        "week": week,
+    }
 
 
 def seed_default_templates(db: Session):
     """Utility to seed templates without auth (called internally)."""
     default_templates = [
-        {"title": "Обратная связь родителям (ОС)", "task_type": "weekly", "scope": "student", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "tuesday", "time": "21:00"}, "order_index": 1},
-        {"title": "Напоминание о weekly practice", "task_type": "weekly", "scope": "student", "recurrence_rule": {"day_of_week": "sunday", "time": "09:00"}, "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 2},
-        {"title": "Напоминание о вебинаре / уроке", "task_type": "weekly", "scope": "student", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "friday", "time": "18:00"}, "order_index": 3},
-        {"title": "Заполнение лидерборда", "task_type": "weekly", "scope": "group", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 4},
-        {"title": "Проведение кураторского часа", "task_type": "weekly", "scope": "group", "recurrence_rule": {"day_of_week": "monday", "time": "09:00"}, "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 5},
-        {"title": "Пост в беседу 1", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "monday", "time": "21:00"}, "order_index": 6},
-        {"title": "Пост в беседу 2", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "wednesday", "time": "21:00"}, "order_index": 7},
-        {"title": "Пост в беседу 3", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "friday", "time": "21:00"}, "order_index": 8},
-        {"title": "Пост в беседу 4", "task_type": "weekly", "scope": "group", "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 9},
-        {"title": "Обратная связь ученику в ЛС 1", "task_type": "weekly", "scope": "student", "deadline_rule": {"day_of_week": "thursday", "time": "14:00"}, "order_index": 10},
-        {"title": "Обратная связь ученику в ЛС 2", "task_type": "weekly", "scope": "student", "deadline_rule": {"day_of_week": "sunday", "time": "20:00"}, "order_index": 11},
+        # Weekly tasks (apply every week: applicable_from_week=None, applicable_to_week=None)
+        {"title": "Обратная связь родителям (ОС)", "task_type": "weekly", "scope": "student",
+         "recurrence_rule": {"day_of_week": "monday", "time": "09:00"},
+         "deadline_rule": {"day_of_week": "tuesday", "time": "21:00"}, "order_index": 1,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Напоминание о weekly practice", "task_type": "weekly", "scope": "student",
+         "recurrence_rule": {"day_of_week": "sunday", "time": "09:00"},
+         "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 2,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Напоминание о вебинаре / уроке", "task_type": "weekly", "scope": "student",
+         "recurrence_rule": {"day_of_week": "monday", "time": "09:00"},
+         "deadline_rule": {"day_of_week": "friday", "time": "18:00"}, "order_index": 3,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Заполнение лидерборда", "task_type": "weekly", "scope": "group",
+         "recurrence_rule": {"day_of_week": "monday", "time": "09:00"},
+         "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 4,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Проведение кураторского часа", "task_type": "weekly", "scope": "group",
+         "recurrence_rule": {"day_of_week": "monday", "time": "09:00"},
+         "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 5,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Пост в беседу 1", "task_type": "weekly", "scope": "group",
+         "deadline_rule": {"day_of_week": "monday", "time": "21:00"}, "order_index": 6,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Пост в беседу 2", "task_type": "weekly", "scope": "group",
+         "deadline_rule": {"day_of_week": "wednesday", "time": "21:00"}, "order_index": 7,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Пост в беседу 3", "task_type": "weekly", "scope": "group",
+         "deadline_rule": {"day_of_week": "friday", "time": "21:00"}, "order_index": 8,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Пост в беседу 4", "task_type": "weekly", "scope": "group",
+         "deadline_rule": {"day_of_week": "sunday", "time": "21:00"}, "order_index": 9,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Обратная связь ученику в ЛС 1", "task_type": "weekly", "scope": "student",
+         "deadline_rule": {"day_of_week": "thursday", "time": "14:00"}, "order_index": 10,
+         "applicable_from_week": None, "applicable_to_week": None},
+        {"title": "Обратная связь ученику в ЛС 2", "task_type": "weekly", "scope": "student",
+         "deadline_rule": {"day_of_week": "sunday", "time": "20:00"}, "order_index": 11,
+         "applicable_from_week": None, "applicable_to_week": None},
+        # Onboarding: only week 1
+        {"title": "Знакомство с учеником", "task_type": "onboarding", "scope": "student",
+         "deadline_rule": {"offset_days": 1}, "order_index": 1,
+         "applicable_from_week": 1, "applicable_to_week": 1},
+        {"title": "Знакомство с родителем (сообщение)", "task_type": "onboarding", "scope": "student",
+         "deadline_rule": {"offset_days": 1}, "order_index": 2,
+         "applicable_from_week": 1, "applicable_to_week": 1},
+        # Renewal: from week 10 onwards
+        {"title": "Предпродление", "task_type": "renewal", "scope": "student",
+         "deadline_rule": {"offset_days": 3}, "order_index": 1,
+         "applicable_from_week": 10, "applicable_to_week": None},
+        {"title": "Передача статуса о продлении", "task_type": "renewal", "scope": "student",
+         "deadline_rule": {"offset_days": 5}, "order_index": 2,
+         "applicable_from_week": 10, "applicable_to_week": None},
     ]
     for tmpl_data in default_templates:
         existing = db.query(CuratorTaskTemplate).filter(CuratorTaskTemplate.title == tmpl_data["title"]).first()
         if not existing:
             db.add(CuratorTaskTemplate(**tmpl_data))
+        else:
+            # Update applicable_from/to_week for existing templates that don't have them set
+            if existing.applicable_from_week is None and tmpl_data.get("applicable_from_week") is not None:
+                existing.applicable_from_week = tmpl_data["applicable_from_week"]
+            if existing.applicable_to_week is None and tmpl_data.get("applicable_to_week") is not None:
+                existing.applicable_to_week = tmpl_data["applicable_to_week"]
     db.commit()

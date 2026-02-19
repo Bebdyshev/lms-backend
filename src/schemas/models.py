@@ -2448,6 +2448,11 @@ class CuratorTaskTemplate(Base):
     # Ordering within a category
     order_index = Column(Integer, default=0)
 
+    # Program week applicability (relative to group start_date)
+    # None = applies every week; 1 = only week 1; 10 = from week 10 onwards
+    applicable_from_week = Column(Integer, nullable=True)
+    applicable_to_week = Column(Integer, nullable=True)
+
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
@@ -2486,6 +2491,9 @@ class CuratorTaskInstance(Base):
     # Week reference (for weekly tasks, e.g. "2026-W08")
     week_reference = Column(String, nullable=True)
 
+    # Program week number (relative to group.schedule_config["start_date"])
+    program_week = Column(Integer, nullable=True)
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
@@ -2513,6 +2521,8 @@ class CuratorTaskTemplateSchema(BaseModel):
     recurrence_rule: Optional[dict] = None
     deadline_rule: Optional[dict] = None
     order_index: int = 0
+    applicable_from_week: Optional[int] = None
+    applicable_to_week: Optional[int] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -2529,6 +2539,8 @@ class CuratorTaskTemplateCreateSchema(BaseModel):
     recurrence_rule: Optional[dict] = None
     deadline_rule: Optional[dict] = None
     order_index: int = 0
+    applicable_from_week: Optional[int] = None
+    applicable_to_week: Optional[int] = None
 
 
 class CuratorTaskInstanceSchema(BaseModel):
@@ -2550,6 +2562,7 @@ class CuratorTaskInstanceSchema(BaseModel):
     result_text: Optional[str] = None
     screenshot_url: Optional[str] = None
     week_reference: Optional[str] = None
+    program_week: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
