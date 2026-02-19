@@ -102,11 +102,13 @@ async def list_students(
     att_attended_map = {r.user_id: r.attended for r in att_attended}
 
     # --- Aggregate LMS progress ---
+    # Course-level records (lesson_id IS NULL) contain overall course progress
     lms_rows = (
         db.query(StudentProgress.user_id, func.avg(StudentProgress.completion_percentage).label("avg_pct"))
         .filter(
             StudentProgress.user_id.in_(student_ids),
-            StudentProgress.lesson_id.isnot(None),
+            StudentProgress.lesson_id.is_(None),
+            StudentProgress.assignment_id.is_(None),
         )
         .group_by(StudentProgress.user_id)
         .all()
@@ -334,25 +336,38 @@ async def get_student_profile(
     hw_avg_score = round(sum(h["score"] for h in graded) / len(graded), 1) if graded else None
 
     # --- LMS Progress ---
-    lms_rows = (
+    # Course-level progress (lesson_id IS NULL, assignment_id IS NULL)
+    course_rows = (
         db.query(StudentProgress)
-        .options(joinedload(StudentProgress.course), joinedload(StudentProgress.lesson))
-        .filter(StudentProgress.user_id == student_id, StudentProgress.lesson_id.isnot(None))
+        .options(joinedload(StudentProgress.course))
+        .filter(
+            StudentProgress.user_id == student_id,
+            StudentProgress.lesson_id.is_(None),
+            StudentProgress.assignment_id.is_(None),
+        )
         .order_by(StudentProgress.last_accessed.desc())
         .all()
     )
 
-    # Group by course
-    course_progress: dict = {}
-    for sp in lms_rows:
+    # Lesson-level progress (lesson_id IS NOT NULL)
+    lesson_rows = (
+        db.query(StudentProgress)
+        .options(joinedload(StudentProgress.course), joinedload(StudentProgress.lesson))
+        .filter(
+            StudentProgress.user_id == student_id,
+            StudentProgress.lesson_id.isnot(None),
+        )
+        .order_by(StudentProgress.last_accessed.desc())
+        .all()
+    )
+
+    # Build per-course data from lesson-level rows
+    lessons_by_course: dict = {}
+    for sp in lesson_rows:
         cid = sp.course_id
-        if cid not in course_progress:
-            course_progress[cid] = {
-                "course_id": cid,
-                "course_name": sp.course.title if sp.course else None,
-                "lessons": [],
-            }
-        course_progress[cid]["lessons"].append({
+        if cid not in lessons_by_course:
+            lessons_by_course[cid] = []
+        lessons_by_course[cid].append({
             "lesson_id": sp.lesson_id,
             "lesson_title": sp.lesson.title if sp.lesson else None,
             "status": sp.status,
@@ -360,11 +375,40 @@ async def get_student_profile(
             "last_accessed": sp.last_accessed.isoformat() if sp.last_accessed else None,
         })
 
-    for cid, cp in course_progress.items():
-        lessons = cp["lessons"]
-        cp["total_lessons"] = len(lessons)
-        cp["completed_lessons"] = sum(1 for l in lessons if l["status"] == "completed")
-        cp["avg_completion"] = round(sum(l["completion_percentage"] for l in lessons) / len(lessons), 1) if lessons else 0
+    # Build course_progress from course-level rows (primary) or lesson-level (fallback)
+    course_progress: dict = {}
+    for sp in course_rows:
+        cid = sp.course_id
+        lessons = lessons_by_course.get(cid, [])
+        completed_lessons = sum(1 for l in lessons if l["status"] == "completed") if lessons else 0
+        course_progress[cid] = {
+            "course_id": cid,
+            "course_name": sp.course.title if sp.course else None,
+            "status": sp.status,
+            "completion_percentage": sp.completion_percentage,
+            "total_lessons": len(lessons),
+            "completed_lessons": completed_lessons,
+            "avg_completion": sp.completion_percentage,
+            "last_accessed": sp.last_accessed.isoformat() if sp.last_accessed else None,
+            "lessons": lessons,
+        }
+
+    # Add any courses that only have lesson-level records
+    for cid, lessons in lessons_by_course.items():
+        if cid not in course_progress:
+            avg_pct = round(sum(l["completion_percentage"] for l in lessons) / len(lessons), 1) if lessons else 0
+            completed_lessons = sum(1 for l in lessons if l["status"] == "completed")
+            course_progress[cid] = {
+                "course_id": cid,
+                "course_name": lessons[0].get("lesson_title", None),
+                "status": "completed" if all(l["status"] == "completed" for l in lessons) else "in_progress",
+                "completion_percentage": avg_pct,
+                "total_lessons": len(lessons),
+                "completed_lessons": completed_lessons,
+                "avg_completion": avg_pct,
+                "last_accessed": None,
+                "lessons": lessons,
+            }
 
     lms_data = list(course_progress.values())
     overall_lms = round(sum(c["avg_completion"] for c in lms_data) / len(lms_data), 1) if lms_data else None
