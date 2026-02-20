@@ -149,7 +149,7 @@ def health_check():
         content={
             "status": "healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "version": "1.60.0",
+            "version": "1.61.0",
         }
     )
 #-----------------------------------------------------------------------------

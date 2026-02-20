@@ -25,6 +25,8 @@ def _to_enriched_schema(assignment: Assignment) -> AssignmentSchema:
     schema = AssignmentSchema.from_orm(assignment)
     if assignment.event:
         schema.event_start_datetime = assignment.event.start_datetime
+    if assignment.group:
+        schema.group_name = assignment.group.name
     return schema
 
 router = APIRouter()
@@ -147,7 +149,7 @@ async def get_assignments(
             (Assignment.lesson_id.in_(lesson_ids)) | (Assignment.group_id.in_(teacher_group_ids))
         )
     
-    assignments = query.options(joinedload(Assignment.event)).offset(skip).limit(limit).all()
+    assignments = query.options(joinedload(Assignment.event), joinedload(Assignment.group)).offset(skip).limit(limit).all()
     return [_to_enriched_schema(a) for a in assignments]
 
 @router.patch("/{assignment_id}/toggle-visibility", response_model=AssignmentSchema)

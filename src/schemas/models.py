@@ -1169,6 +1169,7 @@ class AssignmentSchema(BaseModel):
     id: int
     lesson_id: Optional[int] = None
     group_id: Optional[int] = None
+    group_name: Optional[str] = None
     event_id: Optional[int] = None  # Link to zoom lesson (Event) - deprecated
     lesson_number: Optional[int] = None  # Lesson number within group (1, 2, 3, etc.)
     title: str
