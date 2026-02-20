@@ -103,7 +103,24 @@ async def create_lesson_request(
             detail="Monthly limit reached: You can only request 2 substitutions/reschedules per group per month."
         )
 
-    # Check for existing pending request_type,
+    # Check for existing pending request for same lesson (prevent duplicates)
+    dup_query = db.query(LessonRequest).filter(
+        LessonRequest.requester_id == current_user.id,
+        LessonRequest.group_id == data.group_id,
+        LessonRequest.status.in_(["pending", "pending_teacher"]),
+    )
+    if data.event_id:
+        dup_query = dup_query.filter(LessonRequest.event_id == data.event_id)
+    elif data.lesson_schedule_id:
+        dup_query = dup_query.filter(LessonRequest.lesson_schedule_id == data.lesson_schedule_id)
+    else:
+        dup_query = dup_query.filter(LessonRequest.original_datetime == original_dt)
+    if dup_query.first():
+        raise HTTPException(
+            status_code=400,
+            detail="A pending request already exists for this lesson."
+        )
+
     import json
     new_request = LessonRequest(
         request_type=data.request_type,
@@ -285,10 +302,12 @@ async def list_lesson_requests(
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin()),
 ):
-    """List all lesson requests (admin only)."""
+    """List all lesson requests (admin only). Supports comma-separated status_filter (e.g. pending,pending_teacher)."""
     query = db.query(LessonRequest)
     if status_filter:
-        query = query.filter(LessonRequest.status == status_filter)
+        statuses = [s.strip() for s in status_filter.split(",") if s.strip()]
+        if statuses:
+            query = query.filter(LessonRequest.status.in_(statuses))
 
     requests = query.order_by(LessonRequest.created_at.desc()).all()
     return [_enrich_request(r, db) for r in requests]
@@ -542,7 +561,7 @@ def _enrich_request(lr: LessonRequest, db: Session) -> LessonRequestSchema:
 def _apply_substitution(db: Session, lr: LessonRequest, admin_id: int):
     """Materialize the event if needed and swap the teacher."""
     event_id = lr.event_id
-    print(f"DEBUG_SUB: Applying sub/reschedule for req={lr.id} schedule={lr.lesson_schedule_id} event={event_id}")
+    logger.debug("Applying sub/reschedule for req=%s schedule=%s event=%s", lr.id, lr.lesson_schedule_id, event_id)
 
     # If linked to a schedule but no event, materialize it
     if not event_id and lr.lesson_schedule_id:
@@ -556,7 +575,7 @@ def _apply_substitution(db: Session, lr: LessonRequest, admin_id: int):
             # Use confirmed teacher if available, fallback to old substitute_teacher_id
             new_teacher_id = lr.confirmed_teacher_id or lr.substitute_teacher_id
             if new_teacher_id:
-                print(f"DEBUG_SUB: Setting event {event.id} teacher_id to {new_teacher_id}")
+                logger.debug("Setting event %s teacher_id to %s", event.id, new_teacher_id)
                 event.teacher_id = new_teacher_id
                 db.flush()
 
@@ -620,7 +639,8 @@ def _notify_resolution(db: Session, lr: LessonRequest, approved: bool):
         ).all()
 
         if lr.request_type == "substitution":
-            sub_teacher = db.query(UserInDB).filter(UserInDB.id == lr.substitute_teacher_id).first()
+            sub_teacher_id = lr.confirmed_teacher_id or lr.substitute_teacher_id
+            sub_teacher = db.query(UserInDB).filter(UserInDB.id == sub_teacher_id).first() if sub_teacher_id else None
             sub_name = sub_teacher.name if sub_teacher else "another teacher"
             msg = f"Your class in {group_name} on {lr.original_datetime.strftime('%d %b %Y %H:%M')} will be taught by {sub_name}."
         else:
