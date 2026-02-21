@@ -7,11 +7,12 @@ Endpoints:
   - Admin: CRUD task templates, manually create task instances
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_, or_, desc
 from typing import List, Optional
 from datetime import datetime, timezone
+from pydantic import BaseModel
 
 from src.config import get_db
 from src.schemas.models import (
@@ -190,6 +191,39 @@ async def get_my_groups(
             "has_schedule": bool(cfg.get("start_date")),
         })
     return result
+
+
+class BulkTaskUpdateSchema(BaseModel):
+    task_ids: List[int]
+    status: str  # 'completed', 'in_progress', 'pending'
+
+
+@router.patch("/my-tasks/bulk", summary="Bulk update task status (e.g. mark multiple as completed)")
+async def bulk_update_my_tasks(
+    data: BulkTaskUpdateSchema = Body(...),
+    current_user: UserInDB = Depends(require_role(["curator", "head_curator", "admin"])),
+    db: Session = Depends(get_db),
+):
+    """Update multiple tasks in one request. Only tasks assigned to current user."""
+    if not data.task_ids:
+        return {"updated": 0}
+    allowed = {"completed", "in_progress", "pending"}
+    if data.status not in allowed:
+        raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
+    instances = (
+        db.query(CuratorTaskInstance)
+        .filter(
+            CuratorTaskInstance.id.in_(data.task_ids),
+            CuratorTaskInstance.curator_id == current_user.id,
+        )
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    for inst in instances:
+        inst.status = data.status
+        inst.completed_at = now if data.status == "completed" else None
+    db.commit()
+    return {"updated": len(instances)}
 
 
 @router.patch("/my-tasks/{task_id}", summary="Update task status / result")
