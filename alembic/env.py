@@ -19,8 +19,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Import models for autogenerate support
-from src.schemas.models import Base
+# Import all models so Alembic can detect them for autogenerate.
+# src.models.__init__ imports Base + every ORM model from all domain folders.
+from src.models import Base  # noqa: F401 – triggers import of all domain models
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,

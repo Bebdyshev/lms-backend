@@ -1,0 +1,294 @@
+"""
+Curator Task Scheduler
+
+Runs automatically every Monday at 09:00 Almaty time.
+On startup, also checks if current week's tasks are missing and generates them.
+
+Key logic:
+- For each active group with schedule_config.start_date, calculates program_week
+- Filters templates by applicable_from_week / applicable_to_week
+- Skips groups that haven't started yet (program_week < 1)
+- Deduplicates using (template_id, student_id/group_id, week_reference)
+"""
+import logging
+import threading
+import time
+from datetime import datetime, timedelta, timezone, date as date_type
+from typing import Optional
+import pytz
+
+from src.config import SessionLocal
+from src.schemas.models import (
+    CuratorTaskTemplate, CuratorTaskInstance,
+    UserInDB, Group, GroupStudent,
+)
+
+logger = logging.getLogger(__name__)
+
+TZ = pytz.timezone("Asia/Almaty")
+DAY_MAP = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _calc_program_week(group: Group) -> Optional[int]:
+    try:
+        cfg = group.schedule_config or {}
+        start_str = cfg.get("start_date")
+        if not start_str:
+            return None
+        start = date_type.fromisoformat(start_str)
+        today = date_type.today()
+        delta = (today - start).days
+        if delta < 0:
+            return None
+        return delta // 7 + 1
+    except Exception:
+        return None
+
+
+def _calc_total_weeks(group: Group) -> Optional[int]:
+    try:
+        import math
+        cfg = group.schedule_config or {}
+        lessons_count = cfg.get("lessons_count")
+        items = cfg.get("schedule_items", [])
+        lessons_per_week = max(len(items), 1)
+        if lessons_count:
+            return math.ceil(lessons_count / lessons_per_week)
+        return cfg.get("weeks_count")
+    except Exception:
+        return None
+
+
+def _due_from_rule(rule: dict, monday_dt: datetime) -> Optional[datetime]:
+    if not rule:
+        return None
+    if "day_of_week" in rule:
+        target_idx = DAY_MAP.get(rule["day_of_week"].lower(), 0)
+        due = monday_dt + timedelta(days=target_idx)
+        if "time" in rule:
+            try:
+                h, m = map(int, rule["time"].split(":"))
+                due = due.replace(hour=h, minute=m, second=0, microsecond=0)
+            except Exception:
+                pass
+        return due.astimezone(timezone.utc)
+    if "offset_days" in rule:
+        return (monday_dt + timedelta(days=rule["offset_days"])).astimezone(timezone.utc)
+    return None
+
+
+def _get_week_monday(now_almaty: datetime) -> datetime:
+    """Return Monday 00:00 of the current ISO week in Almaty time."""
+    year, week, _ = now_almaty.isocalendar()
+    jan4 = datetime(year, 1, 4, tzinfo=TZ)
+    iwd = jan4.isoweekday()
+    return jan4 - timedelta(days=iwd - 1) + timedelta(weeks=week - 1)
+
+
+def generate_tasks_for_week(db, week_ref: str, monday_dt: datetime) -> int:
+    """
+    Core generation logic used by both the scheduler and the startup check.
+    Returns number of newly created instances.
+    """
+    from src.routes.curator_tasks import seed_default_templates
+
+    # Auto-seed if no templates exist
+    if db.query(CuratorTaskTemplate).count() == 0:
+        seed_default_templates(db)
+
+    templates = (
+        db.query(CuratorTaskTemplate)
+        .filter(CuratorTaskTemplate.is_active == True)
+        .order_by(CuratorTaskTemplate.order_index)
+        .all()
+    )
+    if not templates:
+        return 0
+
+    groups = db.query(Group).filter(
+        Group.curator_id.isnot(None),
+        Group.is_active == True,
+    ).all()
+
+    created_count = 0
+
+    for group in groups:
+        curator_id = group.curator_id
+        prog_week = _calc_program_week(group)
+
+        for tmpl in templates:
+            # Filter by program week applicability
+            if prog_week is not None:
+                if tmpl.applicable_from_week and prog_week < tmpl.applicable_from_week:
+                    continue
+                if tmpl.applicable_to_week and prog_week > tmpl.applicable_to_week:
+                    continue
+            else:
+                # No schedule_config — skip week-restricted templates
+                if tmpl.applicable_from_week or tmpl.applicable_to_week:
+                    continue
+
+            due_date = _due_from_rule(tmpl.deadline_rule or {}, monday_dt)
+
+            if tmpl.scope == "student":
+                students = (
+                    db.query(UserInDB)
+                    .join(GroupStudent)
+                    .filter(GroupStudent.group_id == group.id, UserInDB.is_active == True)
+                    .all()
+                )
+                for student in students:
+                    exists = db.query(CuratorTaskInstance).filter(
+                        CuratorTaskInstance.template_id == tmpl.id,
+                        CuratorTaskInstance.student_id == student.id,
+                        CuratorTaskInstance.week_reference == week_ref,
+                    ).first()
+                    if not exists:
+                        db.add(CuratorTaskInstance(
+                            template_id=tmpl.id,
+                            curator_id=curator_id,
+                            student_id=student.id,
+                            group_id=group.id,
+                            status="pending",
+                            due_date=due_date,
+                            week_reference=week_ref,
+                            program_week=prog_week,
+                        ))
+                        created_count += 1
+
+            elif tmpl.scope == "group":
+                exists = db.query(CuratorTaskInstance).filter(
+                    CuratorTaskInstance.template_id == tmpl.id,
+                    CuratorTaskInstance.group_id == group.id,
+                    CuratorTaskInstance.week_reference == week_ref,
+                ).first()
+                if not exists:
+                    db.add(CuratorTaskInstance(
+                        template_id=tmpl.id,
+                        curator_id=curator_id,
+                        group_id=group.id,
+                        status="pending",
+                        due_date=due_date,
+                        week_reference=week_ref,
+                        program_week=prog_week,
+                    ))
+                    created_count += 1
+
+    if created_count > 0:
+        db.commit()
+
+    return created_count
+
+
+class CuratorTaskScheduler:
+    """
+    Background scheduler to generate recurring curator tasks.
+
+    - On startup: checks if current week has tasks; generates if missing.
+    - Every hour on Mondays: generates tasks for the current week.
+    """
+
+    def __init__(self, check_interval: int = 3600):
+        self.check_interval = check_interval
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        if self.running:
+            logger.warning("Curator task scheduler is already running")
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        logger.info("Curator task scheduler started")
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        logger.info("Curator task scheduler stopped")
+
+    def _run(self):
+        logger.info(f"[SCHEDULER] Curator task scheduler started (interval: {self.check_interval}s)")
+
+        # Startup check: generate current week's tasks if missing
+        try:
+            self._startup_check()
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Startup check error: {e}", exc_info=True)
+
+        while self.running:
+            time.sleep(self.check_interval)
+            if not self.running:
+                break
+            try:
+                self._check_and_create_tasks()
+            except Exception as e:
+                logger.error(f"[SCHEDULER] Error in curator task check: {e}", exc_info=True)
+
+    def _startup_check(self):
+        """On startup, ensure current week's tasks exist for all groups."""
+        db = SessionLocal()
+        try:
+            now_almaty = datetime.now(TZ)
+            year, week, _ = now_almaty.isocalendar()
+            week_ref = f"{year}-W{week:02d}"
+            monday = _get_week_monday(now_almaty)
+
+            # Check if any tasks exist for this week
+            existing = db.query(CuratorTaskInstance).filter(
+                CuratorTaskInstance.week_reference == week_ref
+            ).count()
+
+            if existing == 0:
+                logger.info(f"[SCHEDULER] No tasks found for {week_ref}, generating...")
+                created = generate_tasks_for_week(db, week_ref, monday)
+                logger.info(f"[SCHEDULER] Startup: generated {created} tasks for {week_ref}")
+            else:
+                logger.info(f"[SCHEDULER] {existing} tasks already exist for {week_ref}, skipping startup generation")
+        finally:
+            db.close()
+
+    def _check_and_create_tasks(self):
+        """On Mondays, generate tasks for the current week."""
+        db = SessionLocal()
+        try:
+            now_almaty = datetime.now(TZ)
+
+            # Only generate on Mondays
+            if now_almaty.weekday() != 0:
+                return
+
+            year, week, _ = now_almaty.isocalendar()
+            week_ref = f"{year}-W{week:02d}"
+            monday = _get_week_monday(now_almaty)
+
+            created = generate_tasks_for_week(db, week_ref, monday)
+            if created > 0:
+                logger.info(f"[SCHEDULER] Monday run: generated {created} tasks for {week_ref}")
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Error: {e}", exc_info=True)
+            db.rollback()
+        finally:
+            db.close()
+
+
+_scheduler: Optional[CuratorTaskScheduler] = None
+
+
+def get_scheduler() -> CuratorTaskScheduler:
+    global _scheduler
+    if _scheduler is None:
+        _scheduler = CuratorTaskScheduler(check_interval=3600)
+    return _scheduler
+
+
+def start_curator_task_scheduler():
+    get_scheduler().start()
+
+
+def stop_curator_task_scheduler():
+    get_scheduler().stop()

@@ -1,0 +1,45 @@
+from fastapi import FastAPI
+
+
+def register_routes(app: FastAPI):
+    """Register all domain routers with the FastAPI application."""
+    from src.auth.routes import auth_router, users_router
+    from src.admin.routes import (
+        admin_router, dashboard_router,
+        head_teacher_router, analytics_router, media_router,
+    )
+    from src.courses.routes import courses_router
+    from src.assignments.routes import assignments_router, assignment_zero_router
+    from src.progress.routes import progress_router, admin_progress_router
+    from src.events.routes import events_router
+    from src.messages.routes import messages_router
+    from src.gamification.routes import (
+        gamification_router, leaderboard_router, daily_questions_router,
+    )
+    from src.content.routes import flashcards_router, questions_router, ai_tools_router
+    from src.curator.routes import curator_tasks_router, student_journal_router
+    from src.lesson_requests.routes import router as lesson_requests_router
+
+    app.include_router(auth_router, prefix="/auth", tags=["Authentication"])
+    app.include_router(admin_router, prefix="/admin", tags=["Admin"])
+    app.include_router(admin_progress_router, prefix="/admin", tags=["Admin Progress"])
+    app.include_router(dashboard_router, prefix="/dashboard", tags=["Dashboard"])
+    app.include_router(users_router, prefix="/users", tags=["Users"])
+    app.include_router(courses_router, prefix="/courses", tags=["Courses"])
+    app.include_router(assignments_router, prefix="/assignments", tags=["Assignments"])
+    app.include_router(messages_router, prefix="/messages", tags=["Messages"])
+    app.include_router(progress_router, prefix="/progress", tags=["Progress"])
+    app.include_router(media_router, prefix="/media", tags=["Media"])
+    app.include_router(events_router, prefix="/events", tags=["Events"])
+    app.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
+    app.include_router(flashcards_router, prefix="/flashcards", tags=["Flashcards"])
+    app.include_router(leaderboard_router, prefix="/leaderboard", tags=["Leaderboard"])
+    app.include_router(assignment_zero_router, prefix="/assignment-zero", tags=["Assignment Zero"])
+    app.include_router(questions_router, tags=["Questions"])
+    app.include_router(gamification_router, prefix="/gamification", tags=["Gamification"])
+    app.include_router(ai_tools_router, prefix="/ai-tools", tags=["AI Tools"])
+    app.include_router(head_teacher_router, prefix="/head-teacher", tags=["Head Teacher"])
+    app.include_router(daily_questions_router, prefix="/daily-questions", tags=["Daily Questions"])
+    app.include_router(lesson_requests_router, prefix="/lesson-requests", tags=["Lesson Requests"])
+    app.include_router(curator_tasks_router, prefix="/curator-tasks", tags=["Curator Tasks"])
+    app.include_router(student_journal_router, prefix="/student-journal", tags=["Student Journal"])
