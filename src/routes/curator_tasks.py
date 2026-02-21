@@ -257,7 +257,8 @@ async def get_all_tasks(
     status: Optional[str] = Query(None),
     task_type: Optional[str] = Query(None),
     group_id: Optional[int] = Query(None),
-    week: Optional[str] = Query(None),
+    week: Optional[str] = Query(None, description="ISO week reference, e.g. 2026-W08"),
+    program_week: Optional[int] = Query(None, description="Program week number (relative to group start_date)"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: UserInDB = Depends(require_role(["head_curator", "admin"])),
@@ -282,7 +283,9 @@ async def get_all_tasks(
         q = q.join(CuratorTaskTemplate).filter(CuratorTaskTemplate.task_type == task_type)
     if group_id:
         q = q.filter(CuratorTaskInstance.group_id == group_id)
-    if week:
+    if program_week is not None:
+        q = q.filter(CuratorTaskInstance.program_week == program_week)
+    elif week:
         q = q.filter(CuratorTaskInstance.week_reference == week)
 
     total = q.count()
