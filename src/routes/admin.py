@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, time, date
 from src.config import get_db
 from src.schemas.models import (
     UserInDB, UserSchema, Group, GroupSchema, GroupStudent, Course, Module, Enrollment, 
-    StudentProgress, Assignment, AssignmentSubmission, Event, EventGroup, EventParticipant,
+    StudentProgress, Assignment, AssignmentSubmission, AssignmentExtension, Event, EventGroup, EventParticipant,
     EventSchema, CreateEventRequest, UpdateEventRequest, EventGroupSchema, EventParticipantSchema,
     StepProgress, Step, Lesson, LessonSchedule, CourseGroupAccess, CourseHeadTeacher
 )
@@ -571,6 +571,11 @@ async def delete_user(
             status_code=400, 
             detail=f"Cannot delete user. They are the teacher for {group_count} group(s). Please reassign or delete these groups first."
         )
+    
+    # Delete related records before user delete (avoid FK/ORM cascade issues)
+    db.query(EventParticipant).filter(EventParticipant.user_id == user_id).delete()
+    db.query(GroupStudent).filter(GroupStudent.student_id == user_id).delete()
+    db.query(AssignmentExtension).filter(AssignmentExtension.student_id == user_id).delete()
     
     db.delete(user)
     db.commit()
