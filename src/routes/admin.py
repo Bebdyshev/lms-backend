@@ -1132,14 +1132,16 @@ async def bulk_schedule_upload(
                 db.add(teacher)
                 db.flush()
                 
-            # 4. Find or Create Student
+            # 4. Find or Create Student (never use teacher as student - prevents teacher appearing in attendance)
             student = db.query(UserInDB).filter(
                 func.lower(UserInDB.name) == student_name.lower(),
                 UserInDB.role == "student"
             ).first()
             if not student:
-                 # Try to find by name only if role mismatch
-                 student = db.query(UserInDB).filter(func.lower(UserInDB.name) == student_name.lower()).first()
+                existing_user = db.query(UserInDB).filter(func.lower(UserInDB.name) == student_name.lower()).first()
+                if existing_user and existing_user.role != "student":
+                    failed_lines.append({"line_num": i+1, "error": f"'{student_name}' is a {existing_user.role}, not a student. Column 2 must be a student name."})
+                    continue
             if not student:
                  # Auto-create student if not found
                  import string

@@ -882,14 +882,17 @@ async def get_group_full_attendance_matrix(
 
     event_ids = [e.id for e in all_events]
     
-    # 7. Get Students
+    # 7. Get Students (only role=student - teachers must not appear in attendance)
     group_students = db.query(GroupStudent).filter(GroupStudent.group_id == group_id).all()
     student_ids = [gs.student_id for gs in group_students]
     
     if not student_ids:
         return {"lessons": lessons_meta, "students": []}
         
-    students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
+    students = db.query(UserInDB).filter(
+        UserInDB.id.in_(student_ids),
+        UserInDB.role == "student"
+    ).all()
     students_list = sorted(students, key=lambda s: s.name or "")
 
     # 8. Get Attendance
