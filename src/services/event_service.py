@@ -56,9 +56,17 @@ class EventService:
 
         generated_events = []
 
+        def make_naive(dt: datetime) -> datetime:
+            if dt.tzinfo is not None:
+                return dt.replace(tzinfo=None)
+            return dt
+
+        start_date = make_naive(start_date)
+        end_date = make_naive(end_date)
+
         for parent in parent_events:
-            current_start = parent.start_datetime
-            current_end = parent.end_datetime
+            current_start = make_naive(parent.start_datetime)
+            current_end = make_naive(parent.end_datetime)
             duration = current_end - current_start
             
             original_start_day = parent.start_datetime.day
