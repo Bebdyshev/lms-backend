@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc
 from typing import List, Optional
@@ -2496,6 +2497,12 @@ async def get_teacher_lessons_count(
     Returns the number of active class Events conducted by the given teacher
     in the specified calendar month using Kazakhstan timezone (GMT+5).
 
+    Counting rules:
+    - Active class events (event_type='class', is_active=True)
+    - Conducted only (end_datetime <= now)
+    - Substitutions: lesson counts for the substitute teacher (Event.teacher_id)
+    - Schedule regeneration: old events deactivated (is_active=False), not counted
+
     Used by the CRM to calculate teacher workload / salary.
     """
     teacher = db.query(UserInDB).filter(UserInDB.id == teacher_id).first()
@@ -2531,4 +2538,145 @@ async def get_teacher_lessons_count(
         year=year,
         month=month,
         count=count,
+    )
+
+
+class LessonDetailItem(BaseModel):
+    id: int
+    title: str
+    start_datetime: str
+    end_datetime: str
+
+
+class TeacherLessonsDetailSchema(BaseModel):
+    teacher_id: int
+    year: int
+    month: int
+    count: int
+    lessons: List[LessonDetailItem]
+
+
+@router.get(
+    "/teachers/{teacher_id}/lessons-detail",
+    response_model=TeacherLessonsDetailSchema,
+    tags=["CRM"],
+    summary="List lessons conducted by a teacher in a given month (for audit/reconciliation)",
+)
+async def get_teacher_lessons_detail(
+    teacher_id: int,
+    year: int = Query(..., ge=2020, le=2030, description="Year (Kazakhstan GMT+5)"),
+    month: int = Query(..., ge=1, le=12, description="Month (1–12)"),
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin()),
+):
+    """
+    Returns the list of active class Events conducted by the given teacher
+    in the specified calendar month. Same filters as lessons-count.
+    Use for manual reconciliation with schedules / payroll.
+    """
+    teacher = db.query(UserInDB).filter(UserInDB.id == teacher_id).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    kz_tz = _tz(timedelta(hours=5))
+    month_start_kz = datetime(year, month, 1, tzinfo=kz_tz)
+    if month == 12:
+        month_end_kz = datetime(year + 1, 1, 1, tzinfo=kz_tz)
+    else:
+        month_end_kz = datetime(year, month + 1, 1, tzinfo=kz_tz)
+
+    month_start_utc = month_start_kz.astimezone(_tz.utc)
+    month_end_utc = month_end_kz.astimezone(_tz.utc)
+    now_utc = datetime.now(_tz.utc)
+
+    events = (
+        db.query(Event)
+        .filter(
+            Event.teacher_id == teacher_id,
+            Event.event_type == "class",
+            Event.is_active == True,
+            Event.start_datetime >= month_start_utc,
+            Event.start_datetime < month_end_utc,
+            Event.end_datetime <= now_utc,
+        )
+        .order_by(Event.start_datetime.asc())
+        .all()
+    )
+
+    lessons = [
+        LessonDetailItem(
+            id=e.id,
+            title=e.title,
+            start_datetime=e.start_datetime.isoformat(),
+            end_datetime=e.end_datetime.isoformat(),
+        )
+        for e in events
+    ]
+
+    return TeacherLessonsDetailSchema(
+        teacher_id=teacher_id,
+        year=year,
+        month=month,
+        count=len(lessons),
+        lessons=lessons,
+    )
+
+
+@router.get(
+    "/teachers/lessons-count-export",
+    tags=["CRM"],
+    summary="Export all teachers' lessons count for a month as CSV",
+)
+async def export_teachers_lessons_count_csv(
+    year: int = Query(..., ge=2020, le=2030, description="Year (Kazakhstan GMT+5)"),
+    month: int = Query(..., ge=1, le=12, description="Month (1–12)"),
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin()),
+):
+    """
+    Returns CSV: teacher_id, teacher_name, year, month, lessons_count.
+    For reconciliation with payroll.
+    """
+    kz_tz = _tz(timedelta(hours=5))
+    month_start_kz = datetime(year, month, 1, tzinfo=kz_tz)
+    if month == 12:
+        month_end_kz = datetime(year + 1, 1, 1, tzinfo=kz_tz)
+    else:
+        month_end_kz = datetime(year, month + 1, 1, tzinfo=kz_tz)
+
+    month_start_utc = month_start_kz.astimezone(_tz.utc)
+    month_end_utc = month_end_kz.astimezone(_tz.utc)
+    now_utc = datetime.now(_tz.utc)
+
+    teachers = (
+        db.query(UserInDB)
+        .filter(UserInDB.role == "teacher", UserInDB.is_active == True)
+        .order_by(UserInDB.name.asc())
+        .all()
+    )
+
+    rows = ["teacher_id,teacher_name,year,month,lessons_count"]
+    for t in teachers:
+        count = (
+            db.query(Event)
+            .filter(
+                Event.teacher_id == t.id,
+                Event.event_type == "class",
+                Event.is_active == True,
+                Event.start_datetime >= month_start_utc,
+                Event.start_datetime < month_end_utc,
+                Event.end_datetime <= now_utc,
+            )
+            .count()
+        )
+        name_escaped = (t.name or "").replace('"', '""')
+        rows.append(f'{t.id},"{name_escaped}",{year},{month},{count}')
+
+    csv_content = "\n".join(rows)
+    filename = f"teachers_lessons_{year}_{month:02d}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
