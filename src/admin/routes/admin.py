@@ -2487,14 +2487,14 @@ class TeacherLessonsCountSchema(BaseModel):
 )
 async def get_teacher_lessons_count(
     teacher_id: int,
-    year: int = Query(..., ge=2020, le=2030, description="Year (UTC)"),
+    year: int = Query(..., ge=2020, le=2030, description="Year (Kazakhstan GMT+5)"),
     month: int = Query(..., ge=1, le=12, description="Month (1–12)"),
     db: Session = Depends(get_db),
     current_user: UserInDB = Depends(require_admin()),
 ):
     """
     Returns the number of active class Events conducted by the given teacher
-    in the specified calendar month (UTC boundaries).
+    in the specified calendar month using Kazakhstan timezone (GMT+5).
 
     Used by the CRM to calculate teacher workload / salary.
     """
@@ -2502,23 +2502,27 @@ async def get_teacher_lessons_count(
     if not teacher:
         raise HTTPException(status_code=404, detail="Teacher not found")
 
-    month_start = datetime(year, month, 1, tzinfo=_tz.utc)
+    kz_tz = _tz(timedelta(hours=5))
+    month_start_kz = datetime(year, month, 1, tzinfo=kz_tz)
     if month == 12:
-        month_end = datetime(year + 1, 1, 1, tzinfo=_tz.utc)
+        month_end_kz = datetime(year + 1, 1, 1, tzinfo=kz_tz)
     else:
-        month_end = datetime(year, month + 1, 1, tzinfo=_tz.utc)
+        month_end_kz = datetime(year, month + 1, 1, tzinfo=kz_tz)
+
+    month_start_utc = month_start_kz.astimezone(_tz.utc)
+    month_end_utc = month_end_kz.astimezone(_tz.utc)
+    now_utc = datetime.now(_tz.utc)
 
     count = (
         db.query(Event)
-        .join(EventGroup, EventGroup.event_id == Event.id)
         .filter(
             Event.teacher_id == teacher_id,
             Event.event_type == "class",
             Event.is_active == True,
-            Event.start_datetime >= month_start,
-            Event.start_datetime < month_end,
+            Event.start_datetime >= month_start_utc,
+            Event.start_datetime < month_end_utc,
+            Event.end_datetime <= now_utc,  # Count only actually conducted lessons
         )
-        .distinct(Event.id)
         .count()
     )
 
