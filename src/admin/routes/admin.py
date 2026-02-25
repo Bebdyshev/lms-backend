@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc
 from typing import List, Optional
@@ -17,6 +17,7 @@ from src.utils.permissions import require_admin, require_teacher_or_admin_for_gr
 import secrets
 import string
 import logging
+from datetime import timezone as _tz
 
 logger = logging.getLogger(__name__)
 
@@ -2465,3 +2466,65 @@ async def create_recurring_events(db: Session, base_event: Event, event_data: Cr
         else:
             current_start += delta
             current_end += delta
+
+
+# ---------------------------------------------------------------------------
+# CRM: Teacher lessons count
+# ---------------------------------------------------------------------------
+
+class TeacherLessonsCountSchema(BaseModel):
+    teacher_id: int
+    year: int
+    month: int
+    count: int
+
+
+@router.get(
+    "/teachers/{teacher_id}/lessons-count",
+    response_model=TeacherLessonsCountSchema,
+    tags=["CRM"],
+    summary="Count lessons conducted by a teacher in a given month",
+)
+async def get_teacher_lessons_count(
+    teacher_id: int,
+    year: int = Query(..., ge=2020, le=2030, description="Year (UTC)"),
+    month: int = Query(..., ge=1, le=12, description="Month (1–12)"),
+    db: Session = Depends(get_db),
+    current_user: UserInDB = Depends(require_admin()),
+):
+    """
+    Returns the number of active class Events conducted by the given teacher
+    in the specified calendar month (UTC boundaries).
+
+    Used by the CRM to calculate teacher workload / salary.
+    """
+    teacher = db.query(UserInDB).filter(UserInDB.id == teacher_id).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher not found")
+
+    month_start = datetime(year, month, 1, tzinfo=_tz.utc)
+    if month == 12:
+        month_end = datetime(year + 1, 1, 1, tzinfo=_tz.utc)
+    else:
+        month_end = datetime(year, month + 1, 1, tzinfo=_tz.utc)
+
+    count = (
+        db.query(Event)
+        .join(EventGroup, EventGroup.event_id == Event.id)
+        .filter(
+            Event.teacher_id == teacher_id,
+            Event.event_type == "class",
+            Event.is_active == True,
+            Event.start_datetime >= month_start,
+            Event.start_datetime < month_end,
+        )
+        .distinct(Event.id)
+        .count()
+    )
+
+    return TeacherLessonsCountSchema(
+        teacher_id=teacher_id,
+        year=year,
+        month=month,
+        count=count,
+    )

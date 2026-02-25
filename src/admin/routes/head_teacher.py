@@ -12,6 +12,7 @@ from src.schemas.models import (
     Event, EventGroup, EventParticipant, MissedAttendanceLog
 )
 from src.routes.auth import get_current_user_dependency
+from src.services.attendance_service import AttendanceService
 
 router = APIRouter()
 
@@ -173,11 +174,10 @@ def detect_and_log_missed_attendance(db: Session, teacher_id: int, group_ids: Li
             if expected_count == 0:
                 continue
             
-            # Get recorded attendance
-            recorded_count = db.query(func.count(EventParticipant.id)).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).scalar() or 0
+            # Get recorded attendance from Attendance (single source of truth)
+            recorded_count = AttendanceService.count_for_event(
+                db, event.id, statuses=["present", "late", "absent"]
+            )
             
             # Check if log exists for this event OR for same group+date (to avoid duplicates from duplicate events)
             existing_log = db.query(MissedAttendanceLog).filter(

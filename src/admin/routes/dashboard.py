@@ -13,6 +13,7 @@ from src.schemas.models import (
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role
 from src.schemas.models import GroupStudent
+from src.services.attendance_service import AttendanceService
 
 router = APIRouter()
 
@@ -351,12 +352,12 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
     grading_progress = round((graded_submissions_count / total_submissions) * 100) if total_submissions > 0 else 0
     
     # Find past events with missing attendance (for reminders)
-    from src.schemas.models import Event, EventGroup, EventParticipant
-    
+    from src.schemas.models import Event, EventGroup
+
     missing_attendance_reminders = []
-    
+
     cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
-    
+
     if teacher_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
             EventGroup.group_id.in_(teacher_group_ids),
@@ -365,22 +366,19 @@ def get_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSc
             Event.end_datetime >= cutoff_date,
             Event.is_active == True
         ).all()
-        
+
         for event in past_events:
-            # Get students that should have attended (from event's groups)
             event_group_ids = [eg.group_id for eg in event.event_groups]
             expected_students = db.query(GroupStudent.student_id).filter(
                 GroupStudent.group_id.in_(event_group_ids)
             ).all()
             expected_count = len(expected_students)
-            
-            # Get actual attendance records that are NOT pending or registered
-            attendance_count = db.query(EventParticipant).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).count()
-            
-            # If less than expected, add reminder
+
+            # Count via Attendance (single source of truth)
+            attendance_count = AttendanceService.count_for_event(
+                db, event.id, statuses=["present", "late", "absent"]
+            )
+
             if attendance_count < expected_count:
                 group_name = ""
                 group_id = None
@@ -639,11 +637,11 @@ def get_curator_dashboard_stats(
         })
 
     # 5. Missing Attendance Reminders (similar to teacher)
-    from src.schemas.models import EventParticipant, EventGroup, Event
+    from src.schemas.models import EventGroup, Event
     missing_attendance_reminders = []
-    
+
     cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
-    
+
     if curator_group_ids:
         past_events = db.query(Event).join(EventGroup).filter(
             EventGroup.group_id.in_(curator_group_ids),
@@ -652,21 +650,21 @@ def get_curator_dashboard_stats(
             Event.end_datetime >= cutoff_date,
             Event.is_active == True
         ).all()
-        
+
         for event in past_events:
             eg_ids = [eg.group_id for eg in event.event_groups if eg.group_id in curator_group_ids]
-            if not eg_ids: continue
-            
+            if not eg_ids:
+                continue
+
             e_expected_students = db.query(GroupStudent.student_id).filter(
                 GroupStudent.group_id.in_(eg_ids)
             ).all()
             e_expected_count = len(e_expected_students)
-            
-            e_attendance_count = db.query(EventParticipant).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).count()
-            
+
+            e_attendance_count = AttendanceService.count_for_event(
+                db, event.id, statuses=["present", "late", "absent"]
+            )
+
             if e_attendance_count < e_expected_count:
                 g_name = ""
                 g_id = None
@@ -1082,13 +1080,12 @@ def get_head_curator_dashboard_stats(
                 })
 
     # 5. Missing Attendance Reminders (similar to teacher/curator)
-    from src.schemas.models import EventParticipant, EventGroup, Event
+    from src.schemas.models import EventGroup, Event
     missing_attendance_reminders = []
-    
+
     cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
 
     if current_group_ids:
-        # We only show reminders for the currently filtered groups (if any) or all if all
         past_events_rem = db.query(Event).join(EventGroup).filter(
             EventGroup.group_id.in_(current_group_ids),
             Event.event_type == "class",
@@ -1096,21 +1093,21 @@ def get_head_curator_dashboard_stats(
             Event.end_datetime >= cutoff_date,
             Event.is_active == True
         ).all()
-        
+
         for event in past_events_rem:
             eg_ids = [eg.group_id for eg in event.event_groups if eg.group_id in current_group_ids]
-            if not eg_ids: continue
-            
+            if not eg_ids:
+                continue
+
             e_expected_students = db.query(GroupStudent.student_id).filter(
                 GroupStudent.group_id.in_(eg_ids)
             ).all()
             e_expected_count = len(e_expected_students)
-            
-            e_attendance_count = db.query(EventParticipant).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).count()
-            
+
+            e_attendance_count = AttendanceService.count_for_event(
+                db, event.id, statuses=["present", "late", "absent"]
+            )
+
             if e_attendance_count < e_expected_count:
                 g_name = ""
                 g_id = None
@@ -1154,7 +1151,7 @@ def get_head_curator_dashboard_stats(
 def get_head_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSchema:
     """Get dashboard stats for head teacher - missing attendance for managed course groups"""
     from src.schemas.models import (
-        Event, EventGroup, EventParticipant, Group,
+        Event, EventGroup, Group,
         CourseHeadTeacher, CourseGroupAccess
     )
 
@@ -1200,10 +1197,9 @@ def get_head_teacher_dashboard_stats(user: UserInDB, db: Session) -> DashboardSt
                 GroupStudent.group_id.in_(event_group_ids)
             ).count()
 
-            attendance_count = db.query(EventParticipant).filter(
-                EventParticipant.event_id == event.id,
-                EventParticipant.registration_status.in_(["attended", "late", "missed"])
-            ).count()
+            attendance_count = AttendanceService.count_for_event(
+                db, event.id, statuses=["present", "late", "absent"]
+            )
 
             if attendance_count < expected_count:
                 group_name = ""
@@ -1292,12 +1288,11 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
         })
     
     # Find past events with missing attendance (for reminders)
-    from src.schemas.models import Event, EventGroup, EventParticipant, Group
-    
+    from src.schemas.models import Event, EventGroup, Group
+
     missing_attendance_reminders = []
-    
+
     # Only check events from February 4, 2026 onwards (production launch date)
-    # This ensures we don't show old attendance issues from before this date
     cutoff_date = datetime(2026, 2, 16, 0, 0, 0)
 
     past_events = db.query(Event).join(EventGroup).filter(
@@ -1306,22 +1301,18 @@ def get_admin_dashboard_stats(user: UserInDB, db: Session) -> DashboardStatsSche
         Event.end_datetime >= cutoff_date,
         Event.is_active == True
     ).all()
-    
+
     for event in past_events:
-        # Get students that should have attended (from event's groups)
         event_group_ids = [eg.group_id for eg in event.event_groups]
         expected_students = db.query(GroupStudent.student_id).filter(
             GroupStudent.group_id.in_(event_group_ids)
         ).all()
         expected_count = len(expected_students)
-        
-        # Get actual attendance records that are NOT pending or registered
-        attendance_count = db.query(EventParticipant).filter(
-            EventParticipant.event_id == event.id,
-            EventParticipant.registration_status.in_(["attended", "late", "missed"])
-        ).count()
-        
-        # If less than expected, add reminder
+
+        attendance_count = AttendanceService.count_for_event(
+            db, event.id, statuses=["present", "late", "absent"]
+        )
+
         if attendance_count < expected_count:
             group_name = ""
             group_id = None

@@ -13,6 +13,7 @@ from src.schemas.models import (
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role, require_teacher_or_admin, require_teacher_curator_or_admin
+from src.services.attendance_service import AttendanceService, ep_status_to_attendance_status
 
 router = APIRouter()
 
@@ -1039,8 +1040,10 @@ async def get_event_details(
     # Add course IDs
     event_data.course_ids = [ec.course_id for ec in event.event_courses]
     
-    # Add participant count
-    participant_count = db.query(EventParticipant).filter(EventParticipant.event_id == event.id).count()
+    # Participant count from Attendance (single source of truth for class events)
+    participant_count = AttendanceService.count_for_event(
+        db, event.id, statuses=["present", "late", "absent", "registered"]
+    )
     event_data.participant_count = participant_count
     
     return event_data
@@ -1247,21 +1250,20 @@ async def get_event_participants(
         GroupStudent.group_id.in_(target_group_ids)
     ).all()
     
-    # 4. Fetch existing attendance records
-    attendance = db.query(EventParticipant).filter(
-        EventParticipant.event_id == event_id
-    ).all()
-    attendance_map = {a.user_id: a for a in attendance}
-    
+    # 4. Fetch existing attendance records from Attendance (single source of truth)
+    student_ids = [s.id for s in students]
+    att_map = AttendanceService.get_attendance_map_for_events(db, [event_id], student_ids)
+    # (user_id, event_id) -> {status, score, activity_score}
+
     # 5. Build results
     results = []
     for s in students:
-        record = attendance_map.get(s.id)
+        att = att_map.get((s.id, event_id))
         results.append(EventStudentSchema(
             student_id=s.id,
             name=s.name,
-            attendance_status=record.registration_status if record else "registered",
-            last_updated=record.attended_at if record else None
+            attendance_status=att["status"] if att else "registered",
+            last_updated=None,
         ))
         
     return results
@@ -1279,30 +1281,15 @@ async def update_event_attendance(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
         
-    now = datetime.now(timezone.utc)
-    
-    # 2. Update records
-    for record in data.attendance:
-        # Check if record already exists
-        participant = db.query(EventParticipant).filter(
-            EventParticipant.event_id == event_id,
-            EventParticipant.user_id == record.student_id
-        ).first()
-        
-        if participant:
-            participant.registration_status = record.status
-            if record.status == "attended":
-                participant.attended_at = now
-        else:
-            # Create new record
-            new_participant = EventParticipant(
-                event_id=event_id,
-                user_id=record.student_id,
-                registration_status=record.status,
-                attended_at=now if record.status == "attended" else None,
-                registered_at=now
-            )
-            db.add(new_participant)
-            
+    # 2. Bulk upsert via AttendanceService (single source of truth)
+    updates = [
+        {
+            "user_id": record.student_id,
+            "status": ep_status_to_attendance_status(record.status),
+            "score": 1 if record.status in ("attended", "late") else 0,
+        }
+        for record in data.attendance
+    ]
+    AttendanceService.bulk_upsert_for_event(db, event_id, updates)
     db.commit()
     return {"message": "Attendance updated successfully"}

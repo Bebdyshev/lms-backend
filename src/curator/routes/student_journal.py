@@ -21,6 +21,8 @@ from src.schemas.models import (
     AssignmentZeroSubmission,
 )
 from src.routes.auth import get_current_user_dependency
+from src.schemas.models import Attendance
+from src.services.attendance_service import AttendanceService
 from src.utils.permissions import require_role
 
 router = APIRouter()
@@ -81,21 +83,24 @@ async def list_students(
 
     student_ids = [r[0].id for r in rows]
 
-    # --- Aggregate attendance ---
-    # Count total and attended events per student
+    # --- Aggregate attendance from Attendance (single source of truth) ---
     att_total = (
-        db.query(EventParticipant.user_id, func.count(EventParticipant.id).label("total"))
-        .filter(EventParticipant.user_id.in_(student_ids))
-        .group_by(EventParticipant.user_id)
+        db.query(Attendance.user_id, func.count(Attendance.id).label("total"))
+        .filter(
+            Attendance.user_id.in_(student_ids),
+            Attendance.event_id.isnot(None),
+        )
+        .group_by(Attendance.user_id)
         .all()
     )
     att_attended = (
-        db.query(EventParticipant.user_id, func.count(EventParticipant.id).label("attended"))
+        db.query(Attendance.user_id, func.count(Attendance.id).label("attended"))
         .filter(
-            EventParticipant.user_id.in_(student_ids),
-            EventParticipant.registration_status.in_(["attended", "late"]),
+            Attendance.user_id.in_(student_ids),
+            Attendance.event_id.isnot(None),
+            Attendance.status.in_(["present", "late"]),
         )
-        .group_by(EventParticipant.user_id)
+        .group_by(Attendance.user_id)
         .all()
     )
     att_total_map = {r.user_id: r.total for r in att_total}
@@ -282,28 +287,31 @@ async def get_student_profile(
             "updated_at": az.updated_at.isoformat() if az.updated_at else None,
         }
 
-    # --- Attendance ---
+    # --- Attendance (from Attendance — single source of truth) ---
     attendance_rows = (
-        db.query(EventParticipant, Event)
-        .join(Event, Event.id == EventParticipant.event_id)
-        .filter(EventParticipant.user_id == student_id)
+        db.query(Attendance, Event)
+        .join(Event, Event.id == Attendance.event_id)
+        .filter(
+            Attendance.user_id == student_id,
+            Attendance.event_id.isnot(None),
+        )
         .order_by(Event.start_datetime.desc())
         .limit(100)
         .all()
     )
     attendance_data = [
         {
-            "event_id": ep.event_id,
+            "event_id": att.event_id,
             "event_title": ev.title,
             "event_date": ev.start_datetime.isoformat(),
-            "status": ep.registration_status,
-            "activity_score": ep.activity_score,
+            "status": att.status,
+            "activity_score": att.activity_score,
         }
-        for ep, ev in attendance_rows
+        for att, ev in attendance_rows
     ]
 
     att_total = len(attendance_data)
-    att_attended = sum(1 for a in attendance_data if a["status"] in ("attended", "late"))
+    att_attended = sum(1 for a in attendance_data if a["status"] in ("present", "late"))
     att_rate = round(att_attended / att_total * 100, 1) if att_total > 0 else None
 
     # --- Homework ---

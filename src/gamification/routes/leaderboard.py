@@ -14,6 +14,7 @@ from src.schemas.models import (
 )
 from pydantic import BaseModel
 from src.routes.auth import get_current_user_dependency
+from src.services.attendance_service import AttendanceService, ep_status_to_attendance_status
 
 router = APIRouter()
 
@@ -289,23 +290,18 @@ async def get_group_leaderboard(
                     homework_data[sub.user_id] = {}
                 homework_data[sub.user_id][lesson_idx] = sub.score
     
-    # 6. Get Attendance data - from EventParticipant
+    # 6. Get Attendance data - from Attendance (single source of truth)
     attendance_data = {}  # {student_id: {lesson_index: score}}
-    
+
     if event_ids:
-        participants = db.query(EventParticipant).filter(
-            EventParticipant.event_id.in_(event_ids),
-            EventParticipant.user_id.in_(student_ids)
-        ).all()
-        
-        for p in participants:
-            lesson_idx = event_to_index.get(p.event_id, 0)
+        att_map = AttendanceService.get_attendance_map_for_events(db, event_ids, student_ids)
+        for (uid, eid), att in att_map.items():
+            lesson_idx = event_to_index.get(eid, 0)
             if lesson_idx > 0:
-                if p.user_id not in attendance_data:
-                    attendance_data[p.user_id] = {}
-                # attended = 1, not attended = 0
-                score = 1 if p.attended else 0
-                attendance_data[p.user_id][lesson_idx] = score
+                if uid not in attendance_data:
+                    attendance_data[uid] = {}
+                score = 1 if att["status"] in ("present", "late") else 0
+                attendance_data[uid][lesson_idx] = score
 
     # 7. Get Manual Leaderboard Entries
     entries = db.query(LeaderboardEntry).filter(
@@ -641,22 +637,13 @@ async def get_weekly_lessons_with_hw_status(
     students = db.query(UserInDB).filter(UserInDB.id.in_(student_ids)).all()
     students_list = sorted(students, key=lambda s: s.name or "")
     
-    # 7. Get Attendance
-    # Need to check EventParticipant table
-    from src.schemas.models import EventParticipant
-    
-    attendance_map = {}
-    
-    # Get attendance from EventParticipant for real events
+    # 7. Get Attendance — from Attendance (single source of truth)
     event_ids = [e.id for e in events if hasattr(e, 'id') and e.id]
+    attendance_map = {}  # (user_id, event_id) -> status str
     if event_ids:
-        event_attendances = db.query(EventParticipant).filter(
-            EventParticipant.event_id.in_(event_ids),
-            EventParticipant.user_id.in_(student_ids)
-        ).all()
-        # Map (user_id, event_id) -> status
-        for a in event_attendances:
-            attendance_map[(a.user_id, a.event_id)] = a.registration_status
+        raw_map = AttendanceService.get_attendance_map_for_events(db, event_ids, student_ids)
+        for (uid, eid), att in raw_map.items():
+            attendance_map[(uid, eid)] = att["status"]
 
     
     # 8. Get HW Submissions
@@ -895,14 +882,8 @@ async def get_group_full_attendance_matrix(
     ).all()
     students_list = sorted(students, key=lambda s: s.name or "")
 
-    # 8. Get Attendance
-    # Note: For recurring instances, we use their pseudo-IDs (consistent with calendar)
-    attendances = db.query(EventParticipant).filter(
-        EventParticipant.event_id.in_(event_ids),
-        EventParticipant.user_id.in_(student_ids)
-    ).all()
-    # Map (user_id, event_id) -> {status, activity_score}
-    attendance_map = {(a.user_id, a.event_id): {"status": a.registration_status, "activity_score": a.activity_score} for a in attendances}
+    # 8. Get Attendance — from Attendance (single source of truth)
+    attendance_map = AttendanceService.get_attendance_map_for_events(db, event_ids, student_ids)
 
     # 10. Build Student Rows
     student_rows = []
@@ -1204,7 +1185,6 @@ async def update_attendance_bulk(
     if current_user.role not in ["curator", "admin", "teacher"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    from src.schemas.models import EventParticipant, Attendance
     from src.services.event_service import EventService
 
     updated_count = 0
@@ -1221,38 +1201,20 @@ async def update_attendance_bulk(
             if current_user.role == "teacher" and group.teacher_id != current_user.id: continue
             cached_groups[item.group_id] = group
 
-        # Priority: event_id
+        # Priority: event_id — write to Attendance (single source of truth)
         if item.event_id:
             real_event_id = EventService.resolve_event_id(db, item.event_id)
-            if not real_event_id: continue
-
-            participant = db.query(EventParticipant).filter(
-                EventParticipant.event_id == real_event_id,
-                EventParticipant.user_id == item.student_id
-            ).first()
-
-            status = item.status
-            # Map legacy status if needed or stick to what frontend sends
-            # Logic from single update: "attended" if score > 0 else "absent"
-            # But frontend sends 'attended', 'late', 'missed'
-            
-            if participant:
-                participant.registration_status = status
-                # Set attended_at only if attended/late
-                is_attended = status in ['attended', 'late']
-                participant.attended_at = datetime.utcnow() if is_attended else None
-                if item.activity_score is not None:
-                    participant.activity_score = item.activity_score
-            else:
-                is_attended = status in ['attended', 'late']
-                participant = EventParticipant(
-                    event_id=real_event_id,
-                    user_id=item.student_id,
-                    registration_status=status,
-                    attended_at=datetime.utcnow() if is_attended else None,
-                    activity_score=item.activity_score
-                )
-                db.add(participant)
+            if not real_event_id:
+                continue
+            score = 1 if item.status in ("attended", "late") else 0
+            AttendanceService.upsert_for_event(
+                db=db,
+                event_id=real_event_id,
+                user_id=item.student_id,
+                status=ep_status_to_attendance_status(item.status),
+                score=score,
+                activity_score=item.activity_score,
+            )
             updated_count += 1
             continue
 
@@ -1317,36 +1279,23 @@ async def update_attendance(
     if current_user.role == "teacher" and group.teacher_id != current_user.id:
          raise HTTPException(status_code=403, detail="Access denied to this group (Teacher mismatch)")
 
-    # Mode 1: Event-based (New)
+    # Mode 1: Event-based — write to Attendance (single source of truth)
     if data.event_id:
         from src.services.event_service import EventService
-        from src.schemas.models import EventParticipant
-        
-        # Ensure event exists (materialize if pseudo-id)
+
         real_event_id = EventService.resolve_event_id(db, data.event_id)
         if not real_event_id:
-             raise HTTPException(status_code=404, detail="Event could not be resolved/materialized")
+            raise HTTPException(status_code=404, detail="Event could not be resolved/materialized")
 
-        participant = db.query(EventParticipant).filter(
-            EventParticipant.event_id == real_event_id,
-            EventParticipant.user_id == data.student_id
-        ).first()
-        
-        if participant:
-            participant.registration_status = "attended" if data.score > 0 else "absent"
-            participant.attended_at = datetime.utcnow() if data.score > 0 else None
-            if data.activity_score is not None:
-                participant.activity_score = data.activity_score
-        else:
-            participant = EventParticipant(
-                event_id=real_event_id,
-                user_id=data.student_id,
-                registration_status="attended" if data.score > 0 else "absent",
-                attended_at=datetime.utcnow() if data.score > 0 else None,
-                activity_score=data.activity_score
-            )
-            db.add(participant)
-        
+        att_status = "present" if data.score > 0 else "absent"
+        AttendanceService.upsert_for_event(
+            db=db,
+            event_id=real_event_id,
+            user_id=data.student_id,
+            status=att_status,
+            score=data.score,
+            activity_score=data.activity_score,
+        )
         db.commit()
         return {"status": "success", "mode": "event", "event_id": real_event_id}
 
@@ -1508,7 +1457,7 @@ async def generate_schedule(
             # Create datetime in Kazakhstan timezone (user input is in local time)
             target_dt_kz = datetime.combine(target_date, time_obj)
             
-            # Store in database as UTC (subtract 6 hours)
+            # Store in database as UTC (Kazakhstan GMT+5: subtract 5 hours)
             target_dt_utc = target_dt_kz - KZ_OFFSET
             
             # Only include dates on or after start_date

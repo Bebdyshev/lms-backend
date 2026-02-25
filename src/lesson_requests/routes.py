@@ -597,6 +597,13 @@ def _apply_reschedule(db: Session, lr: LessonRequest, admin_id: int):
             event.end_datetime = lr.new_datetime + duration
             db.flush()
 
+    # Keep LessonSchedule in sync if this request references one
+    if lr.lesson_schedule_id and lr.new_datetime:
+        schedule = db.query(LessonSchedule).filter(LessonSchedule.id == lr.lesson_schedule_id).first()
+        if schedule:
+            schedule.scheduled_at = lr.new_datetime
+            db.flush()
+
 
 def _notify_admins_of_request(db: Session, lr: LessonRequest, requester: UserInDB):
     """Create in-app notifications for admins about a new request."""

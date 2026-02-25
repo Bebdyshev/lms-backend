@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Float, DateTime, Date, Boolean, ForeignKey, Text, UniqueConstraint, Index
+from sqlalchemy import Column, String, Integer, Float, DateTime, Date, Boolean, ForeignKey, Text, UniqueConstraint, Index, CheckConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 
@@ -82,6 +82,11 @@ class EventCourse(Base):
 
 
 class EventParticipant(Base):
+    """
+    DEPRECATED for attendance tracking.
+    Use Attendance (with event_id) as the single source of truth.
+    EventParticipant may still be used for webinar/non-class event registration.
+    """
     __tablename__ = "event_participants"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -139,13 +144,27 @@ class LessonSchedule(Base):
 
     group = relationship("Group", backref="lesson_schedules")
     lesson = relationship("Lesson")
-    attendances = relationship("Attendance", back_populates="lesson_schedule", cascade="all, delete-orphan")
+    attendances = relationship("Attendance", back_populates="lesson_schedule", cascade="all, delete-orphan",
+                               foreign_keys="Attendance.lesson_schedule_id")
 
 
 class Attendance(Base):
+    """
+    Single source of truth for student attendance.
+
+    Covers two lesson sources (exactly one must be set):
+    - event_id: lesson created by Schedule Generator (current flow)
+    - lesson_schedule_id: legacy LessonSchedule-based lesson
+
+    EventParticipant is deprecated for attendance; use this model instead.
+    """
     __tablename__ = "attendances"
     id = Column(Integer, primary_key=True, index=True)
-    lesson_schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="CASCADE"), nullable=False)
+
+    # Exactly one of the two below must be set (enforced by DB CHECK constraint)
+    event_id = Column(Integer, ForeignKey("events.id", ondelete="CASCADE"), nullable=True, index=True)
+    lesson_schedule_id = Column(Integer, ForeignKey("lesson_schedules.id", ondelete="CASCADE"), nullable=True)
+
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     status = Column(String, default="present")
     score = Column(Integer, default=0)
@@ -154,5 +173,16 @@ class Attendance(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    lesson_schedule = relationship("LessonSchedule", back_populates="attendances")
+    event = relationship("Event")
+    lesson_schedule = relationship("LessonSchedule", back_populates="attendances",
+                                   foreign_keys=[lesson_schedule_id])
     user = relationship("UserInDB")
+
+    __table_args__ = (
+        UniqueConstraint('event_id', 'user_id', name='uq_attendance_event_user'),
+        CheckConstraint(
+            '(event_id IS NOT NULL AND lesson_schedule_id IS NULL) OR '
+            '(event_id IS NULL AND lesson_schedule_id IS NOT NULL)',
+            name='ck_attendance_event_or_schedule'
+        ),
+    )
