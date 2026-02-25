@@ -42,6 +42,25 @@ def ep_status_to_attendance_status(registration_status: str) -> str:
     return _EP_STATUS_TO_ATTENDANCE.get(registration_status, "registered")
 
 
+_ATTENDANCE_TO_UI_STATUS: Dict[str, str] = {
+    "present": "attended",
+    "late": "late",
+    "absent": "missed",
+    "registered": "registered",
+}
+
+
+def attendance_status_to_ui(status: Optional[str]) -> str:
+    """
+    Convert canonical Attendance.status to UI/legacy-friendly status.
+
+    UI pages still expect: attended | late | missed | registered.
+    """
+    if status is None:
+        return "registered"
+    return _ATTENDANCE_TO_UI_STATUS.get(status, "registered")
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------

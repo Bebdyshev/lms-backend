@@ -13,7 +13,11 @@ from src.schemas.models import (
 )
 from src.routes.auth import get_current_user_dependency
 from src.utils.permissions import require_role, require_teacher_or_admin, require_teacher_curator_or_admin
-from src.services.attendance_service import AttendanceService, ep_status_to_attendance_status
+from src.services.attendance_service import (
+    AttendanceService,
+    attendance_status_to_ui,
+    ep_status_to_attendance_status,
+)
 
 router = APIRouter()
 
@@ -1262,7 +1266,7 @@ async def get_event_participants(
         results.append(EventStudentSchema(
             student_id=s.id,
             name=s.name,
-            attendance_status=att["status"] if att else "registered",
+            attendance_status=attendance_status_to_ui(att["status"] if att else None),
             last_updated=None,
         ))
         

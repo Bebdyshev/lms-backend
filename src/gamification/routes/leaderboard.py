@@ -14,7 +14,11 @@ from src.schemas.models import (
 )
 from pydantic import BaseModel
 from src.routes.auth import get_current_user_dependency
-from src.services.attendance_service import AttendanceService, ep_status_to_attendance_status
+from src.services.attendance_service import (
+    AttendanceService,
+    attendance_status_to_ui,
+    ep_status_to_attendance_status,
+)
 
 router = APIRouter()
 
@@ -643,7 +647,7 @@ async def get_weekly_lessons_with_hw_status(
     if event_ids:
         raw_map = AttendanceService.get_attendance_map_for_events(db, event_ids, student_ids)
         for (uid, eid), att in raw_map.items():
-            attendance_map[(uid, eid)] = att["status"]
+            attendance_map[(uid, eid)] = attendance_status_to_ui(att["status"])
 
     
     # 8. Get HW Submissions
@@ -891,7 +895,7 @@ async def get_group_full_attendance_matrix(
         lesson_data = {}
         for idx, event in enumerate(all_events):
             att_data = attendance_map.get((student.id, event.id))
-            status = att_data["status"] if att_data else None
+            status = attendance_status_to_ui(att_data["status"] if att_data else None)
             activity_score = att_data["activity_score"] if att_data else None
             lesson_data[str(idx + 1)] = {
                 "event_id": event.id,

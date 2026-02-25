@@ -22,7 +22,7 @@ from src.schemas.models import (
 )
 from src.routes.auth import get_current_user_dependency
 from src.schemas.models import Attendance
-from src.services.attendance_service import AttendanceService
+from src.services.attendance_service import attendance_status_to_ui
 from src.utils.permissions import require_role
 
 router = APIRouter()
@@ -304,14 +304,14 @@ async def get_student_profile(
             "event_id": att.event_id,
             "event_title": ev.title,
             "event_date": ev.start_datetime.isoformat(),
-            "status": att.status,
+            "status": attendance_status_to_ui(att.status),
             "activity_score": att.activity_score,
         }
         for att, ev in attendance_rows
     ]
 
     att_total = len(attendance_data)
-    att_attended = sum(1 for a in attendance_data if a["status"] in ("present", "late"))
+    att_attended = sum(1 for a in attendance_data if a["status"] in ("attended", "late"))
     att_rate = round(att_attended / att_total * 100, 1) if att_total > 0 else None
 
     # --- Homework ---
