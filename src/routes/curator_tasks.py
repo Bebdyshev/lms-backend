@@ -471,6 +471,8 @@ async def create_task_instance(
     student_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
     due_date: Optional[datetime] = Query(None),
+    week: Optional[str] = Query(None, description="ISO week reference, e.g. 2025-W09"),
+    program_week: Optional[int] = Query(None, description="Program week number"),
     current_user: UserInDB = Depends(require_role(["admin", "head_curator"])),
     db: Session = Depends(get_db),
 ):
@@ -733,6 +735,14 @@ async def seed_templates(
             "deadline_rule": {"offset_days": 1},
             "order_index": 2,
         },
+        # --- MANUAL (head curator custom tasks) ---
+        {
+            "title": "Свой",
+            "description": "Свой шаблон — введите текст задачи вручную",
+            "task_type": "manual",
+            "scope": "group",
+            "order_index": 999,
+        },
     ]
 
     created_count = 0
@@ -991,6 +1001,9 @@ def seed_default_templates(db: Session):
         {"title": "Передача статуса о продлении", "task_type": "renewal", "scope": "student",
          "deadline_rule": {"offset_days": 5}, "order_index": 2,
          "applicable_from_week": 10, "applicable_to_week": None},
+        # Manual: head curator creates custom tasks (scheduler skips this)
+        {"title": "Свой", "task_type": "manual", "scope": "group",
+         "order_index": 999, "applicable_from_week": None, "applicable_to_week": None},
     ]
     for tmpl_data in default_templates:
         existing = db.query(CuratorTaskTemplate).filter(CuratorTaskTemplate.title == tmpl_data["title"]).first()

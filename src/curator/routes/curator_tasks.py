@@ -33,11 +33,13 @@ router = APIRouter()
 
 def _instance_to_schema(inst: CuratorTaskInstance) -> dict:
     """Convert a CuratorTaskInstance ORM object to a dict matching CuratorTaskInstanceSchema."""
+    # For "Свой" (manual) tasks: custom_title is the actual task text; use it as description too
+    desc = inst.custom_title if inst.custom_title else (inst.template.description if inst.template else None)
     return {
         "id": inst.id,
         "template_id": inst.template_id,
-        "template_title": inst.template.title if inst.template else None,
-        "template_description": inst.template.description if inst.template else None,
+        "template_title": (inst.custom_title or (inst.template.title if inst.template else None)),
+        "template_description": desc,
         "task_type": inst.template.task_type if inst.template else None,
         "scope": inst.template.scope if inst.template else None,
         "curator_id": inst.curator_id,
@@ -395,12 +397,27 @@ async def get_curators_summary(
 # ADMIN / TEMPLATE ENDPOINTS
 # ============================================================================
 
+def _ensure_custom_template(db: Session) -> None:
+    """Ensure 'Свой' template exists (for head curator custom tasks)."""
+    existing = db.query(CuratorTaskTemplate).filter(CuratorTaskTemplate.title == "Свой").first()
+    if not existing:
+        db.add(CuratorTaskTemplate(
+            title="Свой",
+            description="Свой шаблон — введите текст задачи вручную",
+            task_type="manual",
+            scope="group",
+            order_index=999,
+        ))
+        db.commit()
+
+
 @router.get("/templates", summary="List task templates")
 async def list_templates(
     task_type: Optional[str] = Query(None),
     current_user: UserInDB = Depends(require_role(["admin", "head_curator"])),
     db: Session = Depends(get_db),
 ):
+    _ensure_custom_template(db)
     q = db.query(CuratorTaskTemplate)
     if task_type:
         q = q.filter(CuratorTaskTemplate.task_type == task_type)
@@ -477,6 +494,9 @@ async def create_task_instance(
     student_id: Optional[int] = Query(None),
     group_id: Optional[int] = Query(None),
     due_date: Optional[datetime] = Query(None),
+    week: Optional[str] = Query(None, description="ISO week reference, e.g. 2025-W09"),
+    program_week: Optional[int] = Query(None, description="Program week number"),
+    custom_title: Optional[str] = Query(None, description="Custom task title (for 'Свой' template)"),
     current_user: UserInDB = Depends(require_role(["admin", "head_curator"])),
     db: Session = Depends(get_db),
 ):
@@ -495,6 +515,9 @@ async def create_task_instance(
         student_id=student_id,
         group_id=group_id,
         due_date=due_date,
+        week_reference=week,
+        program_week=program_week,
+        custom_title=custom_title,
         status="pending",
     )
     db.add(inst)
@@ -738,6 +761,14 @@ async def seed_templates(
             "scope": "student",
             "deadline_rule": {"offset_days": 1},
             "order_index": 2,
+        },
+        # --- MANUAL (head curator custom tasks) ---
+        {
+            "title": "Свой",
+            "description": "Свой шаблон — введите текст задачи вручную",
+            "task_type": "manual",
+            "scope": "group",
+            "order_index": 999,
         },
     ]
 
@@ -1034,6 +1065,9 @@ def seed_default_templates(db: Session):
         {"title": "Передача статуса о продлении", "task_type": "renewal", "scope": "student",
          "deadline_rule": {"offset_days": 5}, "order_index": 2,
          "applicable_from_week": 10, "applicable_to_week": None},
+        # Manual: head curator creates custom tasks (scheduler skips this)
+        {"title": "Свой", "task_type": "manual", "scope": "group",
+         "order_index": 999, "applicable_from_week": None, "applicable_to_week": None},
     ]
     for tmpl_data in default_templates:
         existing = db.query(CuratorTaskTemplate).filter(CuratorTaskTemplate.title == tmpl_data["title"]).first()

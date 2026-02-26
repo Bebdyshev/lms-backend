@@ -138,6 +138,8 @@ def generate_tasks_for_week(db, week_ref: str, monday_dt: datetime) -> int:
             continue
 
         for tmpl in templates:
+            if tmpl.task_type == "manual":
+                continue
             # Filter by program week applicability
             if prog_week is not None:
                 if tmpl.applicable_from_week and prog_week < tmpl.applicable_from_week:

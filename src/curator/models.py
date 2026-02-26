@@ -52,6 +52,7 @@ class CuratorTaskInstance(Base):
     screenshot_url = Column(String, nullable=True)
     week_reference = Column(String, nullable=True)
     program_week = Column(Integer, nullable=True)
+    custom_title = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
