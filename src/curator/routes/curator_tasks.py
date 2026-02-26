@@ -58,8 +58,13 @@ def _instance_to_schema(inst: CuratorTaskInstance) -> dict:
     }
 
 
-def _calc_program_week(group: Group) -> Optional[int]:
-    """Calculate current program week (1-based) from group.schedule_config start_date."""
+def _calc_program_week(group: Group, reference_date=None) -> Optional[int]:
+    """Calculate program week (1-based) from group.schedule_config start_date.
+    
+    Args:
+        group: The group to calculate for.
+        reference_date: The date to calculate relative to. Defaults to today.
+    """
     from datetime import date, timedelta
     try:
         cfg = group.schedule_config or {}
@@ -67,13 +72,19 @@ def _calc_program_week(group: Group) -> Optional[int]:
         if not start_str:
             return None
         start = date.fromisoformat(start_str)
-        today = date.today()
-        delta = (today - start).days
+        ref = reference_date if reference_date is not None else date.today()
+        delta = (ref - start).days
         if delta < 0:
             return None  # Group hasn't started yet
         return delta // 7 + 1
     except Exception:
         return None
+
+
+def _group_has_start_date(group: Group) -> bool:
+    """Return True if the group has a start_date in schedule_config."""
+    cfg = group.schedule_config or {}
+    return bool(cfg.get("start_date"))
 
 
 def _calc_total_weeks(group: Group) -> Optional[int]:
@@ -830,10 +841,55 @@ async def generate_weekly_tasks(
         return None
 
     created_count = 0
+    skipped_groups = []
+    monday_date = monday.date() if hasattr(monday, 'date') else monday
 
     for group in groups:
         curator_id = group.curator_id
-        prog_week = _calc_program_week(group)
+        prog_week = _calc_program_week(group, reference_date=monday_date)
+        total_weeks = _calc_total_weeks(group)
+        has_start = _group_has_start_date(group)
+
+        # Skip groups that haven't started yet or have already finished
+        if has_start and prog_week is None:
+            # Group has a start_date but hasn't started yet for this week
+            skipped_groups.append((group, "not_started"))
+            # Clean up any stale pending tasks for this group+week
+            db.query(CuratorTaskInstance).filter(
+                CuratorTaskInstance.group_id == group.id,
+                CuratorTaskInstance.week_reference == week,
+                CuratorTaskInstance.status == "pending",
+            ).delete(synchronize_session=False)
+            continue
+
+        if prog_week is not None and total_weeks is not None and prog_week > total_weeks:
+            # Group has already finished
+            skipped_groups.append((group, "finished"))
+            db.query(CuratorTaskInstance).filter(
+                CuratorTaskInstance.group_id == group.id,
+                CuratorTaskInstance.week_reference == week,
+                CuratorTaskInstance.status == "pending",
+            ).delete(synchronize_session=False)
+            continue
+
+        # Clean up stale pending tasks whose templates no longer apply for this week's program_week
+        for tmpl in templates:
+            should_skip = False
+            if prog_week is not None:
+                if tmpl.applicable_from_week and prog_week < tmpl.applicable_from_week:
+                    should_skip = True
+                if tmpl.applicable_to_week and prog_week > tmpl.applicable_to_week:
+                    should_skip = True
+            else:
+                if tmpl.applicable_from_week or tmpl.applicable_to_week:
+                    should_skip = True
+            if should_skip:
+                db.query(CuratorTaskInstance).filter(
+                    CuratorTaskInstance.template_id == tmpl.id,
+                    CuratorTaskInstance.group_id == group.id,
+                    CuratorTaskInstance.week_reference == week,
+                    CuratorTaskInstance.status == "pending",
+                ).delete(synchronize_session=False)
 
         for tmpl in templates:
             # Skip if template not applicable for this program week
@@ -896,17 +952,29 @@ async def generate_weekly_tasks(
 
     phase_label = ""
     if groups:
-        pw = _calc_program_week(groups[0])
+        pw = _calc_program_week(groups[0], reference_date=monday_date)
         tw = _calc_total_weeks(groups[0])
         if pw and tw:
             phase_label = f" (Неделя {pw} из {tw})"
         elif pw:
             phase_label = f" (Неделя {pw})"
 
+    # Build skip info for the response
+    skip_notes = []
+    for g, reason in skipped_groups:
+        if reason == "not_started":
+            skip_notes.append(f"{g.name}: ещё не началась")
+        elif reason == "finished":
+            skip_notes.append(f"{g.name}: уже завершилась")
+    skip_suffix = ""
+    if skip_notes:
+        skip_suffix = f". Пропущено: {'; '.join(skip_notes)}"
+
     return {
-        "detail": f"Сгенерировано {created_count} задач на неделю {week}{phase_label}",
+        "detail": f"Сгенерировано {created_count} задач на неделю {week}{phase_label}{skip_suffix}",
         "created": created_count,
         "week": week,
+        "skipped_groups": [{"group_id": g.id, "group_name": g.name, "reason": r} for g, r in skipped_groups],
     }
 
 
