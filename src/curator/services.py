@@ -32,20 +32,25 @@ DAY_MAP = {
 }
 
 
-def _calc_program_week(group: Group) -> Optional[int]:
+def _calc_program_week(group: Group, reference_date: Optional[date_type] = None) -> Optional[int]:
     try:
         cfg = group.schedule_config or {}
         start_str = cfg.get("start_date")
         if not start_str:
             return None
         start = date_type.fromisoformat(start_str)
-        today = date_type.today()
-        delta = (today - start).days
+        ref = reference_date if reference_date is not None else date_type.today()
+        delta = (ref - start).days
         if delta < 0:
             return None
         return delta // 7 + 1
     except Exception:
         return None
+
+
+def _group_has_start_date(group: Group) -> bool:
+    cfg = group.schedule_config or {}
+    return bool(cfg.get("start_date"))
 
 
 def _calc_total_weeks(group: Group) -> Optional[int]:
@@ -117,7 +122,20 @@ def generate_tasks_for_week(db, week_ref: str, monday_dt: datetime) -> int:
 
     for group in groups:
         curator_id = group.curator_id
-        prog_week = _calc_program_week(group)
+        monday_date = monday_dt.date() if isinstance(monday_dt, datetime) else monday_dt
+        prog_week = _calc_program_week(group, reference_date=monday_date)
+        total_weeks = _calc_total_weeks(group)
+        has_start = _group_has_start_date(group)
+
+        # Skip groups that haven't started yet
+        if has_start and prog_week is None:
+            logger.info(f"[SCHEDULER] Skipping group {group.name} (id={group.id}): not started yet for {week_ref}")
+            continue
+
+        # Skip groups that have already finished
+        if prog_week is not None and total_weeks is not None and prog_week > total_weeks:
+            logger.info(f"[SCHEDULER] Skipping group {group.name} (id={group.id}): already finished (week {prog_week}/{total_weeks})")
+            continue
 
         for tmpl in templates:
             # Filter by program week applicability
