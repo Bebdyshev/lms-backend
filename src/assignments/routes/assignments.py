@@ -601,6 +601,22 @@ async def update_assignment(
     # if assignment_data.due_date and to_naive_utc(assignment_data.due_date) < datetime.now(timezone.utc).replace(tzinfo=None):
     #     raise HTTPException(status_code=400, detail="Due date cannot be in the past")
     
+    # Resolve per-group mapping values for update flow.
+    # AssignmentBuilder sends group-specific values in *_mapping fields.
+    target_group_id = assignment_data.group_id or assignment.group_id
+
+    resolved_event_id = assignment_data.event_id
+    if target_group_id and assignment_data.event_mapping and target_group_id in assignment_data.event_mapping:
+        resolved_event_id = assignment_data.event_mapping[target_group_id]
+
+    resolved_due_date = assignment_data.due_date
+    if target_group_id and assignment_data.due_date_mapping and target_group_id in assignment_data.due_date_mapping:
+        resolved_due_date = assignment_data.due_date_mapping[target_group_id]
+
+    resolved_lesson_number = assignment.lesson_number
+    if target_group_id and assignment_data.lesson_number_mapping and target_group_id in assignment_data.lesson_number_mapping:
+        resolved_lesson_number = assignment_data.lesson_number_mapping[target_group_id]
+
     # Update fields
     assignment.title = assignment_data.title
     assignment.description = assignment_data.description
@@ -609,9 +625,10 @@ async def update_assignment(
     assignment.correct_answers = json.dumps(assignment_data.correct_answers) if assignment_data.correct_answers else None
     assignment.max_score = assignment_data.max_score
     assignment.time_limit_minutes = assignment_data.time_limit_minutes
-    assignment.due_date = assignment_data.due_date
+    assignment.due_date = resolved_due_date
     assignment.group_id = assignment_data.group_id
-    assignment.event_id = EventService.resolve_event_id(db, assignment_data.event_id)
+    assignment.event_id = EventService.resolve_event_id(db, resolved_event_id)
+    assignment.lesson_number = resolved_lesson_number
     assignment.allowed_file_types = assignment_data.allowed_file_types
     assignment.max_file_size_mb = assignment_data.max_file_size_mb
     

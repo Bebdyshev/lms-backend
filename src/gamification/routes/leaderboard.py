@@ -1852,9 +1852,6 @@ async def get_group_schedules(
     # Filter to date range for response
     filtered_events = [e for e in all_events if start_date <= e.start_datetime <= end_date]
     
-    # Kazakhstan timezone offset (UTC+5)
-    KZ_OFFSET = timedelta(hours=5)
-    
     result = []
     for event in filtered_events:
         lesson_number = lesson_number_map.get(event.id, 0)
@@ -1862,14 +1859,15 @@ async def get_group_schedules(
         # Mark if lesson is in the past
         is_past = event.start_datetime < now
         
-        # Convert UTC to Kazakhstan time for display
-        kz_time = event.start_datetime + KZ_OFFSET
+        # Return UTC with explicit Z for timezone clarity
+        dt = event.start_datetime
+        iso_str = dt.isoformat() + ('Z' if dt.tzinfo is None else '')
         
         result.append({
             "id": event.id,
             "event_id": event.id,
             "title": event.title or f"{group_name}: Lesson {lesson_number}",
-            "scheduled_at": kz_time.isoformat(),  # Already in KZ time
+            "scheduled_at": iso_str,
             "group_id": group_id,
             "lesson_number": lesson_number,
             "is_past": is_past
