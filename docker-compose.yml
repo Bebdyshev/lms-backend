@@ -48,6 +48,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./uploads:/app/uploads
+      - ./scripts:/app/scripts:ro
     expose:
       - "8000"
 

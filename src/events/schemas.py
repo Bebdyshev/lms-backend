@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from datetime import datetime, date
+from pydantic import BaseModel, field_validator
+from datetime import datetime, date, timezone
 from typing import Optional, List
 
 
@@ -45,6 +45,15 @@ class CreateEventRequest(BaseModel):
     event_type: str
     start_datetime: datetime
     end_datetime: datetime
+
+    @field_validator("start_datetime", "end_datetime", mode="after")
+    @classmethod
+    def ensure_utc_naive(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, datetime) and v.tzinfo:
+            return v.astimezone(timezone.utc).replace(tzinfo=None)
+        return v
     location: Optional[str] = None
     is_online: bool = True
     meeting_url: Optional[str] = None
@@ -63,6 +72,15 @@ class UpdateEventRequest(BaseModel):
     event_type: Optional[str] = None
     start_datetime: Optional[datetime] = None
     end_datetime: Optional[datetime] = None
+
+    @field_validator("start_datetime", "end_datetime", mode="after")
+    @classmethod
+    def ensure_utc_naive(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, datetime) and v.tzinfo:
+            return v.astimezone(timezone.utc).replace(tzinfo=None)
+        return v
     location: Optional[str] = None
     is_online: Optional[bool] = None
     meeting_url: Optional[str] = None
