@@ -27,7 +27,6 @@ jobs:
           git fetch origin main
           git checkout main
           git pull --ff-only origin main
-          cd backend
           docker compose pull || true
           docker compose build
           docker compose up -d
@@ -42,7 +41,7 @@ jobs:
         script: |
           set -e
           echo "🏥 Performing health check..."
-          cd ~/projects/lms/backend
+          cd ~/projects/lms
           for i in {1..20}; do
             if curl -fsS https://lmsapi.mastereducation.kz/health >/dev/null 2>&1; then
               echo "✅ Health check passed"

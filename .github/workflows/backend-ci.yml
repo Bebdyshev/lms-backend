@@ -4,13 +4,25 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "backend/**"
+      - "src/**"
+      - "alembic/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "alembic.ini"
       - ".github/workflows/backend-ci.yml"
       - ".github/workflows/deploy-backend.yml"
   push:
     branches: [main]
     paths:
-      - "backend/**"
+      - "src/**"
+      - "alembic/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "alembic.ini"
       - ".github/workflows/backend-ci.yml"
       - ".github/workflows/deploy-backend.yml"
 
@@ -29,12 +41,9 @@ jobs:
 
       - name: Install backend dependencies
         run: pip install -r requirements.txt
-        working-directory: backend
 
       - name: Run backend tests
         run: pytest -q
-        working-directory: backend
 
       - name: Build backend Docker image
         run: docker build -t lms-backend-ci .
-        working-directory: backend
