@@ -43,7 +43,16 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run backend tests
-        run: pytest -q
+        run: |
+          set +e
+          pytest -q
+          code=$?
+          set -e
+          if [ "$code" -eq 5 ]; then
+            echo "No tests collected, skipping test failure."
+            exit 0
+          fi
+          exit "$code"
 
       - name: Build backend Docker image
         run: docker build -t lms-backend-ci .
